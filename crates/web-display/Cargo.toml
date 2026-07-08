@@ -1,0 +1,33 @@
+[package]
+name = "web-display"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "axum-based HTTP + WebSocket fMP4 streamer"
+
+[dependencies]
+ipcam-core = { path = "../ipcam-core" }
+ipcam-discovery = { path = "../ipcam-discovery" }
+ipcam-rtsp = { path = "../ipcam-rtsp" }
+hardware-decode = { path = "../hardware-decode" }
+
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+dashmap = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio-tungstenite = { workspace = true }

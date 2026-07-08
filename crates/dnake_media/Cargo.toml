@@ -1,0 +1,40 @@
+[package]
+name = "media_talk"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "mediatalk media server binary (discover + serve)"
+
+[[bin]]
+name = "media_talk"
+path = "src/main.rs"
+
+[dependencies]
+ipcam-core = { path = "../ipcam-core" }
+ipcam-discovery = { path = "../ipcam-discovery" }
+ipcam-rtsp = { path = "../ipcam-rtsp" }
+hardware-decode = { path = "../hardware-decode" }
+web-display = { path = "../web-display" }
+ipcam-alsa = { path = "../ipcam-alsa" }
+v4l2-device-cap = { path = "../v4l2-device-cap" }
+
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+bytes = { workspace = true }
+uuid = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ipcam-alsa = { path = "../ipcam-alsa" }
+v4l2-device-cap = { path = "../v4l2-device-cap" }
+
+[features]
+default = ["sw-decode"]
+sw-decode = []
+hw-decode = []

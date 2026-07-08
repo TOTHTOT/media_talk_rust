@@ -1,0 +1,55 @@
+[Unit]
+Description=media_talk — ONVIF/RTSP IP camera media server
+Documentation=https://example.invalid/media_talk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mediatalk
+Group=mediatalk
+
+# Vendor .so files (rockchip MPP / etc) are NOT loaded via LD_LIBRARY_PATH:
+# NoNewPrivileges + ProtectSystem strip it on modern systemd. Instead, point
+# the dynamic linker at them once per host:
+#   echo '/opt/mediatalk/lib' | sudo tee /etc/ld.so.conf.d/mediatalk.conf
+#   sudo ldconfig
+Environment=RUST_LOG=info
+# Operators can drop overrides into /etc/default/media_talk (e.g. RUST_LOG=debug),
+# then `sudo systemctl daemon-reload`. The leading `-` makes the file optional.
+EnvironmentFile=-/etc/default/media_talk
+
+ExecStart=/usr/local/bin/media_talk serve --bind 0.0.0.0:8080
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Resource limits — tune to your hardware. CPUQuota is wall-clock % of one core;
+# MemoryMax is hard cap; TasksMax bounds thread/fork count.
+CPUQuota=200%
+MemoryMax=768M
+TasksMax=512
+
+# systemd-managed directories. Created with mode 0750, owned by User/Group.
+# ProtectSystem=strict would otherwise mark /var read-only — these carve-outs
+# re-enable writes only where the service actually needs them.
+StateDirectory=media_talk
+LogsDirectory=media_talk
+RuntimeDirectory=media_talk
+
+# Sandboxing
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

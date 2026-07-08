@@ -1,2 +1,14 @@
 /target
+/target/**
 /.idea
+/Cargo.lock.bak
+**/*.rs.bk
+.DS_Store
+*.swp
+
+# aarch64 cross-compile artifacts
+target/aarch64-unknown-linux-gnu/
+
+# bindgen output directories
+target/build-*/mpp-bindings
+target/build-*/out
