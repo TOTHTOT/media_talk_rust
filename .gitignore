@@ -16,3 +16,6 @@ target/build-*/out
 # repowise local state — auto-regenerated, no value in source control
 /.repowise/
 /.claude/CLAUDE.md
+
+# Per-developer Claude Code config (allow-list); untracked since 8af677d-era cleanup
+/.claude/settings.local.json
