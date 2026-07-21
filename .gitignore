@@ -12,3 +12,7 @@ target/aarch64-unknown-linux-gnu/
 # bindgen output directories
 target/build-*/mpp-bindings
 target/build-*/out
+
+# repowise local state — auto-regenerated, no value in source control
+/.repowise/
+/.claude/CLAUDE.md
