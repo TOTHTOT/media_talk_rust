@@ -16,9 +16,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ipcam_core::{EncodedPacket, VideoCodec};
-use ipcam_discovery::{
-    DiscoveryCredentials, device_mgmt::DeviceManagementClient, device_mgmt::parse_xaddr_endpoint,
-};
+use ipcam_discovery::{DeviceManagementClient, DiscoveryCredentials, parse_xaddr_endpoint};
 use ipcam_rtsp::{RtspClient, RtspConfig};
 use parking_lot::Mutex;
 use tokio::sync::broadcast;

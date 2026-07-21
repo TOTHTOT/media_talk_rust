@@ -142,10 +142,25 @@ cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 --release --features hw-d
 - ❌ 不要提交 `target/` / `.repowise/` / `.idea/` / 根目录的 `mediatalk` 二进制
 - ❌ 不要把 secrets (admin 密码、ONVIF 凭据) 写进日志或单元测试 fixture
 - ❌ 不要硬编码路径 — 用 `StateDirectory=media_talk` (systemd) / `std::env::var` (应用)
+- ❌ **不要 `git commit` / `git push` 未经用户显式确认** — AI 代理不主动对外发布代码;用户说"提交 / 推上去"才能 commit。OpenSpec change 在 archive 之前也禁止 commit
 
 ---
 
-## 9. 完成前自检清单
+## 9. 用户授权边界
+
+AI 代理在本仓库**默认无权**做以下操作,要由用户显式触发:
+
+- `git commit` / `git commit --amend` / `git reset --hard` / `git push` / `git push --force` / 任何对外可见的 git 写动作
+- `gh repo create` / `gh repo edit` / 创建或合并 PR / 编辑 GitHub 仓库设置
+- 任何跨 OpenSpec change 边界的修改 (例:`adopt-oxvif` 期间改动 `ipcam-discovery` 当前 active API)
+- 删除已 tracked 的文件 / 目录
+- 修改 `Cargo.toml` workspace 根的 `members` 列表
+
+**自动可做** (无需确认): 修改源文件、新建本地文件、跑 cargo/clippy/test 等只读验证、运行 `git status` / `git diff` / `git log` 等只读命令、`openspec` / `repowise` 等只读查询。
+
+---
+
+## 10. 完成前自检清单
 
 每次说"做完了"之前,逐项过:
 

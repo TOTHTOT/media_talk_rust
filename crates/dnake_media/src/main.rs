@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::process::ExitCode;
 use tracing_subscriber::{EnvFilter, fmt};
 
 mod ipc;
@@ -84,7 +85,7 @@ fn init_tracing() {
 }
 
 #[tokio::main]
-async fn main() -> std::process::ExitCode {
+async fn main() -> ExitCode {
     init_tracing();
     let cli = Cli::parse();
 
@@ -113,7 +114,7 @@ async fn main() -> std::process::ExitCode {
             json,
         } => {
             let code = ipc::probe::run(rtsp_url, username, password, duration, json).await;
-            return std::process::ExitCode::from(code as u8);
+            return ExitCode::from(code as u8);
         }
         Commands::Audio { action } => {
             match action {
@@ -129,10 +130,10 @@ async fn main() -> std::process::ExitCode {
         }
     };
     match result {
-        Ok(()) => std::process::ExitCode::SUCCESS,
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e:?}");
-            std::process::ExitCode::from(1)
+            ExitCode::from(1)
         }
     }
 }

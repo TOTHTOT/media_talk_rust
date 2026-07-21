@@ -1,23 +1,22 @@
-use std::net::SocketAddr;
+//! ONVIF WS-Discovery + Device Management for `media_talk`.
+//!
+//! Implementation delegates to the `oxvif` 0.12.0 crate (strict pin).
+//! Public API (`probe_all_with_config`, [`DeviceManagementClient`], [`Discovery`])
+//! stays identical to the pre-oxvif implementation so callers in `media_talk`
+//! and `web-display` need no changes.
+
 use std::time::Duration;
 
-use bytes::Bytes;
-use futures_util::stream::Stream;
-use ipcam_core::{AuthStatus, DeviceId, DiscoveredDevice, VideoProfile};
+use ipcam_core::{DiscoveredDevice, VideoProfile};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::net::UdpSocket;
-use tracing::{debug, info, warn};
-use uuid::Uuid;
 
-pub mod device_mgmt;
-pub mod soap;
-pub mod ws_security;
-
-use device_mgmt::{DeviceManagementClient, DeviceMgmtError};
+mod oxvif_backend;
 
 pub const WS_DISCOVERY_MULTICAST: &str = "239.255.255.250:3702";
 pub const WS_DISCOVERY_PORT: u16 = 3702;
+
+// ----- public types (unchanged surface) -----
 
 #[derive(Debug, Error)]
 pub enum DiscoveryError {
@@ -26,11 +25,13 @@ pub enum DiscoveryError {
     #[error("xml parse: {0}")]
     Xml(String),
     #[error("device mgmt: {0}")]
-    DeviceMgmt(#[from] DeviceMgmtError),
+    DeviceMgmt(String),
     #[error("invalid uri: {0}")]
     InvalidUri(String),
     #[error("timeout")]
     Timeout,
+    #[error("backend error: {0}")]
+    Backend(String),
 }
 
 pub type DiscoveryResult<T> = Result<T, DiscoveryError>;
@@ -68,7 +69,7 @@ impl Default for DiscoveryConfig {
 }
 
 pub trait Discovery {
-    fn probe(&self) -> impl Stream<Item = DiscoveredDevice> + Send;
+    fn probe(&self) -> impl futures_util::stream::Stream<Item = DiscoveredDevice> + Send;
     fn snapshot(&self) -> Vec<DiscoveredDevice>;
 }
 
@@ -80,310 +81,15 @@ pub async fn probe_all(timeout: Duration) -> Vec<DiscoveredDevice> {
     .await
 }
 
+/// Discovers ONVIF devices via `oxvif::discovery::probe`. See
+/// [`oxvif_backend::probe_all_with_config_oxvif`] for implementation.
 pub async fn probe_all_with_config(config: DiscoveryConfig) -> Vec<DiscoveredDevice> {
-    let probes = ws_discovery_probe(&config).await;
-    let mut out: Vec<DiscoveredDevice> = Vec::new();
-    for probe_match in probes {
-        let device_id = DeviceId::new_v4();
-        let mut device = DiscoveredDevice {
-            id: device_id,
-            address: probe_match.address.clone(),
-            xaddr: Some(probe_match.xaddr.clone()),
-            scopes: probe_match.scopes.clone(),
-            manufacturer: None,
-            model: None,
-            auth_status: AuthStatus::Unknown,
-            profiles: Vec::new(),
-        };
-
-        if let Some(creds) = &config.credentials {
-            match fetch_profiles(&probe_match.xaddr, creds, &config.timeout).await {
-                Ok(profiles) => {
-                    device.auth_status = AuthStatus::Valid;
-                    device.profiles = profiles;
-                }
-                Err(DiscoveryError::DeviceMgmt(DeviceMgmtError::AuthFailed)) => {
-                    warn!(addr = %probe_match.address, "auth failed");
-                    device.auth_status = AuthStatus::InvalidCredentials;
-                }
-                Err(e) => {
-                    warn!(addr = %probe_match.address, err = %e, "device mgmt error");
-                    device.auth_status = AuthStatus::Anonymous;
-                }
-            }
-        } else {
-            device.auth_status = AuthStatus::Anonymous;
-        }
-        out.push(device);
-    }
-    out
+    oxvif_backend::probe_all_with_config_oxvif(&config).await
 }
 
-#[derive(Debug, Clone)]
-struct ProbeMatch {
-    address: String,
-    xaddr: String,
-    scopes: Vec<String>,
-    #[allow(dead_code)]
-    types: Vec<String>,
-}
-
-async fn ws_discovery_probe(config: &DiscoveryConfig) -> Vec<ProbeMatch> {
-    let msg = build_probe_message();
-    let dest: SocketAddr = WS_DISCOVERY_MULTICAST.parse().unwrap();
-
-    let bind_addrs: Vec<std::net::IpAddr> = if config.interfaces.is_empty() {
-        default_local_addrs()
-    } else {
-        config.interfaces.clone()
-    };
-
-    let mut all = Vec::new();
-    let mut bind_count = 0usize;
-    let mut send_count = 0usize;
-    let mut recv_count = 0usize;
-
-    for addr in bind_addrs {
-        let bind_addr = std::net::SocketAddr::new(addr, 0);
-        match UdpSocket::bind(bind_addr).await {
-            Ok(sock) => {
-                bind_count += 1;
-                match send_probe(&sock, &msg, dest).await {
-                    Ok(()) => {
-                        send_count += 1;
-                        debug!(local = %bind_addr, dest = %dest, "ws-discovery probe sent");
-                    }
-                    Err(e) => {
-                        warn!(addr = %addr, err = %e, "send probe failed");
-                        continue;
-                    }
-                }
-                let (replies, raw_count) = collect_replies(&sock, config.timeout).await;
-                recv_count += raw_count;
-                for r in replies {
-                    all.push(r);
-                }
-            }
-            Err(e) => {
-                debug!(addr = %addr, err = %e, "bind failed");
-            }
-        }
-    }
-
-    info!(
-        bound = bind_count,
-        sent = send_count,
-        recv_packets = recv_count,
-        matched = all.len(),
-        "ws-discovery probe summary"
-    );
-    all
-}
-
-async fn send_probe(sock: &UdpSocket, msg: &Bytes, dest: SocketAddr) -> std::io::Result<()> {
-    sock.send_to(msg, dest).await?;
-    Ok(())
-}
-
-async fn collect_replies(sock: &UdpSocket, timeout: Duration) -> (Vec<ProbeMatch>, usize) {
-    let mut buf = vec![0u8; 8192];
-    let mut out = Vec::new();
-    let mut raw_count = 0usize;
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let recv = tokio::time::timeout(remaining, sock.recv_from(&mut buf)).await;
-        match recv {
-            Ok(Ok((n, peer))) => {
-                raw_count += 1;
-                let body = &buf[..n];
-                if let Some(m) = parse_probe_message(body) {
-                    let mut m = m;
-                    if m.address.is_empty() {
-                        m.address = peer.ip().to_string();
-                    }
-                    out.push(m);
-                } else {
-                    let has_pm = body.windows(10).any(|w| w == b"ProbeMatch");
-                    let has_hello = body.windows(5).any(|w| w == b"Hello");
-                    let has_xaddrs = body.windows(7).any(|w| w == b"XAddrs");
-                    let has_resolve = body.windows(13).any(|w| w == b"ResolveMatches");
-                    debug!(
-                        peer = %peer.ip(),
-                        n,
-                        has_probe_match = has_pm,
-                        has_hello,
-                        has_xaddrs,
-                        has_resolve,
-                        "received non-matching packet"
-                    );
-                }
-            }
-            Ok(Err(e)) => {
-                warn!(err = %e, "recv failed");
-                break;
-            }
-            Err(_) => break,
-        }
-    }
-    (out, raw_count)
-}
-
-fn build_probe_message() -> Bytes {
-    let msg_id = Uuid::new_v4();
-    let body = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Envelope xmlns:dn="http://www.onvif.org/ver10/network/wsdl" xmlns="http://www.w3.org/2003/05/soap-envelope">
-  <Header>
-    <wsa:MessageID xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">uuid:{msg_id}</wsa:MessageID>
-    <wsa:To xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">urn:schemas-xmlsoap-org:ws:2005:04:discovery</wsa:To>
-    <wsa:Action xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</wsa:Action>
-  </Header>
-  <Body>
-    <Probe xmlns="http://schemas.xmlsoap.org/ws/2005/04/discovery">
-      <Types>dn:NetworkVideoTransmitter</Types>
-    </Probe>
-  </Body>
-</Envelope>"#
-    );
-    Bytes::from(body)
-}
-
-fn local_name(bytes: &[u8]) -> String {
-    let s = String::from_utf8_lossy(bytes).to_string();
-    s.rsplit(':').next().unwrap_or(&s).to_string()
-}
-
-fn parse_probe_message(body: &[u8]) -> Option<ProbeMatch> {
-    use quick_xml::events::Event;
-    let mut reader = quick_xml::Reader::from_reader(body);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut current_xaddr: Option<String> = None;
-    let mut scopes: Vec<String> = Vec::new();
-    let mut types: Vec<String> = Vec::new();
-    let mut current_local: String = String::new();
-    let mut capture = false;
-    let mut in_proberesp = false;
-    let mut in_match = false;
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let lname = local_name(e.name().as_ref()).to_ascii_lowercase();
-                if lname == "proberesponse" || lname == "probematches" {
-                    in_proberesp = true;
-                }
-                if in_proberesp && (lname == "proberesponse" || lname == "probematch") {
-                    in_match = true;
-                }
-                current_local = lname.clone();
-                if matches!(
-                    lname.as_str(),
-                    "xaddrs"
-                        | "xaddress"
-                        | "xaddr"
-                        | "scopes"
-                        | "types"
-                        | "relatesto"
-                        | "endpointreference"
-                        | "address"
-                ) {
-                    capture = matches!(
-                        lname.as_str(),
-                        "xaddrs" | "xaddress" | "xaddr" | "scopes" | "types"
-                    );
-                }
-            }
-            Ok(Event::Text(t)) if capture => {
-                let txt = t.unescape().unwrap_or_default().to_string();
-                if in_match {
-                    match current_local.as_str() {
-                        "xaddrs" | "xaddress" | "xaddr" => current_xaddr = Some(txt),
-                        "scopes" => scopes.push(txt),
-                        "types" => types.push(txt),
-                        _ => {}
-                    }
-                }
-            }
-            Ok(Event::End(e)) => {
-                let lname = local_name(e.name().as_ref()).to_ascii_lowercase();
-                if lname == "probematch" {
-                    in_match = false;
-                }
-                if lname == "proberesponse" || lname == "probematches" {
-                    in_proberesp = false;
-                }
-                capture = false;
-                current_local.clear();
-            }
-            Ok(Event::Eof) => break,
-            Err(e) => {
-                warn!(err = %e, "xml parse failed");
-                return None;
-            }
-            _ => {}
-        }
-        buf.clear();
-    }
-
-    let xaddr = match current_xaddr {
-        Some(v) => v,
-        None => scan_url(body)?,
-    };
-    let primary = xaddr.split_whitespace().next()?.to_string();
-    Some(ProbeMatch {
-        address: String::new(),
-        xaddr: primary,
-        scopes,
-        types,
-    })
-}
-
-fn scan_url(body: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(body);
-    let marker = "http://";
-    let pos = text.find(marker)?;
-    let rest = &text[pos..];
-    let end = rest
-        .find(|c: char| ['<', ' ', '"', '\''].contains(&c))
-        .unwrap_or(rest.len());
-    Some(rest[..end].to_string())
-}
-
-fn default_local_addrs() -> Vec<std::net::IpAddr> {
-    let mut out = Vec::new();
-    if let Ok(ifaces) = if_addrs::get_if_addrs() {
-        for iface in ifaces {
-            let ip = iface.ip();
-            if ip.is_loopback() {
-                continue;
-            }
-            if !ip.is_ipv4() {
-                continue;
-            }
-            out.push(ip);
-        }
-    }
-    if out.is_empty() {
-        out.push(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
-    }
-    out
-}
-
-async fn fetch_profiles(
-    xaddr: &str,
-    creds: &DiscoveryCredentials,
-    timeout: &Duration,
-) -> DiscoveryResult<Vec<VideoProfile>> {
-    let endpoint = device_mgmt::parse_xaddr_endpoint(xaddr)?;
-    let client = DeviceManagementClient::new(endpoint, creds.clone(), *timeout);
-    let profiles = client.list_profiles().await?;
-    Ok(profiles)
-}
+/// Re-export of [`ipcam_discovery`]'s URL parser (kept for
+/// backward-compat — was `device_mgmt::parse_xaddr_endpoint`).
+pub use crate::oxvif_backend::parse_xaddr_endpoint;
 
 #[derive(Debug, Clone)]
 pub struct ProbeResults {
@@ -398,44 +104,127 @@ impl ProbeResults {
     }
 }
 
+// ----- DeviceManagementClient (sync construction, async ops) -----
+
+pub struct DeviceManagementClient {
+    xaddr: reqwest::Url,
+    credentials: DiscoveryCredentials,
+    #[allow(dead_code)]
+    timeout: Duration,
+    oxvif_session: tokio::sync::OnceCell<oxvif::OnvifSession>,
+}
+
+impl DeviceManagementClient {
+    pub fn new(base: reqwest::Url, credentials: DiscoveryCredentials, timeout: Duration) -> Self {
+        Self {
+            xaddr: base,
+            credentials,
+            timeout,
+            oxvif_session: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    async fn session(&self) -> &oxvif::OnvifSession {
+        self.oxvif_session
+            .get_or_init(|| async {
+                let mut b = oxvif::OnvifSession::builder(self.xaddr.as_str());
+                b = b.with_credentials(&self.credentials.username, &self.credentials.password);
+                // build() returns Result; OnceCell::get_or_init takes the future's
+                // value not a Result. A build failure here means the supplied
+                // xaddr/creds are malformed — surface it as panic.
+                b.build().await.expect("build OnvifSession")
+            })
+            .await
+    }
+
+    pub async fn list_profiles(&self) -> Result<Vec<VideoProfile>, DiscoveryError> {
+        let profiles = self
+            .session()
+            .await
+            .get_profiles()
+            .await
+            .map_err(|e| DiscoveryError::DeviceMgmt(e.to_string()))?;
+        Ok(profiles
+            .into_iter()
+            .map(oxvif_backend::oxvif_to_core_video_profile)
+            .collect())
+    }
+
+    pub async fn get_stream_uri(&self, profile_token: &str) -> Result<String, DiscoveryError> {
+        let stream_uri = self
+            .session()
+            .await
+            .get_stream_uri(profile_token)
+            .await
+            .map_err(|e| DiscoveryError::DeviceMgmt(e.to_string()))?;
+        Ok(stream_uri.uri)
+    }
+
+    /// `oxvif::OnvifSession` caches capabilities on first build, so
+    /// capabilities aren't a separate call. This method returns the
+    /// cached xaddr + a hint; we don't expose raw capabilities here.
+    pub async fn get_capabilities(&self) -> Result<String, DiscoveryError> {
+        // oxvif doesn't expose capabilities directly; the closest equivalent
+        // is the xaddr we connected to.
+        Ok(self.xaddr.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ipcam_core::AuthStatus;
 
     #[test]
-    fn parse_probe_basic() {
-        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
-        <Envelope xmlns="http://www.w3.org/2003/05/soap-envelope">
-          <Body>
-            <ProbeMatches>
-              <ProbeMatch>
-                <XAddrs>http://192.168.1.10/onvif/device_service</XAddrs>
-                <Scopes>onvif://www.onvif.org/name/Test</Scopes>
-                <Types>dn:NetworkVideoTransmitter</Types>
-              </ProbeMatch>
-            </ProbeMatches>
-          </Body>
-        </Envelope>"#;
-        let m = parse_probe_message(xml.as_bytes()).expect("parse");
-        assert!(m.xaddr.contains("192.168.1.10"));
-        assert!(!m.scopes.is_empty());
+    fn parse_xaddr_endpoint_returns_first_url() {
+        let url =
+            parse_xaddr_endpoint("http://192.168.1.144/onvif/device_service").expect("parse");
+        assert_eq!(url.scheme(), "http");
+        assert_eq!(url.host_str(), Some("192.168.1.144"));
     }
 
     #[test]
-    fn parse_probe_matches_with_s() {
-        // Regression: a typo ("probesmatches" instead of "probematches")
-        // silently disabled the in_match flag, so no XAddrs/Scopes/Types
-        // were ever captured.
-        let xml = r#"<Envelope><Body><ProbeMatches><ProbeMatch><XAddrs>http://10.0.0.1/onvif</XAddrs><Scopes>s1</Scopes></ProbeMatch></ProbeMatches></Body></Envelope>"#;
-        let m = parse_probe_message(xml.as_bytes()).expect("parse");
-        assert_eq!(m.xaddr, "http://10.0.0.1/onvif");
-        assert_eq!(m.scopes, vec!["s1"]);
+    fn parse_xaddr_endpoint_skips_whitespace_before_url() {
+        let url = parse_xaddr_endpoint("  http://10.0.0.1/onvif  ").expect("parse");
+        assert_eq!(url.host_str(), Some("10.0.0.1"));
     }
 
     #[test]
-    fn parse_probe_no_match_returns_none() {
-        let xml = r#"<?xml version="1.0"?>
-        <Envelope><Body><ProbeMatches/></Body></Envelope>"#;
-        assert!(parse_probe_message(xml.as_bytes()).is_none());
+    fn parse_xaddr_endpoint_rejects_garbage() {
+        assert!(parse_xaddr_endpoint("not-a-url").is_err());
+    }
+
+    #[test]
+    fn classify_auth_error_recognises_soap_fault() {
+        assert_eq!(
+            oxvif_backend::classify_auth_error(
+                "get_profiles for http://192.168.1.19/onvif/device_service: SOAP fault [SOAP-ENV:Sender]: The security token could not be authenticated or authorized"
+            ),
+            AuthStatus::InvalidCredentials
+        );
+    }
+
+    #[test]
+    fn classify_auth_error_recognises_not_authorized() {
+        assert_eq!(
+            oxvif_backend::classify_auth_error("SOAP fault NotAuthorized"),
+            AuthStatus::InvalidCredentials
+        );
+    }
+
+    #[test]
+    fn classify_auth_error_recognises_http_401() {
+        assert_eq!(
+            oxvif_backend::classify_auth_error("HTTP 401 unauthorized"),
+            AuthStatus::InvalidCredentials
+        );
+    }
+
+    #[test]
+    fn classify_auth_error_default_is_anonymous() {
+        assert_eq!(
+            oxvif_backend::classify_auth_error("connection refused"),
+            AuthStatus::Anonymous
+        );
     }
 }

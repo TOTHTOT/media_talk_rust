@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "ONVIF WS-Discovery + Device Management client"
+description = "ONVIF WS-Discovery + Device Management client (delegates to oxvif 0.12.0)"
 
 [dependencies]
 ipcam-core = { path = "../ipcam-core" }
@@ -26,3 +26,12 @@ futures-util = { workspace = true }
 async-trait = { workspace = true }
 if-addrs = "0.10"
 rand = "0.8"
+
+# ONVIF client implementation — strict-pinned to 0.12.0.
+# Single-maintainer 0.x crate, churn is high; any 0.13+ upgrade is a new change.
+oxvif = { version = "=0.12.0", default-features = false, features = ["mock"] }
+
+[dev-dependencies]
+# mirror of the main oxvif dep so `cargo test -p ipcam-discovery`
+# builds + resolves the dependency graph without warnings
+oxvif = { version = "=0.12.0", default-features = false, features = ["mock"] }
