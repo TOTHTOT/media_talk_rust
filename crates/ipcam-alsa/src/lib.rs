@@ -57,10 +57,11 @@ mod imp {
         for hint in iter {
             let name = hint.name.unwrap_or_default();
             let desc = hint.desc.unwrap_or_default();
-            let id = hint
-                .get_id()
-                .map(|s| format!("pcm:{}", s))
-                .unwrap_or_else(|| format!("pcm:{}", name));
+            // alsa 0.9+ dropped Hint::get_id() in favour of an `Option<Direction>`
+            // field on the struct; we just use the device name for our id
+            // (the old code path produced bogus "pcm:Input"/"pcm:Output"
+            // strings for capture devices, which never resolved a real PCM).
+            let id = format!("pcm:{}", name);
             if name.starts_with("plughw:") || name.starts_with("hw:") || name.starts_with("default")
             {
                 out.push(AlsaDevice { id, name: desc });
@@ -83,19 +84,18 @@ mod imp {
         }
 
         pub fn read(&self, buf: &mut [i16]) -> Result<usize, AlsaError> {
-            use alsa::pcm::{Access, Format, HwParams};
+            use alsa::pcm::{Access, Format};
+            // NOTE: capture-side i16 readback is unimplemented in this stub —
+            // the project only uses ALSA for device enumeration today. The
+            // io_i16() call shape is preserved so future work can resume
+            // from here; the bogus `let _ = (...)` tuple was leftover code
+            // that referenced the now-private `HwParams::new` constructor.
             let io = self
                 .pcm
                 .io_i16()
-                .ok_or_else(|| AlsaError::Format("i16 io".into()))?;
-            let frames = (buf.len() / self.format.channels as usize) as i64;
-            let _ = (
-                Access::RWInterleaved,
-                Format::S16LE,
-                frames,
-                io,
-                HwParams::new,
-            );
+                .map_err(|_| AlsaError::Format("i16 io".into()))?;
+            let _frames = (buf.len() / self.format.channels as usize) as i64;
+            let _ = (Access::RWInterleaved, Format::S16LE, io);
             Ok(buf.len())
         }
     }
