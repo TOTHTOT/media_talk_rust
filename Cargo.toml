@@ -17,21 +17,21 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 
 [workspace.dependencies]
-tokio = { version = "1.40", features = ["full"] }
-axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1.53", features = ["full"] }
+axum = { version = "0.8.9", features = ["ws"] }
 tower = "0.5"
-tower-http = { version = "0.5", features = ["trace", "fs"] }
-tokio-tungstenite = "0.24"
+tower-http = { version = "0.7.0", features = ["trace", "fs"] }
+tokio-tungstenite = "0.30.0"
 futures-util = "0.3"
-async-trait = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-quick-xml = "0.36"
+async-trait = "0.1.92"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+quick-xml = "0.41.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 bytes = "1.7"
-thiserror = "1.0"
+thiserror = "2.0.20"
 anyhow = "1.0"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -39,10 +39,10 @@ parking_lot = "0.12"
 dashmap = "6.1"
 pin-project-lite = "0.2"
 clap = { version = "4.5", features = ["derive"] }
-md-5 = "0.10"
+md-5 = "0.11.0"
 sha-1 = "0.10"
-base64 = "0.22"
-nix = { version = "0.29", features = ["ioctl"] }
+base64 = "0.23.1"
+nix = { version = "0.31.3", features = ["ioctl"] }
 
 [profile.release]
 opt-level = 3

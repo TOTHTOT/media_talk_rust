@@ -351,7 +351,7 @@ async fn ws_loop(socket: WebSocket, inner: Arc<Inner>, session_id: SessionId) {
             _ = ticker.tick() => {
                 if !init_sent {
                     if let Some(init) = inner.registry.init_segment_for(session_id) {
-                        if sender.send(Message::Binary(init.to_vec())).await.is_err() {
+                        if sender.send(Message::Binary(init)).await.is_err() {
                             warn!("ws send init failed");
                             return;
                         }
@@ -375,7 +375,7 @@ async fn ws_loop(socket: WebSocket, inner: Arc<Inner>, session_id: SessionId) {
                 if init_sent {
                     let segments = inner.registry.take_segments_since(session_id, last_sent);
                     for seg in segments {
-                        if sender.send(Message::Binary(seg.to_vec())).await.is_err() {
+                        if sender.send(Message::Binary(seg)).await.is_err() {
                             return;
                         }
                         last_sent += 1;
