@@ -19,3 +19,10 @@ target/build-*/out
 
 # Per-developer Claude Code config (allow-list); untracked since 8af677d-era cleanup
 /.claude/settings.local.json
+
+# kimi-code plugin-managed skills — per-machine tooling, not project source
+/.kimi-code/
+
+# speckit session state — "current feature" pointer is per-developer;
+# templates/scripts under .specify/ stay tracked as shared workflow config
+/.specify/feature.json
