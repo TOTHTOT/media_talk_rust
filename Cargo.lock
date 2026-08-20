@@ -1164,7 +1164,8 @@ dependencies = [
  "futures-util",
  "if-addrs 0.10.2",
  "ipcam-core",
- "oxvif",
+ "oxvif 0.12.0",
+ "oxvif 0.15.0",
  "quick-xml",
  "rand 0.8.6",
  "reqwest",
@@ -1480,6 +1481,29 @@ dependencies = [
  "async-stream",
  "async-trait",
  "base64 0.22.1",
+ "diqwest",
+ "futures-core",
+ "if-addrs 0.15.0",
+ "quick-xml",
+ "rand 0.10.2",
+ "reqwest",
+ "serde",
+ "sha1 0.11.0",
+ "socket2",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "oxvif"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b72ed8c3bd54779adabdeac083a487ff6e98d34725e0efa3d7f769aabfe0e38"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "base64 0.23.1",
  "diqwest",
  "futures-core",
  "if-addrs 0.15.0",

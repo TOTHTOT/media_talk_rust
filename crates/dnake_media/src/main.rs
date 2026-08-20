@@ -14,7 +14,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Discover {
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, default_value_t = 2)]
         timeout_secs: u64,
         #[arg(long, default_value_t = false)]
         json: bool,

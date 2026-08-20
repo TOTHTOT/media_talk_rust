@@ -29,7 +29,7 @@ rand = "0.8"
 
 # ONVIF client implementation — strict-pinned to 0.12.0.
 # Single-maintainer 0.x crate, churn is high; any 0.13+ upgrade is a new change.
-oxvif = { version = "=0.12.0", default-features = false, features = ["mock"] }
+oxvif = { version = "=0.15.0", default-features = false, features = ["mock"] }
 
 [dev-dependencies]
 # mirror of the main oxvif dep so `cargo test -p ipcam-discovery`
