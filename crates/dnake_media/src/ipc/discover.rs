@@ -5,6 +5,15 @@ use tracing::info;
 const DEFAULT_USER: &str = "admin";
 const DEFAULT_PASS: &str = "changeme";
 
+/// Build a directly-usable RTSP URL by embedding the effective credentials
+/// into the ONVIF-reported URI (`rtsp://host/path` -> `rtsp://user:pass@host/path`).
+fn full_rtsp_url(uri: &str, user: &str, pass: &str) -> String {
+    match uri.strip_prefix("rtsp://") {
+        Some(rest) if !rest.contains('@') => format!("rtsp://{user}:{pass}@{rest}"),
+        _ => uri.to_string(),
+    }
+}
+
 pub async fn run(
     timeout_secs: u64,
     json: bool,
@@ -17,7 +26,7 @@ pub async fn run(
         (Some(u), Some(p)) => (u, p),
         _ => (DEFAULT_USER.to_string(), DEFAULT_PASS.to_string()),
     };
-    let credentials = DiscoveryCredentials::new(user, pass);
+    let credentials = DiscoveryCredentials::new(user.clone(), pass.clone());
     let config = DiscoveryConfig {
         timeout,
         credentials: Some(credentials),
@@ -30,19 +39,27 @@ pub async fn run(
         println!("{payload}");
     } else {
         if devices.is_empty() {
-            println!("(no ONVIF devices found in {timeout_secs}s)");
+            info!("no ONVIF devices found in {timeout_secs}s");
         } else {
-            println!("Found {} device(s):", devices.len());
+            info!(count = devices.len(), "found device(s)");
             for d in &devices {
-                let profiles = d.profiles.len();
-                println!(
-                    "  - {} @ {} (auth={:?}, profiles={})",
-                    d.id, d.address, d.auth_status, profiles
+                info!(
+                    id = %d.id,
+                    address = %d.address,
+                    auth = ?d.auth_status,
+                    profiles = d.profiles.len(),
+                    "device"
                 );
                 for p in &d.profiles {
-                    println!(
-                        "      profile={} codec={:?} {}x{} @ {:.1}fps uri={:?}",
-                        p.profile_id, p.codec, p.width, p.height, p.fps, p.uri
+                    let rtsp = p.uri.as_deref().map(|u| full_rtsp_url(u, &user, &pass));
+                    info!(
+                        profile = %p.profile_id,
+                        codec = ?p.codec,
+                        width = p.width,
+                        height = p.height,
+                        fps = p.fps,
+                        rtsp = ?rtsp,
+                        "profile"
                     );
                 }
             }

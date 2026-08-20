@@ -10,6 +10,7 @@ use std::time::Duration;
 use ipcam_core::{DiscoveredDevice, VideoProfile};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::info;
 
 mod oxvif_backend;
 
@@ -84,6 +85,7 @@ pub async fn probe_all(timeout: Duration) -> Vec<DiscoveredDevice> {
 /// Discovers ONVIF devices via `oxvif::discovery::probe`. See
 /// [`oxvif_backend::probe_all_with_config_oxvif`] for implementation.
 pub async fn probe_all_with_config(config: DiscoveryConfig) -> Vec<DiscoveredDevice> {
+    info!(?config, "probe config: ");
     oxvif_backend::probe_all_with_config_oxvif(&config).await
 }
 
