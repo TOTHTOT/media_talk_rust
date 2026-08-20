@@ -5,6 +5,11 @@
 //! does **not** mux fMP4. Use it to confirm auth + SDP negotiation +
 //! RTP flow before the rest of the pipeline matters.
 //!
+//! Media collection goes through `ipcam_gst` (the RTSP handshake for
+//! codec discovery still uses `ipcam_rtsp::RtspClient::connect`), so
+//! this command requires building with `--features gst`; without it
+//! probe prints an error and exits non-zero.
+//!
 //! Exit codes (POSIX-style, merge across multiple URLs by severity
 //! args > auth > no-idr > other > success):
 //!
@@ -14,13 +19,20 @@
 //! - `3` — other RTSP error (connect / SDP / SETUP / PLAY)
 //! - `4` — bad CLI args or URL parse
 
+#[cfg(feature = "gst")]
 use std::collections::BTreeMap;
+#[cfg(feature = "gst")]
 use std::time::{Duration, Instant};
 
 use ipcam_core::{EncodedPacket, NalStats, VideoCodec, classify_h264_nal};
+#[cfg(feature = "gst")]
 use ipcam_rtsp::{RtspClient, RtspConfig, RtspError};
+#[cfg(feature = "gst")]
 use serde::Serialize;
 
+// Pure classification logic stays compilable (and testable) without
+// the `gst` feature; only the gst-gated collector consumes it.
+#[cfg_attr(not(feature = "gst"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ProbeExit {
     Ok = 0,
@@ -31,12 +43,14 @@ pub(crate) enum ProbeExit {
 }
 
 impl ProbeExit {
+    #[cfg_attr(not(feature = "gst"), allow(dead_code))]
     fn merge(self, other: ProbeExit) -> ProbeExit {
         // Higher value = more severe (Args is the most diagnostic).
         std::cmp::max(self, other)
     }
 }
 
+#[cfg(feature = "gst")]
 #[derive(Debug, Serialize)]
 struct ProbeReport {
     url: String,
@@ -69,23 +83,36 @@ pub async fn run(
         return ProbeExit::Args as i32;
     }
 
-    let mut worst = ProbeExit::Ok;
-    for url in &urls {
-        let report = probe_one(url, username.as_deref(), password.as_deref(), duration).await;
-        let code = report_exit_code(&report);
-        if json {
-            match serde_json::to_string(&report) {
-                Ok(line) => println!("{line}"),
-                Err(e) => eprintln!("probe: json encode failed: {e}"),
+    #[cfg(feature = "gst")]
+    let code = {
+        let mut worst = ProbeExit::Ok;
+        for url in &urls {
+            let report = probe_one(url, username.as_deref(), password.as_deref(), duration).await;
+            let code = report_exit_code(&report);
+            if json {
+                match serde_json::to_string(&report) {
+                    Ok(line) => println!("{line}"),
+                    Err(e) => eprintln!("probe: json encode failed: {e}"),
+                }
+            } else {
+                print_human(&report);
             }
-        } else {
-            print_human(&report);
+            worst = worst.merge(code);
         }
-        worst = worst.merge(code);
-    }
-    worst as i32
+        worst as i32
+    };
+
+    #[cfg(not(feature = "gst"))]
+    let code = {
+        let _ = (username, password, duration, json);
+        eprintln!("probe: media collection requires building with --features gst");
+        ProbeExit::Rtsp as i32
+    };
+
+    code
 }
 
+#[cfg(feature = "gst")]
 fn report_exit_code(r: &ProbeReport) -> ProbeExit {
     if r.ok {
         if r.idr_count > 0 {
@@ -102,6 +129,7 @@ fn report_exit_code(r: &ProbeReport) -> ProbeExit {
     }
 }
 
+#[cfg(feature = "gst")]
 async fn probe_one(
     url: &str,
     username: Option<&str>,
@@ -132,21 +160,41 @@ async fn probe_one(
     };
 
     let mut stats = NalStats::default();
-    let mut last_idr = None;
 
-    // Time-boxed play loop. We don't try to cancel `play_loop` once
-    // started; the helper below spawns the future and races it against
-    // a sleep, ignoring the outcome once we have the budget.
+    // Time-boxed media collection via ipcam-gst. The session runs on
+    // GStreamer threads; the blocking collector drains packets into
+    // NalStats until the window expires.
     let window = if duration == 0 {
-        // "one AU then exit" semantics: short window, but rely on
-        // first marker=1 to set a fast-exit.
         Duration::from_secs(5)
     } else {
         Duration::from_secs(duration)
     };
 
     let play_deadline = started + window;
-    let play_outcome = play_until(&client, play_deadline, &mut stats, &mut last_idr).await;
+    let play_outcome = {
+        let url_owned = url.to_string();
+        let user = username.map(str::to_string);
+        let pass = password.map(str::to_string);
+        let mut collected = std::mem::take(&mut stats);
+        let join = tokio::task::spawn_blocking(move || {
+            let outcome = play_collect(
+                &url_owned,
+                user.as_deref(),
+                pass.as_deref(),
+                play_deadline,
+                &mut collected,
+            );
+            (outcome, collected)
+        })
+        .await;
+        match join {
+            Ok((outcome, collected)) => {
+                stats = collected;
+                outcome
+            }
+            Err(e) => Err(format!("play task join: {e}")),
+        }
+    };
 
     if let Err(e) = client.teardown().await {
         tracing::debug!(err = %e, "teardown error (non-fatal)");
@@ -160,12 +208,11 @@ async fn probe_one(
     };
     let idr_count = stats.idr_count;
     let ok = play_outcome.is_ok() && idr_count > 0;
-    let exit_reason = if let Err(e) = play_outcome {
-        format!("play_error: {}", e)
-    } else if idr_count == 0 {
-        "duration_reached_without_idr".to_string()
-    } else {
-        "duration_reached".to_string()
+    let (exit_reason, error_kind) = match &play_outcome {
+        Err(e) if is_auth_error(e) => (format!("play_error: {e}"), Some(ErrorKind::Auth)),
+        Err(e) => (format!("play_error: {e}"), None),
+        Ok(_) if idr_count == 0 => ("duration_reached_without_idr".to_string(), None),
+        Ok(_) => ("duration_reached".to_string(), None),
     };
 
     ProbeReport {
@@ -183,10 +230,11 @@ async fn probe_one(
         bytes_total: stats.bytes_total,
         bitrate_kbps,
         exit_reason,
-        error_kind: None,
+        error_kind: error_kind.map(|k| k.to_string()),
     }
 }
 
+#[cfg(feature = "gst")]
 fn failure_report(
     url: &str,
     elapsed: Duration,
@@ -212,6 +260,7 @@ fn failure_report(
     }
 }
 
+#[cfg(feature = "gst")]
 fn info_codec_label(video: Option<VideoCodec>, audio: Option<ipcam_core::AudioCodec>) -> String {
     format!(
         "{:?}/{:?}",
@@ -220,12 +269,14 @@ fn info_codec_label(video: Option<VideoCodec>, audio: Option<ipcam_core::AudioCo
     )
 }
 
+#[cfg(feature = "gst")]
 #[derive(Debug, Clone)]
 struct ProbeError {
     kind: ErrorKind,
     message: String,
 }
 
+#[cfg(feature = "gst")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ErrorKind {
@@ -233,6 +284,7 @@ enum ErrorKind {
     Rtsp,
 }
 
+#[cfg(feature = "gst")]
 impl std::fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
@@ -243,6 +295,7 @@ impl std::fmt::Display for ErrorKind {
     }
 }
 
+#[cfg(feature = "gst")]
 fn translate_error(e: &RtspError) -> ProbeError {
     match e {
         RtspError::Status { status, body } if *status == 401 => ProbeError {
@@ -280,45 +333,66 @@ fn translate_error(e: &RtspError) -> ProbeError {
     }
 }
 
-/// Run `client.play_loop` until `deadline` (or first error). Closes
-/// cleanly by dropping the future once the budget is exhausted; the
-/// underlying socket teardown is handled by the caller via
-/// `RtspClient::teardown()`.
-async fn play_until(
-    client: &RtspClient,
+/// Collect `EncodedPacket`s via `ipcam_gst::start` until `deadline`
+/// (or a terminal stream failure). Runs on a blocking thread: the
+/// appsink callbacks push packets into a channel, this loop drains it
+/// into `NalStats` and stops the session before returning.
+#[cfg(feature = "gst")]
+fn play_collect(
+    url: &str,
+    username: Option<&str>,
+    password: Option<&str>,
     deadline: Instant,
     stats: &mut NalStats,
-    _last_idr_seen: &mut Option<Instant>,
 ) -> Result<(), String> {
-    let on_video = |pkt: EncodedPacket| -> ipcam_core::CoreResult<()> {
-        accumulate_nal(stats, &pkt);
-        Ok(())
+    let mut cfg = ipcam_gst::GstStreamConfig {
+        uri: url.to_string(),
+        ..Default::default()
     };
-    let on_audio = |_pkt: EncodedPacket| -> ipcam_core::CoreResult<()> { Ok(()) };
-
-    let play_fut = client.play_loop(on_video, on_audio);
-    tokio::pin!(play_fut);
-
-    let now = Instant::now();
-    if deadline <= now {
-        return Ok(());
+    if let (Some(u), Some(p)) = (username, password) {
+        cfg.credentials = Some((u.to_string(), p.to_string()));
     }
-    let remaining = deadline - now;
-    match tokio::time::timeout(remaining, &mut play_fut).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(format!("play_loop: {e}")),
-        Err(_) => {
-            // Window expired; the play_loop future is still pinned but
-            // we no longer await it. We just drop it here — the TCP
-            // socket will be torn down by `client.teardown()` in the
-            // caller. (Dropping the future cancels the task; in this
-            // case we own the future locally so cancellation is
-            // immediate.)
-            Ok(())
+
+    let (tx, rx) = std::sync::mpsc::channel::<EncodedPacket>();
+    let on_video = move |pkt: EncodedPacket| {
+        let _ = tx.send(pkt);
+    };
+    let on_audio = |_pkt: ipcam_gst::AudioPacket| {};
+
+    let handle =
+        ipcam_gst::start(cfg, on_video, on_audio).map_err(|e| format!("gst start: {e}"))?;
+    let outcome = loop {
+        let now = Instant::now();
+        if deadline <= now {
+            break Ok(());
         }
-    }
+        match rx.recv_timeout(deadline - now) {
+            Ok(pkt) => accumulate_nal(stats, &pkt),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Ok(()),
+        }
+        // Surface terminal failures (incl. 401 auth errors from the bus)
+        // instead of silently running the window out.
+        if handle.state() == ipcam_gst::StreamState::Failed {
+            let err = handle
+                .stats()
+                .last_error
+                .unwrap_or_else(|| "stream failed".into());
+            break Err(err);
+        }
+    };
+    handle.stop();
+    outcome
 }
 
+/// 401 classification for gst play-phase errors: the bus error text
+/// keeps the Unauthorized wording (contract requirement).
+#[cfg(feature = "gst")]
+fn is_auth_error(msg: &str) -> bool {
+    msg.contains("401") || msg.contains("Unauthorized") || msg.contains("Not Authorized")
+}
+
+#[cfg_attr(not(feature = "gst"), allow(dead_code))]
 pub(crate) fn accumulate_nal(stats: &mut NalStats, pkt: &EncodedPacket) {
     if pkt.codec != VideoCodec::H264 {
         return;
@@ -351,6 +425,7 @@ pub(crate) fn accumulate_nal(stats: &mut NalStats, pkt: &EncodedPacket) {
     }
 }
 
+#[cfg(feature = "gst")]
 fn hex_upper(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -359,6 +434,7 @@ fn hex_upper(bytes: &[u8]) -> String {
     s
 }
 
+#[cfg(feature = "gst")]
 fn print_human(r: &ProbeReport) {
     println!("=== {} ===", r.url);
     println!("  elapsed:        {} ms", r.elapsed_ms);

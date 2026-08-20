@@ -3,27 +3,33 @@
 //! When a session is created via `POST /api/sessions`, this task:
 //!   1. Calls ONVIF `GetStreamUri` (with the user-supplied credentials
 //!      held by the registry) to obtain an RTSP URL.
-//!   2. Connects to that RTSP URL, performs OPTIONS / DESCRIBE / SETUP /
-//!      PLAY.
-//!   3. Reads interleaved RTP/H.264 frames, depacketizes them via
-//!      `ipcam_rtsp::H264Depacketizer`, and pushes each NAL unit into
-//!      the per-session fMP4 muxer.
-//!   4. Captures SPS/PPS from the first packets so the muxer can emit a
+//!   2. Starts an `ipcam_gst` session (rtspsrc → depay/parse → appsink,
+//!      requires the `gst` feature) which pushes each Annex-B H.264 NAL
+//!      into the per-session fMP4 muxer.
+//!   3. Captures SPS/PPS from the first packets so the muxer can emit a
 //!      proper avcC init segment before serving the WebSocket.
+//!
+//! Without the `gst` feature the task logs an error and immediately
+//! reports `Ended` — the binary still builds and runs on hosts without
+//! GStreamer, just without live video.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "gst")]
 use bytes::Bytes;
+#[cfg(feature = "gst")]
 use ipcam_core::{EncodedPacket, VideoCodec};
 use ipcam_discovery::{DeviceManagementClient, DiscoveryCredentials, parse_xaddr_endpoint};
-use ipcam_rtsp::{RtspClient, RtspConfig};
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
-use crate::mux::{AvcConfig, Fmp4Muxer};
+#[cfg(feature = "gst")]
+use crate::mux::AvcConfig;
+use crate::mux::Fmp4Muxer;
 use crate::{SessionId, SessionStateEvent};
 
+#[cfg(feature = "gst")]
 #[derive(Default)]
 struct LocalStreamState {
     sps: Option<Bytes>,
@@ -47,6 +53,7 @@ pub fn spawn_streaming(
     width_hint: u32,
     height_hint: u32,
     credentials: Option<DiscoveryCredentials>,
+    audio_out: Option<String>,
     mux: Arc<Mutex<Fmp4Muxer>>,
     state_tx: broadcast::Sender<SessionStateEvent>,
 ) {
@@ -73,35 +80,67 @@ pub fn spawn_streaming(
             }
         };
 
-        let mut cfg = RtspConfig::new(rtsp_uri.clone());
-        if let Some(c) = credentials.as_ref() {
-            cfg = cfg.with_credentials(c.username.clone(), c.password.clone());
-        }
-        let client = RtspClient::new(cfg);
-
-        if let Err(e) = client.connect().await {
-            tracing::warn!(err = %e, "rtsp connect failed");
-            let _ = state_tx.send(SessionStateEvent {
-                session_id,
-                state: ipcam_core::SessionState::Ended,
-            });
-            return;
-        }
-
-        let state = Arc::new(Mutex::new(LocalStreamState::default()));
-
-        let on_video = {
-            let mux = mux.clone();
-            let state = state.clone();
-            move |pkt: EncodedPacket| -> ipcam_core::CoreResult<()> {
-                ingest_packet(&mux, &state, pkt);
-                Ok(())
+        #[cfg(feature = "gst")]
+        {
+            let audio_output = match audio_out {
+                Some(device) => ipcam_gst::AudioOutput::Alsa { device },
+                None => ipcam_gst::AudioOutput::Disabled,
+            };
+            let mut gst_cfg = ipcam_gst::GstStreamConfig {
+                uri: rtsp_uri,
+                audio_output,
+                ..Default::default()
+            };
+            if let Some(c) = credentials.as_ref() {
+                gst_cfg.credentials = Some((c.username.clone(), c.password.clone()));
             }
-        };
-        let on_audio = |_pkt: EncodedPacket| -> ipcam_core::CoreResult<()> { Ok(()) };
 
-        if let Err(e) = client.play_loop(on_video, on_audio).await {
-            tracing::warn!(err = %e, "rtsp play_loop ended");
+            let state = Arc::new(Mutex::new(LocalStreamState::default()));
+            let on_video = {
+                let mux = mux.clone();
+                move |pkt: EncodedPacket| {
+                    // H.265 frames are received but dropped here until
+                    // the muxer grows hvcC support (research.md R8).
+                    if pkt.codec != VideoCodec::H264 {
+                        tracing::warn!(codec = ?pkt.codec, "dropping non-H264 frame (muxer is H264-only)");
+                        return;
+                    }
+                    ingest_packet(&mux, &state, pkt);
+                }
+            };
+            // The web fMP4 path carries no audio track this phase; the
+            // encoded frames reach the pipeline's own ALSA branch when
+            // --audio-out is set (US2/T021).
+            let on_audio = |_pkt: ipcam_gst::AudioPacket| {};
+
+            match ipcam_gst::start(gst_cfg, on_video, on_audio) {
+                Ok(handle) => {
+                    // The session lives on GStreamer threads; poll for a
+                    // terminal state so this task keeps the same
+                    // lifetime semantics the old play_loop had.
+                    loop {
+                        match handle.state() {
+                            ipcam_gst::StreamState::Failed | ipcam_gst::StreamState::Ended => break,
+                            _ => tokio::time::sleep(Duration::from_millis(200)).await,
+                        }
+                    }
+                    if let Some(err) = handle.stats().last_error {
+                        tracing::warn!(err = %err, "gst stream ended with error");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(err = %e, "ipcam_gst start failed");
+                }
+            }
+        }
+
+        #[cfg(not(feature = "gst"))]
+        {
+            let _ = &rtsp_uri;
+            if audio_out.is_some() {
+                tracing::warn!("--audio-out ignored: built without the gst feature");
+            }
+            tracing::error!("streaming requires building with --features gst (GStreamer runtime)");
         }
 
         let _ = state_tx.send(SessionStateEvent {
@@ -114,10 +153,12 @@ pub fn spawn_streaming(
 /// Decide whether `nal_type` indicates the start of a new access unit.
 /// Per H.264, types 5 (IDR), 7 (SPS), 8 (PPS) are frame-delimiting
 /// headers; a non-empty current buffer should be flushed before they.
+#[cfg(feature = "gst")]
 fn is_frame_start_nal(nal_type: u8) -> bool {
     matches!(nal_type, 5 | 7 | 8)
 }
 
+#[cfg(feature = "gst")]
 fn ingest_packet(
     mux: &Arc<Mutex<Fmp4Muxer>>,
     state: &Arc<Mutex<LocalStreamState>>,

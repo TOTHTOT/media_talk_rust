@@ -32,6 +32,8 @@ struct Inner {
     bind: String,
     registry: Arc<SessionRegistry>,
     state_tx: broadcast::Sender<SessionStateEvent>,
+    /// ALSA device for on-board audio playback (`None` = disabled).
+    audio_out: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +169,7 @@ impl WebDisplay {
         discovery_timeout: Duration,
         credentials: Option<ipcam_discovery::DiscoveryCredentials>,
         manual_devices: Vec<ipcam_core::DiscoveredDevice>,
+        audio_out: Option<String>,
     ) -> anyhow::Result<Self> {
         let registry = Arc::new(SessionRegistry::new(credentials.clone()));
         let (state_tx, _rx) = broadcast::channel(64);
@@ -188,6 +191,7 @@ impl WebDisplay {
             bind: bind.to_string(),
             registry,
             state_tx,
+            audio_out,
         });
         let app = build_router(inner.clone());
 
@@ -303,6 +307,7 @@ async fn create_session(
         profile.width,
         profile.height,
         inner.registry.credentials(),
+        inner.audio_out.clone(),
         mux,
         inner.state_tx.clone(),
     );

@@ -14,8 +14,9 @@ pub async fn run(
     username: Option<String>,
     password: Option<String>,
     rtsp_urls: Vec<String>,
+    audio_out: Option<String>,
 ) -> anyhow::Result<()> {
-    info!(bind = %bind, discovery_timeout_secs, ?username, manual = rtsp_urls.len(), "starting media server");
+    info!(bind = %bind, discovery_timeout_secs, ?username, manual = rtsp_urls.len(), audio_out = ?audio_out, "starting media server");
     let timeout = std::time::Duration::from_secs(discovery_timeout_secs);
     let (user, pass) = match (username, password) {
         (Some(u), Some(p)) => (u, p),
@@ -27,6 +28,7 @@ pub async fn run(
         timeout,
         Some(credentials),
         manual_devices_from_urls(&rtsp_urls),
+        audio_out,
     )
     .await
     .context("failed to start web display server")?;

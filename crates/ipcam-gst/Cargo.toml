@@ -1,0 +1,25 @@
+[package]
+name = "ipcam-gst"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GStreamer-based RTSP A/V ingest engine (replaces ipcam-rtsp play_loop)"
+
+[dependencies]
+ipcam-core = { path = "../ipcam-core" }
+
+bytes = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+
+# Real GStreamer bindings. Only buildable on hosts with GStreamer + pkg-config
+# (i.e. the target board / Linux dev boxes), so they sit behind the `gst`
+# feature which is OFF by default.
+gstreamer = { version = "0.24", optional = true }
+gstreamer-app = { version = "0.24", optional = true }
+
+[features]
+default = []
+gst = ["dep:gstreamer", "dep:gstreamer-app"]

@@ -11,6 +11,10 @@ ipcam-core = { path = "../ipcam-core" }
 ipcam-discovery = { path = "../ipcam-discovery" }
 ipcam-rtsp = { path = "../ipcam-rtsp" }
 hardware-decode = { path = "../hardware-decode" }
+# GStreamer-based ingest engine; off by default because it requires
+# GStreamer + pkg-config on the build host (deviation from tasks.md
+# T004, which wanted it default-on — flip once the build env exists).
+ipcam-gst = { path = "../ipcam-gst", optional = true }
 
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -31,3 +35,7 @@ parking_lot = { workspace = true }
 
 [dev-dependencies]
 tokio-tungstenite = { workspace = true }
+
+[features]
+default = []
+gst = ["dep:ipcam-gst", "ipcam-gst/gst"]

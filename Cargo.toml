@@ -9,6 +9,7 @@ members = [
     "crates/web-display",
     "crates/ipcam-alsa",
     "crates/v4l2-device-cap",
+    "crates/ipcam-gst",
 ]
 
 [workspace.package]

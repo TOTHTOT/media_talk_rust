@@ -37,6 +37,10 @@ enum Commands {
         /// RTSP auth. May be passed multiple times.
         #[arg(long, value_name = "RTSP_URL")]
         rtsp_url: Vec<String>,
+        /// Play the camera's audio track on this ALSA device (target
+        /// board speaker). Requires building with --features gst.
+        #[arg(long, value_name = "ALSA_DEVICE")]
+        audio_out: Option<String>,
     },
     DecodeBench {
         path: String,
@@ -102,7 +106,18 @@ async fn main() -> ExitCode {
             username,
             password,
             rtsp_url,
-        } => ipc::serve::run(bind, discovery_timeout_secs, username, password, rtsp_url).await,
+            audio_out,
+        } => {
+            ipc::serve::run(
+                bind,
+                discovery_timeout_secs,
+                username,
+                password,
+                rtsp_url,
+                audio_out,
+            )
+            .await
+        }
         Commands::DecodeBench { path, max_frames } => {
             ipc::decode_bench::run(&path, max_frames).await
         }

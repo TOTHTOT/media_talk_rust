@@ -18,6 +18,9 @@ hardware-decode = { path = "../hardware-decode" }
 web-display = { path = "../web-display" }
 ipcam-alsa = { path = "../ipcam-alsa" }
 v4l2-device-cap = { path = "../v4l2-device-cap" }
+# GStreamer-based ingest; optional because it needs GStreamer +
+# pkg-config on the build host.
+ipcam-gst = { path = "../ipcam-gst", optional = true }
 
 tokio = { workspace = true }
 clap = { workspace = true }
@@ -38,3 +41,5 @@ v4l2-device-cap = { path = "../v4l2-device-cap" }
 default = ["sw-decode"]
 sw-decode = []
 hw-decode = []
+# GStreamer streaming path (serve playback + probe media collection).
+gst = ["dep:ipcam-gst", "ipcam-gst/gst", "web-display/gst"]

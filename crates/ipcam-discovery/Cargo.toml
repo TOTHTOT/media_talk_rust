@@ -34,4 +34,4 @@ oxvif = { version = "=0.15.0", default-features = false, features = ["mock"] }
 [dev-dependencies]
 # mirror of the main oxvif dep so `cargo test -p ipcam-discovery`
 # builds + resolves the dependency graph without warnings
-oxvif = { version = "=0.12.0", default-features = false, features = ["mock"] }
+oxvif = { version = "=0.15.0", default-features = false, features = ["mock"] }

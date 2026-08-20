@@ -20,7 +20,8 @@ media_talk_rust/
 │   ├── media_talk/        # 二进制入口 (clap subcommands)
 │   ├── ipcam-core/         # 共享类型 + Decoder/Sink trait
 │   ├── ipcam-discovery/    # ONVIF WS-Discovery + Device Management
-│   ├── ipcam-rtsp/         # RTSP 客户端 + RTP/H.264 解包
+│   ├── ipcam-rtsp/         # RTSP 客户端 (probe 探测; play_loop 待 ipcam-gst 实机验证后移除)
+│   ├── ipcam-gst/          # GStreamer RTSP 拉流引擎 (feature gst, 默认关闭)
 │   ├── hardware-decode/    # Rockchip MPP (hw-decode) + SoftwareDecoder (sw-decode)
 │   ├── web-display/        # axum + WS + fMP4 muxer
 │   ├── ipcam-alsa/         # ALSA 设备枚举 / PCM (仅 Linux)
@@ -121,6 +122,41 @@ media_talk probe --rtsp-url rtsp://admin:changeme@192.168.1.10/track1 \
 media_talk decode-bench path/to/clip.h264 --max-frames 300
 ```
 
+## GStreamer 拉流 (`gst` feature)
+
+拉流引擎 `ipcam-gst` (rtspsrc → depay/parse → appsink, 替代旧 `ipcam-rtsp::play_loop`)
+位于 feature `gst` 之后,**默认关闭**——因为它要求构建机装有 GStreamer + pkg-config。
+
+- **目标板运行时**: 需要 `gstreamer1.0-plugins-good` (rtspsrc / rtp depay)、
+  `gstreamer1.0-plugins-base` (audioconvert 等)、`gstreamer1.0-alsa` (alsasink);
+  AAC 扬声器播放另需 `gstreamer1.0-libav` (`avdec_aac`)。
+  用 `gst-inspect-1.0 rtspsrc` 等逐个验证,缺元件时程序以
+  `GstStreamError::Init` 报错并指明元件名。
+- **Windows 开发机调试**: 装 GStreamer 官方 MSVC runtime + devel 两个 MSI,
+  把 `C:\gstreamer\1.0\msvc_x86_64\bin` 放到 PATH **最前** (自带 pkg-config.exe
+  必须优先),然后 `cargo build -p media_talk --features gst`。
+- **交叉编译 (WSL2/Docker 内)**: sysroot 含 `libgstreamer1.0-dev` 与
+  `libgstreamer-plugins-base1.0-dev` (可直接用目标板 rootfs),然后:
+
+```bash
+export PKG_CONFIG_ALLOW_CROSS=1
+export PKG_CONFIG_SYSROOT_DIR=/path/to/rk356x-sysroot
+export PKG_CONFIG_PATH=$PKG_CONFIG_SYSROOT_DIR/usr/lib/aarch64-linux-gnu/pkgconfig
+cargo build --release --target aarch64-unknown-linux-gnu --features gst
+```
+
+不带 `gst` feature 构建时: `serve`/`probe` 仍可编译运行,但拉流路径记 error
+并直接结束会话; `probe` 打印需要 `--features gst` 并以非零码退出。
+
+板端扬声器播放摄像机现场声音 (G.711/AAC 管线内解码):
+
+```bash
+media_talk serve --rtsp-url "rtsp://..." --audio-out hw:0,0
+```
+
+断流自动重连默认开启: bus ERROR/EOS/RTSPSrcTimeout 后按 1s→30s 指数退避
+重建整条管线,无限重试; 401 认证失败不重试直接标记 `Failed`。
+
 ## 架构
 
 ```text
@@ -181,12 +217,11 @@ media_talk decode-bench path/to/clip.h264 --max-frames 300
    两种形态。
 2. **暂停** — 当前实现 `OPTIONS / DESCRIBE / SETUP / PLAY / TEARDOWN`,
    未实现 `PAUSE`。
-3. **音频** — v1 范围只把 RTP 视频流送到浏览器;远端摄像头的 AAC 仍通过
-   `on_audio` stub 丢弃。AAC 解复用属于 v2 范围。本机 ALSA 仅完成设备枚举
-   + 错误包装,未做 PCM 抓放。
-4. **重连** — 当前 `play_loop` 在 socket 断开时返回 `TransportClosed`,由外层
-   `web_display::stream::spawn_streaming` 决定是否重试 (v1 行为:失败即结束
-   session)。退避式自动重连列入 stretch。
+3. **音频** — `gst` 路径下音频帧经 `AudioPacket` 回调暴露,`--audio-out` 可在
+   管线内解码播到板端扬声器 (G.711/AAC); 网页 fMP4 音轨仍未做 (MSE 兼容性
+   评估后另行扩展 muxer)。非 gst 构建无拉流能力。
+4. **重连** — `gst` 路径下 bus ERROR/EOS 触发指数退避整管线重建 (1s→30s,
+   默认无限); 旧 `play_loop` 的 TransportClosed 行为随 T018 删除后成为历史。
 5. **MPP FFI** — `bindgen` 由板端 `mpp-bindgen` 子命令在板子目录里生成;
    dev 主机上是 stub,无真实 FFI 调用。
 6. **H.265** — fMP4 复用器只写 H.264 路径;HEVC 在 v2 加入。
