@@ -24,7 +24,7 @@ enum Commands {
         password: Option<String>,
     },
     Serve {
-        #[arg(long, default_value = "0.0.0.0:8080")]
+        #[arg(long, default_value = "127.0.0.1:8080")]
         bind: String,
         #[arg(long, default_value_t = 5)]
         discovery_timeout_secs: u64,
