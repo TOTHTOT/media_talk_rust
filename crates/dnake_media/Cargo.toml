@@ -13,14 +13,13 @@ path = "src/main.rs"
 [dependencies]
 ipcam-core = { path = "../ipcam-core" }
 ipcam-discovery = { path = "../ipcam-discovery" }
-ipcam-rtsp = { path = "../ipcam-rtsp" }
 hardware-decode = { path = "../hardware-decode" }
 web-display = { path = "../web-display" }
 ipcam-alsa = { path = "../ipcam-alsa" }
 v4l2-device-cap = { path = "../v4l2-device-cap" }
-# GStreamer-based ingest; optional because it needs GStreamer +
-# pkg-config on the build host.
-ipcam-gst = { path = "../ipcam-gst", optional = true }
+# GStreamer-based ingest (unconditional); requires GStreamer + pkg-config
+# on the build host.
+ipcam-gst = { path = "../ipcam-gst" }
 
 tokio = { workspace = true }
 clap = { workspace = true }
@@ -41,5 +40,3 @@ v4l2-device-cap = { path = "../v4l2-device-cap" }
 default = ["sw-decode"]
 sw-decode = []
 hw-decode = []
-# GStreamer streaming path (serve playback + probe media collection).
-gst = ["dep:ipcam-gst", "ipcam-gst/gst", "web-display/gst"]

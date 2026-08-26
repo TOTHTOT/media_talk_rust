@@ -38,7 +38,7 @@ enum Commands {
         #[arg(long, value_name = "RTSP_URL")]
         rtsp_url: Vec<String>,
         /// Play the camera's audio track on this ALSA device (target
-        /// board speaker). Requires building with --features gst.
+        /// board speaker).
         #[arg(long, value_name = "ALSA_DEVICE")]
         audio_out: Option<String>,
     },
@@ -46,22 +46,6 @@ enum Commands {
         path: String,
         #[arg(long, default_value_t = 0)]
         max_frames: u64,
-    },
-    /// Connect to one or more RTSP sources and print NAL-level
-    /// statistics. Does not start the web server, does not decode
-    /// video — just verifies the RTSP / RTP link and prints what
-    /// arrived in the time window.
-    Probe {
-        #[arg(long, value_name = "RTSP_URL")]
-        rtsp_url: Vec<String>,
-        #[arg(long)]
-        username: Option<String>,
-        #[arg(long)]
-        password: Option<String>,
-        #[arg(long, default_value_t = 5)]
-        duration: u64,
-        #[arg(long, default_value_t = false)]
-        json: bool,
     },
     Audio {
         #[command(subcommand)]
@@ -120,16 +104,6 @@ async fn main() -> ExitCode {
         }
         Commands::DecodeBench { path, max_frames } => {
             ipc::decode_bench::run(&path, max_frames).await
-        }
-        Commands::Probe {
-            rtsp_url,
-            username,
-            password,
-            duration,
-            json,
-        } => {
-            let code = ipc::probe::run(rtsp_url, username, password, duration, json).await;
-            return ExitCode::from(code as u8);
         }
         Commands::Audio { action } => {
             match action {

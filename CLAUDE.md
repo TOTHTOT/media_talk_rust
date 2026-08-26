@@ -53,8 +53,7 @@ crates/
 ├── media_talk/        # 二进制入口 (clap 子命令)
 ├── ipcam-core/         # 共享类型 (EncodedPacket / DecodedFrame / Decoder trait)
 ├── ipcam-discovery/    # ONVIF WS-Discovery + Device Management (SOAP)
-├── ipcam-rtsp/         # RTSP 客户端 (sans-IO via rtsp-runtime) + RTP 解包
-├── ipcam-gst/          # GStreamer 拉流引擎 (rtspsrc→appsink; feature gst 默认关闭)
+├── ipcam-gst/          # GStreamer 拉流引擎 (rtspsrc→appsink)
 ├── hardware-decode/    # Rockchip MPP (hw-decode) + SoftwareDecoder (sw-decode)
 ├── web-display/        # axum + WebSocket + fMP4 muxer
 ├── ipcam-alsa/         # ALSA 设备枚举 (仅 Linux)
@@ -75,11 +74,10 @@ media_talk.service      # systemd unit (生产部署)
 | --- | --- |
 | `--features sw-decode` | 开发机 / CI / 桌面 Linux / Windows (SoftwareDecoder stub) |
 | `--features hw-decode` | 仅交叉编译到 `aarch64-unknown-linux-gnu.2.31` (rk356x 板) |
-| `--features gst` | GStreamer 拉流引擎 (ipcam-gst); **默认关闭**, 需构建机有 GStreamer + pkg-config |
 
-`gst` 门控约定: 所有 gstreamer API 调用只允许出现在 `crates/ipcam-gst/src/pipeline.rs`
-(整文件 `#[cfg(feature = "gst")]`); 纯逻辑 (config/packet/stats) 保持无 feature 可测。
-无 gst 时 `serve`/`probe` 可编译, 拉流路径直接报错退出。
+gst 拉流引擎 (ipcam-gst) 是**无条件依赖** (无 feature 门控), 要求构建机装有
+GStreamer + pkg-config; 所有 gstreamer API 调用只允许出现在
+`crates/ipcam-gst/src/pipeline.rs`, 纯逻辑 (config/packet/stats) 保持独立可测。
 
 交叉编译:
 ```bash

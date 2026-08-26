@@ -20,8 +20,7 @@ media_talk_rust/
 │   ├── media_talk/        # 二进制入口 (clap subcommands)
 │   ├── ipcam-core/         # 共享类型 + Decoder/Sink trait
 │   ├── ipcam-discovery/    # ONVIF WS-Discovery + Device Management
-│   ├── ipcam-rtsp/         # RTSP 客户端 (probe 探测; play_loop 待 ipcam-gst 实机验证后移除)
-│   ├── ipcam-gst/          # GStreamer RTSP 拉流引擎 (feature gst, 默认关闭)
+│   ├── ipcam-gst/          # GStreamer RTSP 拉流引擎
 │   ├── hardware-decode/    # Rockchip MPP (hw-decode) + SoftwareDecoder (sw-decode)
 │   ├── web-display/        # axum + WS + fMP4 muxer
 │   ├── ipcam-alsa/         # ALSA 设备枚举 / PCM (仅 Linux)
@@ -96,7 +95,6 @@ journalctl -u media_talk -f
 | --- | --- |
 | `discover` | WS-Discovery 探活,可带凭据验证 ONVIF 凭据有效性 |
 | `serve` | 启 HTTP/WS 服务器,前端 + 摄像头流聚合 |
-| `probe` | 仅连通性测试: 接 RTSP,拉 N 包,统计 NAL,不渲染、不解码 |
 | `decode-bench` | 单文件 H.264 → 解码器 → 吞吐估算 (调试解码器性能用) |
 | `audio list-devices` | ALSA 设备枚举 (仅 Linux) |
 | `v4l2 list` | V4L2 capture 设备能力 (仅 Linux) |
@@ -115,17 +113,13 @@ media_talk serve --bind 0.0.0.0:8080 \
 media_talk serve --bind 0.0.0.0:8080 \
   --rtsp-url rtsp://camera-a/track1 --rtsp-url rtsp://camera-b/track1
 
-# 仅连通性探针 (退出码 0=OK,1=无 IDR,2=鉴权失败,3=RTSP 错,4=参数)
-media_talk probe --rtsp-url rtsp://admin:changeme@192.168.1.10/track1 \
-  --duration 10 --json
-
 media_talk decode-bench path/to/clip.h264 --max-frames 300
 ```
 
-## GStreamer 拉流 (`gst` feature)
+## GStreamer 拉流
 
 拉流引擎 `ipcam-gst` (rtspsrc → depay/parse → appsink, 替代旧 `ipcam-rtsp::play_loop`)
-位于 feature `gst` 之后,**默认关闭**——因为它要求构建机装有 GStreamer + pkg-config。
+是**无条件依赖**——构建机必须装有 GStreamer + pkg-config。
 
 - **目标板运行时**: 需要 `gstreamer1.0-plugins-good` (rtspsrc / rtp depay)、
   `gstreamer1.0-plugins-base` (audioconvert 等)、`gstreamer1.0-alsa` (alsasink);
@@ -134,7 +128,7 @@ media_talk decode-bench path/to/clip.h264 --max-frames 300
   `GstStreamError::Init` 报错并指明元件名。
 - **Windows 开发机调试**: 装 GStreamer 官方 MSVC runtime + devel 两个 MSI,
   把 `C:\gstreamer\1.0\msvc_x86_64\bin` 放到 PATH **最前** (自带 pkg-config.exe
-  必须优先),然后 `cargo build -p media_talk --features gst`。
+  必须优先),然后 `cargo build -p media_talk` 即可。
 - **交叉编译 (WSL2/Docker 内)**: sysroot 含 `libgstreamer1.0-dev` 与
   `libgstreamer-plugins-base1.0-dev` (可直接用目标板 rootfs),然后:
 
@@ -142,11 +136,8 @@ media_talk decode-bench path/to/clip.h264 --max-frames 300
 export PKG_CONFIG_ALLOW_CROSS=1
 export PKG_CONFIG_SYSROOT_DIR=/path/to/rk356x-sysroot
 export PKG_CONFIG_PATH=$PKG_CONFIG_SYSROOT_DIR/usr/lib/aarch64-linux-gnu/pkgconfig
-cargo build --release --target aarch64-unknown-linux-gnu --features gst
+cargo build --release --target aarch64-unknown-linux-gnu
 ```
-
-不带 `gst` feature 构建时: `serve`/`probe` 仍可编译运行,但拉流路径记 error
-并直接结束会话; `probe` 打印需要 `--features gst` 并以非零码退出。
 
 板端扬声器播放摄像机现场声音 (G.711/AAC 管线内解码):
 
@@ -174,9 +165,9 @@ media_talk serve --rtsp-url "rtsp://..." --audio-out hw:0,0
                                             │
                                             ▼
 +----------+    EncodedPacket    +-----------+    DecodedFrame    +-------------+
-|  H264/   | ───────────────────▶| Hardware  | ──────────────────▶|  fMP4 muxer |
-|  RTP     |  ipcam-rtsp        | Decoder   |  ipcam-core        | (web-display)|
-| depay    |                    |  (MPP)    |                    | + axum + WS |
+|  rtspsrc | ───────────────────▶| Hardware  | ──────────────────▶|  fMP4 muxer |
+|  depay   |  ipcam-gst (gst)   | Decoder   |  ipcam-core        | (web-display)|
+|  appsink |                    |  (MPP)    |                    | + axum + WS |
 +----------+                    +-----------+                    +------+------+
                                                                          │
                                                                          ▼
@@ -191,8 +182,8 @@ media_talk serve --rtsp-url "rtsp://..." --audio-out hw:0,0
 - **发现层** — `ipcam-discovery` 在每块非 loopback IPv4 网口分别绑 UDP socket
   发 multicast probe,合并所有 ProbeMatch;带凭据时再并发去做 `GetProfiles`
   验证账号可读。
-- **会话层** — `ipcam-rtsp` 用 `rtsp-runtime` (sans-IO 引擎 + tokio 适配)
-  跑 RTSP 状态机;Digest 鉴权按 RFC 7616 自动重发。
+- **拉流层** — `ipcam-gst` 用 GStreamer `rtspsrc` 动态分流 +
+  depay/parse + appsink 回调,音视频统一走管线;断流自动退避重连。
 - **解码层** — `hw-decode` 板端用 Rockchip MPP (目标板 FFI 由 `mpp-bindgen`
   子命令板子上生成),其它平台走 `SoftwareDecoder` stub;通过 `Decoder` trait
   抽象。
@@ -221,7 +212,7 @@ media_talk serve --rtsp-url "rtsp://..." --audio-out hw:0,0
    管线内解码播到板端扬声器 (G.711/AAC); 网页 fMP4 音轨仍未做 (MSE 兼容性
    评估后另行扩展 muxer)。非 gst 构建无拉流能力。
 4. **重连** — `gst` 路径下 bus ERROR/EOS 触发指数退避整管线重建 (1s→30s,
-   默认无限); 旧 `play_loop` 的 TransportClosed 行为随 T018 删除后成为历史。
+   默认无限); 旧自研 `play_loop` 已随 T018 退役删除。
 5. **MPP FFI** — `bindgen` 由板端 `mpp-bindgen` 子命令在板子目录里生成;
    dev 主机上是 stub,无真实 FFI 调用。
 6. **H.265** — fMP4 复用器只写 H.264 路径;HEVC 在 v2 加入。

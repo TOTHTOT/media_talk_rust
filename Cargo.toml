@@ -4,7 +4,6 @@ members = [
     "crates/media_talk",
     "crates/ipcam-core",
     "crates/ipcam-discovery",
-    "crates/ipcam-rtsp",
     "crates/hardware-decode",
     "crates/web-display",
     "crates/ipcam-alsa",
@@ -40,7 +39,6 @@ parking_lot = "0.12"
 dashmap = "6.1"
 pin-project-lite = "0.2"
 clap = { version = "4.5", features = ["derive"] }
-md-5 = "0.11.0"
 sha-1 = "0.10"
 base64 = "0.23.1"
 nix = { version = "0.31.3", features = ["ioctl"] }

@@ -14,12 +14,11 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
 
-# Real GStreamer bindings. Only buildable on hosts with GStreamer + pkg-config
-# (i.e. the target board / Linux dev boxes), so they sit behind the `gst`
-# feature which is OFF by default.
-gstreamer = { version = "0.24", optional = true }
-gstreamer-app = { version = "0.24", optional = true }
+# Real GStreamer bindings (unconditional). Requires GStreamer + pkg-config
+# on the build host (the target board / Linux dev boxes / a Windows dev box
+# with the GStreamer MSVC SDK on PATH).
+gstreamer = "0.24"
+gstreamer-app = "0.24"
 
-[features]
-default = []
-gst = ["dep:gstreamer", "dep:gstreamer-app"]
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

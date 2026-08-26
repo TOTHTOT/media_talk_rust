@@ -5,10 +5,8 @@
 //! one NAL per packet) and audio as [`AudioPacket`]. Session state and
 //! counters are observable through [`GstStreamHandle`].
 //!
-//! The GStreamer pipeline itself lives behind the `gst` feature
-//! (requires GStreamer + pkg-config on the build host). Without it the
-//! crate still compiles — [`start`] validates the config and then
-//! returns [`GstStreamError::Init`].
+//! The GStreamer pipeline requires GStreamer + pkg-config on the build
+//! host; the bindings are an unconditional dependency of this crate.
 
 use thiserror::Error;
 
@@ -16,7 +14,6 @@ pub mod config;
 pub mod packet;
 pub mod stats;
 
-#[cfg(feature = "gst")]
 mod pipeline;
 
 pub use config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
@@ -61,15 +58,5 @@ where
     A: FnMut(AudioPacket) + Send + 'static,
 {
     validate(&cfg)?;
-    #[cfg(feature = "gst")]
-    {
-        pipeline::start(cfg, on_video, on_audio)
-    }
-    #[cfg(not(feature = "gst"))]
-    {
-        let _ = (on_video, on_audio);
-        Err(GstStreamError::Init(
-            "compiled without `gst` feature".into(),
-        ))
-    }
+    pipeline::start(cfg, on_video, on_audio)
 }

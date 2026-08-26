@@ -54,7 +54,6 @@ pub(crate) fn can_transition(from: StreamState, to: StreamState) -> bool {
 /// Interruptible stop signal shared by the bus/session threads.
 /// `stop()` wakes every [`wait_or_stop`] waiter immediately so reconnect
 /// backoff never delays shutdown (crate-internal; used by the pipeline).
-#[cfg_attr(not(feature = "gst"), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct StopSignal {
     flag: AtomicBool,
@@ -62,7 +61,6 @@ pub(crate) struct StopSignal {
     cv: Condvar,
 }
 
-#[cfg_attr(not(feature = "gst"), allow(dead_code))]
 impl StopSignal {
     pub(crate) fn new() -> Self {
         Self {
@@ -84,7 +82,6 @@ impl StopSignal {
 
 /// Sleep for `d`, returning `true` when the full duration elapsed and
 /// `false` when `signal.stop()` interrupted the wait.
-#[cfg_attr(not(feature = "gst"), allow(dead_code))]
 pub(crate) fn wait_or_stop(signal: &StopSignal, d: Duration) -> bool {
     let deadline = Instant::now() + d;
     let mut guard = signal.lock.lock();
@@ -134,9 +131,6 @@ pub struct GstStreamHandle {
 }
 
 impl GstStreamHandle {
-    // Used by the (feature-gated) pipeline; keep the warning off in
-    // `gst`-less builds where only the tests reach these methods.
-    #[cfg_attr(not(feature = "gst"), allow(dead_code))]
     pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
@@ -153,7 +147,6 @@ impl GstStreamHandle {
 
     /// Register the teardown hook fired by the first `stop()` (the
     /// pipeline sets state to Null there). Called once by `start()`.
-    #[cfg_attr(not(feature = "gst"), allow(dead_code))]
     pub(crate) fn set_stop_hook(&self, hook: impl Fn() + Send + 'static) {
         self.inner.lock().stop_hook = Some(Box::new(hook));
     }
@@ -198,7 +191,6 @@ impl GstStreamHandle {
     }
 
     /// Record one delivered frame (crate-internal, called by the pipeline).
-    #[cfg_attr(not(feature = "gst"), allow(dead_code))]
     pub(crate) fn note_frame(&self, bytes: u64, is_audio: bool) {
         let mut inner = self.inner.lock();
         if is_audio {
