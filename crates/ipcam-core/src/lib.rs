@@ -219,9 +219,9 @@ pub fn duration_micros(d: Duration) -> i64 {
 }
 
 /// Cumulative NAL-unit statistics over a window of received
-/// `EncodedPacket`s. Built up by a callback from
-/// `ipcam_rtsp::RtspClient::play_loop`; used by `media_talk probe` to
-/// summarise a stream without rendering it.
+/// `EncodedPacket`s. Fed by the `on_video` callback of an `ipcam-gst`
+/// streaming session; used by `media_talk probe` to summarise a
+/// stream without rendering it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NalStats {
     /// Number of frame boundaries observed (= RTP marker=1 packets).

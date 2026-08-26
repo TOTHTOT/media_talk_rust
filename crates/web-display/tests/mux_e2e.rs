@@ -1,10 +1,12 @@
 //! End-to-end test for the fMP4 muxer.
 //!
 //! Verifies that:
-//!   - `push_access_unit` writes ONE moof+mdat per access unit, not per NAL.
-//!   - The moof's trun box has sample_count == NAL count in the access unit.
+//!   - `push_access_unit` writes ONE moof+mdat per access unit, not per NAL,
+//!     and the whole AU is a single trun sample (sample_count == 1).
+//!   - Segments carry REAL timing: sample_duration is the RTP delta to the
+//!     next frame, tfdt is relative to the first AU. Emission is delayed by
+//!     one frame because the duration needs the successor's timestamp.
 //!   - The data_offset in trun points past the mdat box header (8 bytes).
-//!   - The init segment is emitted exactly once and stays valid.
 //!
 //! This test asserts the **semantic** correctness that the unit tests in
 //! mux.rs cannot catch — namely that one access unit == one sample.
@@ -30,7 +32,7 @@ fn find_box(b: &[u8], name: &[u8; 4]) -> Option<usize> {
 }
 
 #[test]
-fn access_unit_with_4_nals_emits_one_moof_with_4_samples() {
+fn access_unit_with_4_nals_emits_one_moof_with_one_sample() {
     let mut m = Fmp4Muxer::new();
     let sps = [0x67u8, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0xC8];
     let pps = [0x68u8, 0xCE, 0x38, 0x80];
@@ -51,10 +53,17 @@ fn access_unit_with_4_nals_emits_one_moof_with_4_samples() {
         annex_b_nal(0x65, &[0xAA; 64]),
         annex_b_nal(0x41, &[0xBB; 128]),
     ];
-    m.push_access_unit(&nalus);
+    m.push_access_unit(&nalus, 42_000);
+    assert_eq!(
+        m.segment_count(),
+        0,
+        "first AU stays pending until the next frame's timestamp"
+    );
+    // A second AU (any content) supplies the delta that emits the first.
+    m.push_access_unit(&[annex_b_nal(0x41, &[0xCC; 16])], 42_000 + 9000);
 
     let segs = m.take_segments_since(0);
-    assert_eq!(segs.len(), 1, "exactly one segment for one access unit");
+    assert_eq!(segs.len(), 1, "exactly one segment for the first access unit");
     let seg = segs.into_iter().next().unwrap();
 
     // Expect moof + mdat
@@ -73,54 +82,56 @@ fn access_unit_with_4_nals_emits_one_moof_with_4_samples() {
         "moof ends right before mdat box"
     );
 
-    // Expect trun with sample_count == 4
+    // trun body (flags 0x00000301): [0..4) version+flags, [4..8) sample_count,
+    // [8..12) data_offset, [12..16) sample_duration, [16..20) sample_size
     let trun_pos = find_box(&seg, b"trun").expect("trun");
-    let trun_body_start = trun_pos + 4; // skip box name
-    // trun body: [0..4) version+flags, [4..8) sample_count, [8..12) data_offset,
-    //             [12..) sample_size[]
-    let sample_count = read_u32(&seg, trun_body_start + 4);
+    let body = trun_pos + 4; // skip box name
+    assert_eq!(read_u32(&seg, body), 0x00000301, "trun flags");
     assert_eq!(
-        sample_count, 4,
-        "trun.sample_count must equal NAL count of the access unit"
+        read_u32(&seg, body + 4),
+        1,
+        "one trun sample for the WHOLE access unit"
     );
 
     // tfhd.default-base-is-moof is set, so trun.data_offset is relative
-    // to moof start. First sample is at moof_size + 8 (8 = mdat header).
-    let data_offset = read_u32(&seg, trun_body_start + 8);
+    // to moof start. The sample is at moof_size + 8 (8 = mdat header).
+    let data_offset = read_u32(&seg, body + 8);
     assert_eq!(
         data_offset as usize,
         moof_size + 8,
-        "trun.data_offset must point to first sample byte inside mdat (moof_size + 8)"
+        "trun.data_offset must point to the sample byte inside mdat (moof_size + 8)"
     );
 
-    // Expect 4 sample_size entries
-    let sample_sizes_start = trun_body_start + 12;
-    let sizes: Vec<u32> = (0..4)
-        .map(|i| read_u32(&seg, sample_sizes_start + i * 4))
-        .collect();
-    // Each NAL was prefixed with a 4-byte length prefix when written.
-    let expected_payloads: Vec<usize> = nalus
+    // Real timing: duration is the RTP delta to the second frame, and the
+    // first fragment's decode time is zero relative to the first AU.
+    assert_eq!(
+        read_u32(&seg, body + 12),
+        9000,
+        "sample_duration = real RTP delta to the next frame"
+    );
+    let tfdt_pos = find_box(&seg, b"tfdt").expect("tfdt");
+    // tfdt body: [0..4) version+flags, [4..8) baseMediaDecodeTime
+    assert_eq!(
+        read_u32(&seg, tfdt_pos + 4 + 4),
+        0,
+        "first fragment starts at t=0"
+    );
+
+    // The single sample covers every NAL: each contributes its 4-byte
+    // length prefix + NAL body (Annex-B start code stripped).
+    let sample_size = read_u32(&seg, body + 16);
+    let expected: usize = nalus
         .iter()
-        .map(|n| n.len() - 4 /* strip Annex-B start code */)
-        .collect();
-    for (i, s) in sizes.iter().enumerate() {
-        assert_eq!(*s as usize, 4 + expected_payloads[i], "sample[{i}] size");
-    }
+        .map(|n| 4 + (n.len() - 4 /* strip Annex-B start code */))
+        .sum();
+    assert_eq!(sample_size as usize, expected, "sample_size = whole AU");
 
-    // mdat payload: total = sum of sample_sizes
-    let mdat_payload_len: usize = sizes.iter().map(|s| *s as usize).sum();
-    // The full segment is moof_box + mdat_box. Verify the mdat size
-    // field equals header (8) + payload, and that segment ends
-    // exactly at moof_box_end + mdat_box_size.
+    // mdat payload is exactly that one sample; the segment is moof + mdat
+    // with no trailing bytes.
     let mdat_size = read_u32(&seg, mdat_pos - 4) as usize;
+    assert_eq!(mdat_size, 8 + expected, "mdat box size = header (8) + sample");
     assert_eq!(
-        mdat_size,
-        8 + mdat_payload_len,
-        "mdat box size = header (8) + payload"
-    );
-    let segment_len = seg.len();
-    assert_eq!(
-        segment_len,
+        seg.len(),
         moof_size + mdat_size,
         "segment length = moof + mdat (no extra bytes)"
     );
@@ -137,8 +148,11 @@ fn two_access_units_emit_two_segments() {
 
     let frame1 = vec![annex_b_nal(0x65, &[1; 32])];
     let frame2 = vec![annex_b_nal(0x41, &[2; 32])];
-    m.push_access_unit(&frame1);
-    m.push_access_unit(&frame2);
+    let frame3 = vec![annex_b_nal(0x41, &[3; 32])];
+    // 3 frames → 2 segments; the last frame stays pending its successor.
+    m.push_access_unit(&frame1, 0);
+    m.push_access_unit(&frame2, 9000);
+    m.push_access_unit(&frame3, 18000);
 
     assert_eq!(m.segment_count(), 2);
     let mut segs = m.take_segments_since(0);
@@ -166,6 +180,19 @@ fn two_access_units_emit_two_segments() {
     };
     assert_eq!(seq1, 1);
     assert_eq!(seq2, 2);
+
+    // Second segment: tfdt = 9000 (second frame's decode time), and its
+    // sample_duration = 9000 (delta to the third frame).
+    let tfdt2 = {
+        let p = find_box(&s2, b"tfdt").unwrap() + 4;
+        read_u32(&s2, p + 4)
+    };
+    assert_eq!(tfdt2, 9000);
+    let dur2 = {
+        let p = find_box(&s2, b"trun").unwrap() + 4;
+        read_u32(&s2, p + 12)
+    };
+    assert_eq!(dur2, 9000);
 }
 
 #[test]
@@ -176,13 +203,13 @@ fn empty_access_unit_is_dropped() {
         pps: Bytes::from_static(&[0x68]),
     });
     m.set_dimensions(640, 480);
-    m.push_access_unit(&[]);
+    m.push_access_unit(&[], 0);
     assert_eq!(m.segment_count(), 0);
 }
 
 #[test]
 fn push_before_init_is_dropped() {
     let mut m = Fmp4Muxer::new();
-    m.push_access_unit(&[annex_b_nal(0x65, &[0])]);
+    m.push_access_unit(&[annex_b_nal(0x65, &[0])], 0);
     assert_eq!(m.segment_count(), 0);
 }

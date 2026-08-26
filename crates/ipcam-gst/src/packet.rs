@@ -20,9 +20,12 @@ pub struct AudioPacket {
 /// Split an Annex-B access unit into individual NAL units.
 ///
 /// Accepts mixed 3-byte (`00 00 01`) and 4-byte (`00 00 00 01`) start
-/// codes. Each returned NAL keeps its start-code prefix (downstream
-/// consumers require `data` to begin with a start code). Empty segments
-/// and leading zero bytes before the first start code are ignored, and
+/// codes (h264parse's byte-stream output uses 3-byte codes). Every
+/// returned NAL is **normalized to a 4-byte start-code prefix** — the
+/// downstream contract (web-display `ingest_packet`, Fmp4Muxer) reads
+/// the NAL header at `data[4]` and assumes a 4-byte prefix, matching
+/// what the retired play_loop depacketizer produced. Empty segments and
+/// leading zero bytes before the first start code are ignored, and
 /// zero-payload NALs (two start codes back to back) are dropped.
 pub fn split_au_into_nals(data: &[u8]) -> Vec<Bytes> {
     let mut starts: Vec<(usize, usize)> = Vec::new(); // (offset, start-code len)
@@ -49,7 +52,18 @@ pub fn split_au_into_nals(data: &[u8]) -> Vec<Bytes> {
         .filter_map(|(idx, &(pos, code_len))| {
             let end = starts.get(idx + 1).map(|&(p, _)| p).unwrap_or(data.len());
             // Drop NALs with no payload beyond the start code.
-            (end > pos + code_len).then(|| Bytes::copy_from_slice(&data[pos..end]))
+            if end <= pos + code_len {
+                return None;
+            }
+            if code_len == 4 {
+                Some(Bytes::copy_from_slice(&data[pos..end]))
+            } else {
+                // Normalize 3-byte prefix to 4-byte.
+                let mut v = Vec::with_capacity(end - pos + 1);
+                v.push(0x00);
+                v.extend_from_slice(&data[pos..end]);
+                Some(Bytes::from(v))
+            }
         })
         .collect()
 }
@@ -107,12 +121,12 @@ mod tests {
         ];
         let nals = split_au_into_nals(&au);
         assert_eq!(nals.len(), 3);
-        assert_eq!(nals[0].as_ref(), &au[0..6]);
-        assert_eq!(nals[1].as_ref(), &au[6..11]);
-        assert_eq!(nals[2].as_ref(), &au[11..]);
-        // every NAL keeps its start-code prefix
+        // output is normalized to 4-byte start codes regardless of input
+        assert_eq!(nals[0].as_ref(), &[0x00, 0x00, 0x00, 0x01, 0x67, 0x42]);
+        assert_eq!(nals[1].as_ref(), &[0x00, 0x00, 0x00, 0x01, 0x68, 0xCE]);
+        assert_eq!(nals[2].as_ref(), &[0x00, 0x00, 0x00, 0x01, 0x65, 0x88]);
         for nal in &nals {
-            assert!(nal.starts_with(&[0, 0, 1]) || nal.starts_with(&[0, 0, 0, 1]));
+            assert!(nal.starts_with(&[0, 0, 0, 1]));
             assert!(nal.len() >= 5);
         }
     }
@@ -134,7 +148,7 @@ mod tests {
         let au = [0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x65, 0x88];
         let nals = split_au_into_nals(&au);
         assert_eq!(nals.len(), 1);
-        assert_eq!(nals[0].as_ref(), &[0x00, 0x00, 0x01, 0x65, 0x88]);
+        assert_eq!(nals[0].as_ref(), &[0x00, 0x00, 0x00, 0x01, 0x65, 0x88]);
     }
 
     #[test]

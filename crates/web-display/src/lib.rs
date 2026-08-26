@@ -244,8 +244,8 @@ fn build_router(inner: Arc<Inner>) -> Router {
     Router::new()
         .route("/api/devices", get(list_devices))
         .route("/api/sessions", get(list_sessions).post(create_session))
-        .route("/api/sessions/id", get(get_session).delete(delete_session))
-        .route("/ws/id", get(ws_handler))
+        .route("/api/sessions/{id}", get(get_session).delete(delete_session))
+        .route("/ws/{id}", get(ws_handler))
         .route("/", get(index_page))
         .route("/index.html", get(index_page))
         .route("/play.js", get(play_js))
@@ -347,7 +347,6 @@ async fn ws_loop(socket: WebSocket, inner: Arc<Inner>, session_id: SessionId) {
     let mut ticker = tokio::time::interval(Duration::from_millis(50));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut init_sent = false;
-    let mut last_sent: usize = 0;
     let mut init_wait_logged = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
 
@@ -378,12 +377,15 @@ async fn ws_loop(socket: WebSocket, inner: Arc<Inner>, session_id: SessionId) {
                     }
                 }
                 if init_sent {
-                    let segments = inner.registry.take_segments_since(session_id, last_sent);
+                    // take_segments_since is DESTRUCTIVE (split_off): the
+                    // drained segments leave the muxer's buffer, so the
+                    // next drain must start at index 0 again. An absolute
+                    // "last_sent" counter would skip every other segment.
+                    let segments = inner.registry.take_segments_since(session_id, 0);
                     for seg in segments {
                         if sender.send(Message::Binary(seg)).await.is_err() {
                             return;
                         }
-                        last_sent += 1;
                     }
                 }
             }

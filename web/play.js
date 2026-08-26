@@ -1,8 +1,8 @@
 (function () {
   "use strict";
 
-  async function fetchJson(url) {
-    const r = await fetch(url);
+  async function fetchJson(url, options) {
+    const r = await fetch(url, options);
     if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
     return r.json();
   }
@@ -69,32 +69,31 @@
 
   function openStream(sessionId) {
     const video = document.getElementById("player");
-    video.src = "";
     const ms = new MediaSource();
     video.src = URL.createObjectURL(ms);
-    const sb = ms.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
-    const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/" + sessionId);
-    ws.binaryType = "arraybuffer";
+    let sb = null;
     let queue = [];
     let feeding = false;
     function feed() {
-      if (feeding || queue.length === 0) return;
+      if (!sb || feeding || queue.length === 0 || ms.readyState !== "open") return;
       feeding = true;
-      const next = queue.shift();
-      sb.appendBuffer(next);
+      sb.appendBuffer(queue.shift());
     }
-    sb.addEventListener("updateend", () => { feeding = false; feed(); });
-    sb.addEventListener("error", (e) => console.error("source buffer error", e));
+    ms.addEventListener("sourceopen", () => {
+      sb = ms.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
+      sb.addEventListener("updateend", () => { feeding = false; feed(); });
+      sb.addEventListener("error", (e) => console.error("source buffer error", e));
+      feed();
+    });
+    const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/" + sessionId);
+    ws.binaryType = "arraybuffer";
     ws.onmessage = (ev) => {
       if (ev.data instanceof ArrayBuffer) {
         queue.push(ev.data);
-        if (ms.readyState === "open") feed();
+        feed();
       }
     };
     ws.onerror = (e) => console.error("ws error", e);
-    ms.addEventListener("sourceopen", () => {
-      feed();
-    });
   }
 
   refreshDevices();

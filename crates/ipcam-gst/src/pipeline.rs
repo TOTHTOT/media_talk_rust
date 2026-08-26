@@ -130,6 +130,7 @@ where
         audio_linked: false,
     }));
     install_pad_added(
+        &src,
         &pipeline,
         tracks.clone(),
         cfg.audio_output.clone(),
@@ -143,7 +144,13 @@ where
 /// Dispatch rtspsrc's dynamic `stream_%u` pads by caps
 /// (`media` + `encoding-name`, with a static-payload fallback for
 /// cameras that omit rtpmap for PCMA/PCMU).
+///
+/// NOTE: `pad-added` must be connected on the **rtspsrc element** — the
+/// dynamic pads belong to it. Connecting on the pipeline (a Bin) never
+/// fires for rtspsrc's stream pads (the bin only reports its own ghost
+/// pads), which silently leaves every track unlinked.
 fn install_pad_added<V, A>(
+    src: &gst::Element,
     pipeline: &gst::Pipeline,
     tracks: Arc<Mutex<TrackState>>,
     audio_output: AudioOutput,
@@ -156,7 +163,7 @@ fn install_pad_added<V, A>(
 {
     let weak = pipeline.downgrade();
 
-    pipeline.connect_pad_added(move |_src, pad| {
+    src.connect_pad_added(move |_src, pad| {
         let Some(pipeline) = weak.upgrade() else {
             return;
         };
@@ -231,10 +238,9 @@ fn link_video<V>(
         .field("stream-format", "byte-stream")
         .field("alignment", "au")
         .build();
-    let appsink = gst_app::AppSink::builder()
-        .caps(&caps)
-        .emit_signals(true)
-        .build();
+    let appsink = gst_app::AppSink::builder().caps(&caps).build();
+    // 0.24: emit-signals isn't on AppSinkBuilder; set it post-build via property.
+    appsink.set_property("emit-signals", true);
 
     if let Err(e) = pipeline.add_many([&depay, &parse, appsink.upcast_ref()]) {
         error!(%e, "failed to add video branch to pipeline");
@@ -354,14 +360,15 @@ fn link_audio<A>(
             return;
         }
     };
-    let appsink = gst_app::AppSink::builder().emit_signals(true).build();
+    let appsink = gst_app::AppSink::builder().build();
+    appsink.set_property("emit-signals", true);
 
     match audio_output {
         AudioOutput::Disabled => {
             if !assemble(pipeline, pad, &[&depay, appsink.upcast_ref()]) {
                 return;
             }
-            if let Err(e) = depay.link(appsink.upcast_ref()) {
+            if let Err(e) = depay.link(appsink.upcast_ref::<gst::Element>()) {
                 error!(%e, "failed to link audio branch");
                 return;
             }
@@ -455,17 +462,14 @@ fn link_audio_with_playback(
     let mut names = vec!["tee", "queue", "queue"];
     names.extend_from_slice(decode_names);
     names.extend(["audioconvert", "audioresample", "alsasink"]);
-    let elems: Vec<gst::Element> = match names
-        .iter()
-        .map(|n| make(*n))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(v) => v,
-        Err(e) => {
-            error!(%e, "audio playback branch elements unavailable");
-            return false;
-        }
-    };
+    let elems: Vec<gst::Element> =
+        match names.iter().map(|n| make(n)).collect::<Result<Vec<_>, _>>() {
+            Ok(v) => v,
+            Err(e) => {
+                error!(%e, "audio playback branch elements unavailable");
+                return false;
+            }
+        };
     let tee = &elems[0];
     let queue_cb = &elems[1];
     let queue_play = &elems[2];
@@ -481,7 +485,7 @@ fn link_audio_with_playback(
         error!(%e, "failed to link depay to tee");
         return false;
     }
-    if let Err(e) = queue_cb.link(appsink.upcast_ref()) {
+    if let Err(e) = queue_cb.link(appsink.upcast_ref::<gst::Element>()) {
         error!(%e, "failed to link callback queue to appsink");
         return false;
     }
@@ -620,7 +624,9 @@ fn watch_bus(
         };
         match msg.view() {
             gst::MessageView::StateChanged(sc) => {
-                let from_pipeline = msg.src().is_some_and(|s| s == pipeline.upcast_ref());
+                let from_pipeline = msg
+                    .src()
+                    .is_some_and(|s| s == pipeline.upcast_ref::<gst::Element>());
                 if from_pipeline && sc.current() == gst::State::Playing {
                     handle.transition(StreamState::Playing);
                     *attempt = 0; // healthy again: reset the backoff
