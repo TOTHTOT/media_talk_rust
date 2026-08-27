@@ -22,11 +22,11 @@ pub struct AudioPacket {
 /// Accepts mixed 3-byte (`00 00 01`) and 4-byte (`00 00 00 01`) start
 /// codes (h264parse's byte-stream output uses 3-byte codes). Every
 /// returned NAL is **normalized to a 4-byte start-code prefix** — the
-/// downstream contract (web-display `ingest_packet`, Fmp4Muxer) reads
-/// the NAL header at `data[4]` and assumes a 4-byte prefix, matching
-/// what the retired play_loop depacketizer produced. Empty segments and
-/// leading zero bytes before the first start code are ignored, and
-/// zero-payload NALs (two start codes back to back) are dropped.
+/// downstream contract (web-display `ingest_au`, Fmp4Muxer) reads
+/// the NAL header at `data[4]` and assumes a 4-byte prefix. Empty
+/// segments and leading zero bytes before the first start code are
+/// ignored, and zero-payload NALs (two start codes back to back) are
+/// dropped.
 pub fn split_au_into_nals(data: &[u8]) -> Vec<Bytes> {
     let mut starts: Vec<(usize, usize)> = Vec::new(); // (offset, start-code len)
     let mut i = 0;

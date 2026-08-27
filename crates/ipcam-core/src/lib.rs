@@ -92,13 +92,17 @@ pub enum AuthStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncodedPacket {
     pub codec: VideoCodec,
+    /// One complete access unit (one frame) in Annex-B format
+    /// (start-code delimited NAL units), as delivered by the
+    /// `h264parse`/`h265parse` appsink with `alignment=au`.
     pub data: Bytes,
     pub rtp_ts: RtpTimestamp,
     pub arrival_us: i64,
     pub is_keyframe: bool,
-    /// RTP marker bit (RFC 3550): set on the last packet of an access
-    /// unit. Consumers that aggregate NALs into access units SHOULD
-    /// flush their buffer when this is true.
+    /// Legacy RTP marker bit (RFC 3550): set on the last packet of an
+    /// access unit. With GStreamer's `alignment=au` delivery every
+    /// packet already IS a complete access unit, so this is always true;
+    /// kept for serde compatibility with older payloads.
     #[serde(default)]
     pub marker: bool,
 }

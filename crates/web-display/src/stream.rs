@@ -4,8 +4,8 @@
 //!   1. Calls ONVIF `GetStreamUri` (with the user-supplied credentials
 //!      held by the registry) to obtain an RTSP URL.
 //!   2. Starts an `ipcam_gst` session (rtspsrc → depay/parse → appsink)
-//!      which pushes each Annex-B H.264 NAL
-//!      into the per-session fMP4 muxer.
+//!      which pushes each complete Annex-B H.264 access unit (one frame
+//!      per callback, `alignment=au`) into the per-session fMP4 muxer.
 //!   3. Captures SPS/PPS from the first packets so the muxer can emit a
 //!      proper avcC init segment before serving the WebSocket.
 
@@ -32,16 +32,6 @@ struct LocalStreamState {
     /// RTSP connect (it continues its regular GOP cycle), so everything
     /// before the first IDR is undecodable noise that must be dropped.
     got_keyframe: bool,
-    /// NALs belonging to the current in-progress access unit (one frame).
-    /// Flushed either on RTP marker=1 or when a "frame-start" NAL type
-    /// (5 = IDR, 7 = SPS, 8 = PPS) appears at the start of a new packet.
-    current_au: Vec<Bytes>,
-    /// RTP timestamp of the first NAL in `current_au`; handed to the
-    /// muxer so sample durations are the real inter-frame deltas.
-    current_au_ts: u32,
-    /// true if we already have an unflushed access unit — prevents
-    /// duplicates on back-to-back IDR + SPS/PPS sequences.
-    have_pending: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -103,7 +93,7 @@ pub fn spawn_streaming(
                     tracing::warn!(codec = ?pkt.codec, "dropping non-H264 frame (muxer is H264-only)");
                     return;
                 }
-                ingest_packet(&mux, &state, pkt);
+                ingest_au(&mux, &state, pkt);
             }
         };
         // The web fMP4 path carries no audio track this phase; the
@@ -138,42 +128,43 @@ pub fn spawn_streaming(
     });
 }
 
-/// Decide whether `nal_type` indicates the start of a new access unit.
-/// Per H.264, types 5 (IDR), 7 (SPS), 8 (PPS) are frame-delimiting
-/// headers; a non-empty current buffer should be flushed before they.
-fn is_frame_start_nal(nal_type: u8) -> bool {
-    matches!(nal_type, 5 | 7 | 8)
-}
-
-fn ingest_packet(
-    mux: &Arc<Mutex<Fmp4Muxer>>,
-    state: &Arc<Mutex<LocalStreamState>>,
-    pkt: EncodedPacket,
-) {
+/// Ingest ONE complete access unit (one frame, Annex-B) from the
+/// GStreamer appsink. `alignment=au` guarantees one packet == one AU, so
+/// no reassembly happens here — the AU is only inspected and filtered:
+///
+/// - SPS/PPS are captured into the muxer's AvcConfig on first sight
+///   (the avcC init segment cannot be built without them);
+/// - nothing goes out before the first IDR — MSE cannot decode P-slices
+///   without a reference frame, and this camera doesn't force an IDR on
+///   connect, so early AUs would only poison the browser's decoder;
+/// - AUs without any VCL NAL (SPS/PPS/AUD/SEI-only) carry no picture and
+///   are dropped; AUD NALs are stripped from the rest.
+fn ingest_au(mux: &Arc<Mutex<Fmp4Muxer>>, state: &Arc<Mutex<LocalStreamState>>, pkt: EncodedPacket) {
     if pkt.codec != VideoCodec::H264 {
         return;
     }
-    let data = pkt.data;
-    if data.len() < 5 {
+    // Split for inspection only; each returned NAL is normalized to a
+    // 4-byte start code, so the NAL header byte is at nal[4].
+    let nals = ipcam_gst::packet::split_au_into_nals(&pkt.data);
+    if nals.is_empty() {
         return;
     }
-    let nal_type = data[4] & 0x1F;
+    let nal_type = |n: &Bytes| n[4] & 0x1F;
     let mut s = state.lock();
 
-    // Capture SPS/PPS into AvcConfig before any flush; these NALs are
-    // still part of the access unit so they also go into current_au.
-    // avcC stores COMPLETE NAL units including the 1-byte NAL header
-    // (ISO/IEC 14496-15) — strip only the 4-byte start code.
+    // Capture SPS/PPS into AvcConfig. avcC stores COMPLETE NAL units
+    // including the 1-byte NAL header (ISO/IEC 14496-15) — strip only
+    // the 4-byte start code.
     if !s.muxer_configured {
-        let nal = Bytes::copy_from_slice(&data[4..]);
-        match nal_type {
-            7 => s.sps = Some(nal),
-            8 => s.pps = Some(nal),
-            _ => {}
+        for nal in &nals {
+            let body = Bytes::copy_from_slice(&nal[4..]);
+            match nal_type(nal) {
+                7 => s.sps = Some(body),
+                8 => s.pps = Some(body),
+                _ => {}
+            }
         }
-        if s.sps.is_some() && s.pps.is_some() {
-            let sps = s.sps.as_ref().unwrap().clone();
-            let pps = s.pps.as_ref().unwrap().clone();
+        if let (Some(sps), Some(pps)) = (s.sps.clone(), s.pps.clone()) {
             let mut m = mux.lock();
             m.set_avc_config(AvcConfig { sps: sps.clone(), pps });
             // Profiles carry no width/height (ONVIF backend skips the
@@ -185,66 +176,18 @@ fn ingest_packet(
         }
     }
 
-    // Frame-boundary detection: a frame-start NAL (IDR/SPS/PPS) arriving
-    // on an already populated buffer starts a new AU; a marker NAL is the
-    // LAST fragment of the current AU — append before flushing.
-    //
-    // Single lock scope: `state` is a parking_lot mutex (non-reentrant).
-    // `s` stays held across the flush — the lock order state → muxer is
-    // the same one the SPS/PPS capture above already establishes.
-    let frame_start = s.have_pending && is_frame_start_nal(nal_type);
-    if frame_start {
-        let au = std::mem::take(&mut s.current_au);
-        let ts = s.current_au_ts;
-        s.have_pending = false;
-        flush_access_unit(&mut s, mux, au, ts);
-    }
-    if s.current_au.is_empty() {
-        s.current_au_ts = pkt.rtp_ts;
-    }
-    s.current_au.push(data);
-    s.have_pending = true;
-    if pkt.marker {
-        let au = std::mem::take(&mut s.current_au);
-        let ts = s.current_au_ts;
-        s.have_pending = false;
-        flush_access_unit(&mut s, mux, au, ts);
-    }
-}
-
-fn nal_type_of(nal: &[u8]) -> u8 {
-    if nal.len() > 4 { nal[4] & 0x1F } else { 0 }
-}
-
-/// Emit a completed access unit to the muxer, with two filters:
-///
-/// - nothing goes out before the first IDR — MSE cannot decode P-slices
-///   without a reference frame, and this camera doesn't force an IDR on
-///   connect, so early AUs would only poison the browser's decoder;
-/// - AUs without any VCL NAL (SPS/PPS/AUD/SEI-only) carry no picture;
-///   the parameter sets already live in the init segment's avcC.
-///
-/// `rtp_ts` is the RTP timestamp of the AU's first packet; the muxer
-/// turns inter-AU deltas into real sample durations.
-fn flush_access_unit(
-    s: &mut LocalStreamState,
-    mux: &Arc<Mutex<Fmp4Muxer>>,
-    au: Vec<Bytes>,
-    rtp_ts: u32,
-) {
-    let has_idr = au.iter().any(|n| nal_type_of(n) == 5);
-    let has_vcl = au.iter().any(|n| matches!(nal_type_of(n), 1..=5));
+    let has_idr = nals.iter().any(|n| nal_type(n) == 5);
+    let has_vcl = nals.iter().any(|n| matches!(nal_type(n), 1..=5));
     if has_idr {
         s.got_keyframe = true;
     }
-    if !s.got_keyframe || !has_vcl || au.is_empty() {
+    if !s.got_keyframe || !has_vcl {
         return;
     }
-    // AUD NALs carry no payload; some decoders complain about AUD-only
-    // samples, so strip them (SPS/PPS/SEI stay — in-band parameter sets
-    // are legal and make the stream self-healing).
-    let au: Vec<Bytes> = au.into_iter().filter(|n| nal_type_of(n) != 9).collect();
-    mux.lock().push_access_unit(&au, rtp_ts);
+    // AUD NALs carry no payload; strip them (SPS/PPS/SEI stay — in-band
+    // parameter sets are legal and make the stream self-healing).
+    let filtered: Vec<Bytes> = nals.into_iter().filter(|n| nal_type(n) != 9).collect();
+    mux.lock().push_access_unit(&filtered, pkt.rtp_ts);
 }
 
 async fn resolve_stream_uri(
@@ -276,16 +219,21 @@ async fn resolve_stream_uri(
 mod tests {
     use super::*;
 
-    fn pkt(nal_type_byte: u8, payload: &[u8], marker: bool, rtp_ts: u32) -> EncodedPacket {
-        let mut data = vec![0, 0, 0, 1, nal_type_byte];
-        data.extend_from_slice(payload);
+    /// Build ONE complete access unit (Annex-B) from (nal_byte, payload)
+    /// pairs — the shape the GStreamer appsink delivers with alignment=au.
+    fn au(nals: &[(u8, &[u8])], rtp_ts: u32) -> EncodedPacket {
+        let mut data = Vec::new();
+        for (t, p) in nals {
+            data.extend_from_slice(&[0, 0, 0, 1, *t]);
+            data.extend_from_slice(p);
+        }
         EncodedPacket {
             codec: VideoCodec::H264,
             data: Bytes::from(data),
             rtp_ts,
             arrival_us: 0,
-            is_keyframe: nal_type_byte & 0x1F == 5,
-            marker,
+            is_keyframe: nals.iter().any(|(t, _)| t & 0x1F == 5),
+            marker: true,
         }
     }
 
@@ -304,34 +252,29 @@ mod tests {
     #[test]
     fn nothing_is_emitted_before_first_idr() {
         let (mux, state) = setup();
-        // Camera connect burst: SPS+PPS, then P-slices (this camera does
-        // not force an IDR on connect).
-        ingest_packet(&mux, &state, pkt(0x67, SPS_RBSP, true, 9000));
-        ingest_packet(&mux, &state, pkt(0x68, PPS_RBSP, true, 9000));
+        // Camera connect burst: SPS+PPS attached to a P-frame AU (this
+        // camera does not force an IDR on connect).
+        ingest_au(&mux, &state, au(&[(0x67, SPS_RBSP), (0x68, PPS_RBSP), (0x41, &[0x9a, 0x20])], 9000));
         assert!(mux.lock().is_ready(), "SPS+PPS must configure the muxer");
-        ingest_packet(&mux, &state, pkt(0x41, &[0x9a, 0x20], true, 18000));
-        ingest_packet(&mux, &state, pkt(0x41, &[0x9a, 0x30], true, 27000));
+        assert_eq!(mux.lock().segment_count(), 0, "pre-IDR AU must be dropped");
+        ingest_au(&mux, &state, au(&[(0x41, &[0x9a, 0x30])], 18000));
         assert_eq!(mux.lock().segment_count(), 0, "P-slices before first IDR must be dropped");
 
         // First IDR AU (AUD + IDR slice) opens the stream but only fills
         // the muxer's pending slot — a segment needs the NEXT frame's
         // timestamp to compute this one's duration.
-        ingest_packet(&mux, &state, pkt(0x09, &[0xf0], false, 36000)); // AUD, no marker
-        ingest_packet(&mux, &state, pkt(0x65, &[0x88, 0x84], true, 36000));
+        ingest_au(&mux, &state, au(&[(0x09, &[0xf0]), (0x65, &[0x88, 0x84])], 27000));
         assert_eq!(mux.lock().segment_count(), 0, "first AU stays pending its successor");
 
         // The next AU flushes the IDR segment...
-        ingest_packet(&mux, &state, pkt(0x41, &[0x9a, 0x40], true, 45000));
+        ingest_au(&mux, &state, au(&[(0x41, &[0x9a, 0x40])], 36000));
         assert_eq!(mux.lock().segment_count(), 1);
-        // ...and so on.
-        ingest_packet(&mux, &state, pkt(0x41, &[0x9a, 0x50], true, 54000));
-        assert_eq!(mux.lock().segment_count(), 2);
-        // Picture-less AUs (AUD-only) are still dropped...
-        ingest_packet(&mux, &state, pkt(0x09, &[0xf0], true, 63000));
-        assert_eq!(mux.lock().segment_count(), 2, "VCL-less AU must be dropped");
+        // Picture-less AUs (AUD-only) are dropped...
+        ingest_au(&mux, &state, au(&[(0x09, &[0xf0])], 45000));
+        assert_eq!(mux.lock().segment_count(), 1, "VCL-less AU must be dropped");
         // ...and the following real frame absorbs the gap into the
         // pending frame's duration.
-        ingest_packet(&mux, &state, pkt(0x41, &[0x9a, 0x60], true, 72000));
-        assert_eq!(mux.lock().segment_count(), 3);
+        ingest_au(&mux, &state, au(&[(0x41, &[0x9a, 0x50])], 54000));
+        assert_eq!(mux.lock().segment_count(), 2);
     }
 }

@@ -2,7 +2,8 @@
 //!
 //! Pulls an RTSP stream from an IP camera and delivers encoded frames
 //! through callbacks: video as [`ipcam_core::EncodedPacket`] (Annex-B,
-//! one NAL per packet) and audio as [`AudioPacket`]. Session state and
+//! one complete access unit per packet — h264parse runs with
+//! `alignment=au`) and audio as [`AudioPacket`]. Session state and
 //! counters are observable through [`GstStreamHandle`].
 //!
 //! The GStreamer pipeline requires GStreamer + pkg-config on the build

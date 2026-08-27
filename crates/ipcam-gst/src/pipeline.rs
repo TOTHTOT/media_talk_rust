@@ -27,9 +27,7 @@ use ipcam_core::{AudioCodec, EncodedPacket, VideoCodec, now_micros};
 use parking_lot::Mutex;
 use tracing::{error, info, warn};
 
-use crate::packet::{
-    is_keyframe_h264, is_keyframe_h265, pts_ns_to_rtp_ts90k, pts_ns_to_us, split_au_into_nals,
-};
+use crate::packet::{pts_ns_to_rtp_ts90k, pts_ns_to_us};
 use crate::stats::{GstStreamHandle, StopSignal, StreamState, wait_or_stop};
 use crate::{AudioOutput, AudioPacket, GstStreamConfig, GstStreamError};
 
@@ -174,6 +172,7 @@ fn install_pad_added<V, A>(
             warn!(pad = %pad.name(), "pad without caps structure, ignored");
             return;
         };
+        info!(s = %s, "current pad capacity");
         match s.get::<&str>("media").unwrap_or("") {
             "video" => link_video(&pipeline, pad, s, &tracks, &on_video, &handle),
             "audio" => link_audio(
@@ -273,25 +272,23 @@ fn link_video<V>(
                 let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                 let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                 let rtp_ts = pts_ns_to_rtp_ts90k(buffer.pts().map_or(0, |t| t.nseconds()));
-                let nals = split_au_into_nals(map.as_slice());
-                let last = nals.len().saturating_sub(1);
-                let mut out = cb.lock();
-                for (i, nal) in nals.into_iter().enumerate() {
-                    let is_keyframe = match codec {
-                        VideoCodec::H264 => is_keyframe_h264(&nal),
-                        VideoCodec::H265 => is_keyframe_h265(&nal),
-                        _ => false,
-                    };
-                    h.note_frame(nal.len() as u64, false);
-                    out(EncodedPacket {
-                        codec,
-                        data: nal,
-                        rtp_ts,
-                        arrival_us: now_micros(),
-                        is_keyframe,
-                        marker: i == last,
-                    });
-                }
+                // alignment=au on the appsink caps guarantees one buffer ==
+                // one complete access unit (Annex-B). Deliver it whole —
+                // splitting into per-NAL packets would only force the
+                // consumer to reassemble what is already assembled here.
+                h.note_frame(map.len() as u64, false);
+                // GStreamer marks non-keyframe buffers DELTA_UNIT.
+                let is_keyframe = !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT);
+                cb.lock()(EncodedPacket {
+                    codec,
+                    data: Bytes::copy_from_slice(map.as_slice()),
+                    rtp_ts,
+                    arrival_us: now_micros(),
+                    is_keyframe,
+                    // Every packet carries a complete AU, so it is always
+                    // the "last packet of the access unit".
+                    marker: true,
+                });
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),

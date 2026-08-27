@@ -1,5 +1,5 @@
 //! Bisect 3: call web-display's `spawn_streaming` directly (the exact serve
-//! data path: resolve URI → ipcam_gst::start → ingest_packet → Fmp4Muxer)
+//! data path: resolve URI → ipcam_gst::start → ingest_au → Fmp4Muxer)
 //! without the HTTP server. Counts muxer segments over N seconds.
 //! Usage: cargo run -p web-display --example stream_only -- <rtsp_url> [secs]
 
