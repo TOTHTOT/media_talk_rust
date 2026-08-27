@@ -274,7 +274,6 @@ where
     Ok(())
 }
 
-
 ///
 ///
 /// Builds [`AppSinkCallbacks`] for the video branch.

@@ -2,6 +2,15 @@ use anyhow::Context;
 use ipcam_discovery::DiscoveryCredentials;
 use tracing::info;
 
+/// Return the first local IPv4 address, or "unknown" on error.
+fn local_ip() -> String {
+    if let Ok(ip) = local_ip_address::local_ip() {
+        ip.to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
 // Default ONVIF credentials baked in for cheap IP cameras. CLI args always
 // win; this is just so `serve` works out of the box against the typical
 // admin/changeme / admin/admin devices found on a small LAN.
@@ -16,7 +25,7 @@ pub async fn run(
     rtsp_urls: Vec<String>,
     audio_out: Option<String>,
 ) -> anyhow::Result<()> {
-    info!(bind = %format_args!("http://{}",bind), discovery_timeout_secs, ?username, manual = rtsp_urls.len(), audio_out = ?audio_out, "starting media server");
+    info!(bind = %format_args!("http://{}", bind), local_ip = %format_args!("http://{}:8080", local_ip()), discovery_timeout_secs, ?username, manual = rtsp_urls.len(), audio_out = ?audio_out, "starting media server");
     let timeout = std::time::Duration::from_secs(discovery_timeout_secs);
     let (user, pass) = match (username, password) {
         (Some(u), Some(p)) => (u, p),
