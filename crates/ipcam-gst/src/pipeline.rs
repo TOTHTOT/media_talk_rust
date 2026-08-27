@@ -174,16 +174,24 @@ fn install_pad_added<V, A>(
         };
         info!(s = %s, "current pad capacity");
         match s.get::<&str>("media").unwrap_or("") {
-            "video" => link_video(&pipeline, pad, s, &tracks, &on_video, &handle),
-            "audio" => link_audio(
-                &pipeline,
-                pad,
-                s,
-                &tracks,
-                &on_audio,
-                &handle,
-                &audio_output,
-            ),
+            "video" => {
+                if let Err(e) = link_video(&pipeline, pad, s, &tracks, &on_video, &handle) {
+                    error!(%e, "link_video failed");
+                }
+            }
+            "audio" => {
+                if let Err(e) = link_audio(
+                    &pipeline,
+                    pad,
+                    s,
+                    &tracks,
+                    &on_audio,
+                    &handle,
+                    &audio_output,
+                ) {
+                    error!(%e, "link_audio failed");
+                }
+            }
             other => warn!(media = other, "unsupported pad media type, ignored"),
         }
     });
@@ -199,7 +207,8 @@ fn link_video<V>(
     tracks: &Arc<Mutex<TrackState>>,
     on_video: &Arc<Mutex<V>>,
     handle: &GstStreamHandle,
-) where
+) -> Result<(), GstStreamError>
+where
     V: FnMut(EncodedPacket) + Send + 'static,
 {
     let encoding = s.get::<&str>("encoding-name").unwrap_or("");
@@ -208,29 +217,23 @@ fn link_video<V>(
         VideoCodec::H264 => ("rtph264depay", "h264parse", "video/x-h264"),
         VideoCodec::H265 => ("rtph265depay", "h265parse", "video/x-h265"),
         other => {
-            warn!(encoding, codec = ?other, "unsupported video codec, track ignored");
-            return;
+            return Err(GstStreamError::Link(format!(
+                "unsupported video codec: {encoding} ({other:?}), track ignored"
+            )));
         }
     };
     {
         let mut t = tracks.lock();
         if t.video_linked {
-            warn!(
-                encoding,
-                "additional video track ignored (only the first is consumed)"
-            );
-            return;
+            return Err(GstStreamError::Link(format!(
+                "additional video track ignored (only the first is consumed): {encoding}"
+            )));
         }
         t.video_linked = true;
     }
 
-    let (depay, parse) = match (make(depay_name), make(parse_name)) {
-        (Ok(d), Ok(p)) => (d, p),
-        (d, p) => {
-            error!(depay = ?d.err(), parse = ?p.err(), "video branch elements unavailable");
-            return;
-        }
-    };
+    let depay = make(depay_name)?;
+    let parse = make(parse_name)?;
     // byte-stream (Annex-B) + alignment=au matches the downstream
     // Fmp4Muxer input contract carried over from play_loop.
     let caps = gst::Caps::builder(caps_name)
@@ -241,27 +244,26 @@ fn link_video<V>(
     // 0.24: emit-signals isn't on AppSinkBuilder; set it post-build via property.
     appsink.set_property("emit-signals", true);
 
-    if let Err(e) = pipeline.add_many([&depay, &parse, appsink.upcast_ref()]) {
-        error!(%e, "failed to add video branch to pipeline");
-        return;
-    }
-    if let Err(e) = gst::Element::link_many([&depay, &parse, appsink.upcast_ref()]) {
-        error!(%e, "failed to link video branch");
-        return;
-    }
+    pipeline
+        .add_many([&depay, &parse, appsink.upcast_ref()])
+        .map_err(|e| {
+            GstStreamError::Link(format!("failed to add video branch to pipeline: {e}"))
+        })?;
+    gst::Element::link_many([&depay, &parse, appsink.upcast_ref()])
+        .map_err(|e| GstStreamError::Link(format!("failed to link video branch: {e}")))?;
     for elem in [&depay, &parse, appsink.upcast_ref()] {
         if let Err(e) = elem.sync_state_with_parent() {
             warn!(element = %elem.name(), %e, "sync state with parent failed");
         }
     }
     let Some(depay_sink) = depay.static_pad("sink") else {
-        error!(depay = depay_name, "depay element has no sink pad");
-        return;
+        return Err(GstStreamError::Link(format!(
+            "depay element `{depay_name}` has no sink pad"
+        )));
     };
-    if let Err(e) = pad.link(&depay_sink) {
-        error!(%e, "failed to link rtspsrc pad to video branch");
-        return;
-    }
+    pad.link(&depay_sink).map_err(|e| {
+        GstStreamError::Link(format!("failed to link rtspsrc pad to video branch: {e}"))
+    })?;
 
     let cb = on_video.clone();
     let h = handle.clone();
@@ -294,6 +296,7 @@ fn link_video<V>(
             .build(),
     );
     info!(codec = ?codec, "video track linked");
+    Ok(())
 }
 
 /// Decode-chain element names between the tee and `audioconvert` for
@@ -321,7 +324,8 @@ fn link_audio<A>(
     on_audio: &Arc<Mutex<A>>,
     handle: &GstStreamHandle,
     audio_output: &AudioOutput,
-) where
+) -> Result<(), GstStreamError>
+where
     A: FnMut(AudioPacket) + Send + 'static,
 {
     let encoding = s.get::<&str>("encoding-name").unwrap_or("");
@@ -338,42 +342,33 @@ fn link_audio<A>(
         },
     };
     let Some((depay_name, codec)) = codec else {
-        warn!(encoding, ?payload, "unsupported audio codec, track ignored");
-        return;
+        return Err(GstStreamError::Link(format!(
+            "unsupported audio codec: encoding={encoding}, payload={payload:?}, track ignored"
+        )));
     };
     {
         let mut t = tracks.lock();
         if t.audio_linked {
-            warn!(depay = depay_name, "additional audio track ignored");
-            return;
+            return Err(GstStreamError::Link(format!(
+                "additional audio track ignored: {depay_name}"
+            )));
         }
         t.audio_linked = true;
     }
 
-    let depay = match make(depay_name) {
-        Ok(d) => d,
-        Err(e) => {
-            error!(%e, "audio depay element unavailable");
-            return;
-        }
-    };
+    let depay = make(depay_name)?;
     let appsink = gst_app::AppSink::builder().build();
     appsink.set_property("emit-signals", true);
 
     match audio_output {
         AudioOutput::Disabled => {
-            if !assemble(pipeline, pad, &[&depay, appsink.upcast_ref()]) {
-                return;
-            }
-            if let Err(e) = depay.link(appsink.upcast_ref::<gst::Element>()) {
-                error!(%e, "failed to link audio branch");
-                return;
-            }
+            assemble(pipeline, pad, &[&depay, appsink.upcast_ref()])?;
+            depay
+                .link(appsink.upcast_ref::<gst::Element>())
+                .map_err(|e| GstStreamError::Link(format!("failed to link audio branch: {e}")))?;
         }
         AudioOutput::Alsa { device } => {
-            if !link_audio_with_playback(pipeline, pad, &depay, &appsink, codec, device) {
-                return;
-            }
+            link_audio_with_playback(pipeline, pad, &depay, &appsink, codec, device)?;
         }
     }
 
@@ -413,15 +408,21 @@ fn link_audio<A>(
             .build(),
     );
     info!(depay = depay_name, codec = ?codec, "audio track linked");
+    Ok(())
 }
 
 /// Add `elems` to the pipeline, sync their state with the parent and
 /// link the rtspsrc pad to the first element's sink pad. Shared by the
 /// plain and the tee'd audio branch.
-fn assemble(pipeline: &gst::Pipeline, pad: &gst::Pad, elems: &[&gst::Element]) -> bool {
+fn assemble(
+    pipeline: &gst::Pipeline,
+    pad: &gst::Pad,
+    elems: &[&gst::Element],
+) -> Result<(), GstStreamError> {
     if let Err(e) = pipeline.add_many(elems.iter().copied()) {
-        error!(%e, "failed to add audio branch to pipeline");
-        return false;
+        return Err(GstStreamError::Link(format!(
+            "failed to add audio branch to pipeline: {e}"
+        )));
     }
     for elem in elems {
         if let Err(e) = elem.sync_state_with_parent() {
@@ -429,14 +430,16 @@ fn assemble(pipeline: &gst::Pipeline, pad: &gst::Pad, elems: &[&gst::Element]) -
         }
     }
     let Some(first_sink) = elems[0].static_pad("sink") else {
-        error!("first audio branch element has no sink pad");
-        return false;
+        return Err(GstStreamError::Link(
+            "first audio branch element has no sink pad".into(),
+        ));
     };
     if let Err(e) = pad.link(&first_sink) {
-        error!(%e, "failed to link rtspsrc pad to audio branch");
-        return false;
+        return Err(GstStreamError::Link(format!(
+            "failed to link rtspsrc pad to audio branch: {e}"
+        )));
     }
-    true
+    Ok(())
 }
 
 /// `depay ! tee`, one tee output to the appsink queue, the other to
@@ -449,11 +452,12 @@ fn link_audio_with_playback(
     appsink: &gst_app::AppSink,
     codec: AudioCodec,
     device: &str,
-) -> bool {
+) -> Result<(), GstStreamError> {
     let decode_names = decode_chain_names(codec);
     if decode_names.is_empty() {
-        warn!(codec = ?codec, "no decode chain for codec, playing back nothing");
-        return false;
+        return Err(GstStreamError::Link(format!(
+            "no decode chain for codec: {codec:?}, playing back nothing"
+        )));
     }
 
     let mut names = vec!["tee", "queue", "queue"];
@@ -463,48 +467,56 @@ fn link_audio_with_playback(
         match names.iter().map(|n| make(n)).collect::<Result<Vec<_>, _>>() {
             Ok(v) => v,
             Err(e) => {
-                error!(%e, "audio playback branch elements unavailable");
-                return false;
+                return Err(GstStreamError::Link(format!(
+                    "audio playback branch elements unavailable: {e}"
+                )));
             }
         };
     let tee = &elems[0];
     let queue_cb = &elems[1];
     let queue_play = &elems[2];
     let Some(alsasink) = elems.last() else {
-        error!("playback branch missing alsasink");
-        return false;
+        return Err(GstStreamError::Link(
+            "playback branch missing alsasink".into(),
+        ));
     };
     alsasink.set_property("device", device);
 
     // Static links: depay→tee, queue_cb→appsink, and the playback chain
     // queue_play→decode…→alsasink.
     if let Err(e) = depay.link(tee) {
-        error!(%e, "failed to link depay to tee");
-        return false;
+        return Err(GstStreamError::Link(format!(
+            "failed to link depay to tee: {e}"
+        )));
     }
     if let Err(e) = queue_cb.link(appsink.upcast_ref::<gst::Element>()) {
-        error!(%e, "failed to link callback queue to appsink");
-        return false;
+        return Err(GstStreamError::Link(format!(
+            "failed to link callback queue to appsink: {e}"
+        )));
     }
     let play_chain: Vec<&gst::Element> = elems[2..].iter().collect();
     if let Err(e) = gst::Element::link_many(play_chain) {
-        error!(%e, "failed to link audio playback chain");
-        return false;
+        return Err(GstStreamError::Link(format!(
+            "failed to link audio playback chain: {e}"
+        )));
     }
 
     // Request tee src pads and connect both outputs.
     for (branch, queue) in [("callback", queue_cb), ("playback", queue_play)] {
         let Some(tee_src) = tee.request_pad_simple("src_%u") else {
-            error!("tee request pad src_%u failed");
-            return false;
+            return Err(GstStreamError::Link(format!(
+                "tee request pad src_%u failed for {branch} branch"
+            )));
         };
         let Some(queue_sink) = queue.static_pad("sink") else {
-            error!(branch, "queue has no sink pad");
-            return false;
+            return Err(GstStreamError::Link(format!(
+                "queue has no sink pad for {branch} branch"
+            )));
         };
         if let Err(e) = tee_src.link(&queue_sink) {
-            error!(branch, %e, "failed to link tee src pad");
-            return false;
+            return Err(GstStreamError::Link(format!(
+                "failed to link tee src pad ({branch}): {e}"
+            )));
         }
     }
 

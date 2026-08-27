@@ -250,9 +250,15 @@ fn write_mvhd(buf: &mut BytesMut, m: &Fmp4Muxer) {
 /// `{0x10000,0,0, 0,0x10000,0, 0,0,0x40000000}` (16.16 / 2.30 fixed).
 fn write_unity_matrix(b: &mut BytesMut) {
     for v in [
-        0x00010000u32, 0, 0, //
-        0, 0x00010000, 0, //
-        0, 0, 0x40000000,
+        0x00010000u32,
+        0,
+        0, //
+        0,
+        0x00010000,
+        0, //
+        0,
+        0,
+        0x40000000,
     ] {
         b.extend_from_slice(&v.to_be_bytes());
     }
@@ -546,7 +552,11 @@ fn skip_scaling_list(r: &mut BitReader, size: usize) -> Option<()> {
             let delta = r.se()?;
             next_scale = (last_scale + delta + 256) % 256;
         }
-        last_scale = if next_scale == 0 { last_scale } else { next_scale };
+        last_scale = if next_scale == 0 {
+            last_scale
+        } else {
+            next_scale
+        };
     }
     Some(())
 }
@@ -851,7 +861,11 @@ mod tests {
             u32::from_be_bytes([seg[p + 4], seg[p + 5], seg[p + 6], seg[p + 7]])
         };
         assert_eq!(trun_duration(&m.segments[0]), 9000);
-        assert_eq!(tfdt_base(&m.segments[0]), 0, "timeline starts at the first AU");
+        assert_eq!(
+            tfdt_base(&m.segments[0]),
+            0,
+            "timeline starts at the first AU"
+        );
         assert_eq!(trun_duration(&m.segments[1]), 18000);
         assert_eq!(tfdt_base(&m.segments[1]), 9000);
     }

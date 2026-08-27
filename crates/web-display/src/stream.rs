@@ -139,7 +139,11 @@ pub fn spawn_streaming(
 ///   connect, so early AUs would only poison the browser's decoder;
 /// - AUs without any VCL NAL (SPS/PPS/AUD/SEI-only) carry no picture and
 ///   are dropped; AUD NALs are stripped from the rest.
-fn ingest_au(mux: &Arc<Mutex<Fmp4Muxer>>, state: &Arc<Mutex<LocalStreamState>>, pkt: EncodedPacket) {
+fn ingest_au(
+    mux: &Arc<Mutex<Fmp4Muxer>>,
+    state: &Arc<Mutex<LocalStreamState>>,
+    pkt: EncodedPacket,
+) {
     if pkt.codec != VideoCodec::H264 {
         return;
     }
@@ -166,7 +170,10 @@ fn ingest_au(mux: &Arc<Mutex<Fmp4Muxer>>, state: &Arc<Mutex<LocalStreamState>>, 
         }
         if let (Some(sps), Some(pps)) = (s.sps.clone(), s.pps.clone()) {
             let mut m = mux.lock();
-            m.set_avc_config(AvcConfig { sps: sps.clone(), pps });
+            m.set_avc_config(AvcConfig {
+                sps: sps.clone(),
+                pps,
+            });
             // Profiles carry no width/height (ONVIF backend skips the
             // encoder-config round-trip), so derive dimensions from SPS.
             if let Some((w, h)) = crate::mux::parse_sps_dimensions(&sps) {
@@ -214,7 +221,6 @@ async fn resolve_stream_uri(
     Ok(uri)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,17 +260,36 @@ mod tests {
         let (mux, state) = setup();
         // Camera connect burst: SPS+PPS attached to a P-frame AU (this
         // camera does not force an IDR on connect).
-        ingest_au(&mux, &state, au(&[(0x67, SPS_RBSP), (0x68, PPS_RBSP), (0x41, &[0x9a, 0x20])], 9000));
+        ingest_au(
+            &mux,
+            &state,
+            au(
+                &[(0x67, SPS_RBSP), (0x68, PPS_RBSP), (0x41, &[0x9a, 0x20])],
+                9000,
+            ),
+        );
         assert!(mux.lock().is_ready(), "SPS+PPS must configure the muxer");
         assert_eq!(mux.lock().segment_count(), 0, "pre-IDR AU must be dropped");
         ingest_au(&mux, &state, au(&[(0x41, &[0x9a, 0x30])], 18000));
-        assert_eq!(mux.lock().segment_count(), 0, "P-slices before first IDR must be dropped");
+        assert_eq!(
+            mux.lock().segment_count(),
+            0,
+            "P-slices before first IDR must be dropped"
+        );
 
         // First IDR AU (AUD + IDR slice) opens the stream but only fills
         // the muxer's pending slot — a segment needs the NEXT frame's
         // timestamp to compute this one's duration.
-        ingest_au(&mux, &state, au(&[(0x09, &[0xf0]), (0x65, &[0x88, 0x84])], 27000));
-        assert_eq!(mux.lock().segment_count(), 0, "first AU stays pending its successor");
+        ingest_au(
+            &mux,
+            &state,
+            au(&[(0x09, &[0xf0]), (0x65, &[0x88, 0x84])], 27000),
+        );
+        assert_eq!(
+            mux.lock().segment_count(),
+            0,
+            "first AU stays pending its successor"
+        );
 
         // The next AU flushes the IDR segment...
         ingest_au(&mux, &state, au(&[(0x41, &[0x9a, 0x40])], 36000));

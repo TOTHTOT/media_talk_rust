@@ -244,7 +244,10 @@ fn build_router(inner: Arc<Inner>) -> Router {
     Router::new()
         .route("/api/devices", get(list_devices))
         .route("/api/sessions", get(list_sessions).post(create_session))
-        .route("/api/sessions/{id}", get(get_session).delete(delete_session))
+        .route(
+            "/api/sessions/{id}",
+            get(get_session).delete(delete_session),
+        )
         .route("/ws/{id}", get(ws_handler))
         .route("/", get(index_page))
         .route("/index.html", get(index_page))

@@ -38,6 +38,9 @@ pub enum GstStreamError {
     /// Runtime bus ERROR during playback.
     #[error("stream error: {0}")]
     Stream(String),
+    /// Video/audio branch link failure.
+    #[error("link error: {0}")]
+    Link(String),
 }
 
 /// Validate a stream configuration without touching the network.

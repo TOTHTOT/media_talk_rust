@@ -63,7 +63,11 @@ fn access_unit_with_4_nals_emits_one_moof_with_one_sample() {
     m.push_access_unit(&[annex_b_nal(0x41, &[0xCC; 16])], 42_000 + 9000);
 
     let segs = m.take_segments_since(0);
-    assert_eq!(segs.len(), 1, "exactly one segment for the first access unit");
+    assert_eq!(
+        segs.len(),
+        1,
+        "exactly one segment for the first access unit"
+    );
     let seg = segs.into_iter().next().unwrap();
 
     // Expect moof + mdat
@@ -122,14 +126,18 @@ fn access_unit_with_4_nals_emits_one_moof_with_one_sample() {
     let sample_size = read_u32(&seg, body + 16);
     let expected: usize = nalus
         .iter()
-        .map(|n| 4 + (n.len() - 4 /* strip Annex-B start code */))
+        .map(|n| 4 + (n.len() - 4/* strip Annex-B start code */))
         .sum();
     assert_eq!(sample_size as usize, expected, "sample_size = whole AU");
 
     // mdat payload is exactly that one sample; the segment is moof + mdat
     // with no trailing bytes.
     let mdat_size = read_u32(&seg, mdat_pos - 4) as usize;
-    assert_eq!(mdat_size, 8 + expected, "mdat box size = header (8) + sample");
+    assert_eq!(
+        mdat_size,
+        8 + expected,
+        "mdat box size = header (8) + sample"
+    );
     assert_eq!(
         seg.len(),
         moof_size + mdat_size,
