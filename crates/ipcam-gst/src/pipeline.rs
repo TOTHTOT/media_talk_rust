@@ -23,6 +23,7 @@ use bytes::Bytes;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
+use gstreamer_app::AppSinkCallbacks;
 use ipcam_core::{AudioCodec, EncodedPacket, VideoCodec, now_micros};
 use parking_lot::Mutex;
 use tracing::{error, info, warn};
@@ -232,8 +233,8 @@ where
         t.video_linked = true;
     }
 
-    let depay = make(depay_name)?;
-    let parse = make(parse_name)?;
+    let depay = make(depay_name)?; // 将输入的 rtp 包处理成 Annex-B NAL 然后丢给 parse
+    let parse = make(parse_name)?; // 将 depay 的结果组合成完整的 au, 最后丢给 appsink的回调
     // byte-stream (Annex-B) + alignment=au matches the downstream
     // Fmp4Muxer input contract carried over from play_loop.
     let caps = gst::Caps::builder(caps_name)
@@ -251,52 +252,80 @@ where
         })?;
     gst::Element::link_many([&depay, &parse, appsink.upcast_ref()])
         .map_err(|e| GstStreamError::Link(format!("failed to link video branch: {e}")))?;
+
+    // 对其 element 初始状态, 其实也可以不用, 目前还没 play 都是 null 状态
     for elem in [&depay, &parse, appsink.upcast_ref()] {
         if let Err(e) = elem.sync_state_with_parent() {
             warn!(element = %elem.name(), %e, "sync state with parent failed");
         }
     }
-    let Some(depay_sink) = depay.static_pad("sink") else {
-        return Err(GstStreamError::Link(format!(
+    // 提取 depay 的sink_pad然后与rtsp的src_pad连接
+    let depay_sink = depay
+        .static_pad("sink")
+        .ok_or(GstStreamError::Link(format!(
             "depay element `{depay_name}` has no sink pad"
-        )));
-    };
+        )))?;
     pad.link(&depay_sink).map_err(|e| {
         GstStreamError::Link(format!("failed to link rtspsrc pad to video branch: {e}"))
     })?;
 
-    let cb = on_video.clone();
-    let h = handle.clone();
-    appsink.set_callbacks(
-        gst_app::AppSinkCallbacks::builder()
-            .new_sample(move |sink| {
-                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
-                let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                let rtp_ts = pts_ns_to_rtp_ts90k(buffer.pts().map_or(0, |t| t.nseconds()));
-                // alignment=au on the appsink caps guarantees one buffer ==
-                // one complete access unit (Annex-B). Deliver it whole —
-                // splitting into per-NAL packets would only force the
-                // consumer to reassemble what is already assembled here.
-                h.note_frame(map.len() as u64, false);
-                // GStreamer marks non-keyframe buffers DELTA_UNIT.
-                let is_keyframe = !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT);
-                cb.lock()(EncodedPacket {
-                    codec,
-                    data: Bytes::copy_from_slice(map.as_slice()),
-                    rtp_ts,
-                    arrival_us: now_micros(),
-                    is_keyframe,
-                    // Every packet carries a complete AU, so it is always
-                    // the "last packet of the access unit".
-                    marker: true,
-                });
-                Ok(gst::FlowSuccess::Ok)
-            })
-            .build(),
-    );
+    appsink.set_callbacks(link_video_callback(codec, on_video.clone(), handle.clone()));
     info!(codec = ?codec, "video track linked");
     Ok(())
+}
+
+
+///
+///
+/// Builds [`AppSinkCallbacks`] for the video branch.
+///
+/// The callback is invoked by GStreamer's appsink each time a complete
+/// access unit (one frame, `alignment=au`) is available. It extracts the
+/// raw Annex-B NAL data and PTS from the buffer, wraps them in an
+/// [`EncodedPacket`], and forwards it through `cb`. [`GstStreamHandle`]
+/// is used only for byte-count bookkeeping.
+///
+/// # Arguments
+///
+/// * `codec`: video codec (H.264 or H.265), copied into every packet.
+/// * `cb`: wrapped callback invoked once per complete access unit.
+/// * `h`: stream handle used for byte-count accounting.
+///
+/// returns: AppSinkCallbacks
+fn link_video_callback<V>(
+    codec: VideoCodec,
+    cb: Arc<Mutex<V>>,
+    h: GstStreamHandle,
+) -> AppSinkCallbacks
+where
+    V: FnMut(EncodedPacket) + Send + 'static,
+{
+    AppSinkCallbacks::builder()
+        .new_sample(move |sink| {
+            let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+            let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+            let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+            let rtp_ts = pts_ns_to_rtp_ts90k(buffer.pts().map_or(0, |t| t.nseconds()));
+            // alignment=au on the appsink caps guarantees one buffer ==
+            // one complete access unit (Annex-B). Deliver it whole —
+            // splitting into per-NAL packets would only force the
+            // consumer to reassemble what is already assembled here.
+            h.note_frame(map.len() as u64, false);
+            // GStreamer marks non-keyframe buffers DELTA_UNIT.
+            let is_keyframe = !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT);
+            cb.lock()(EncodedPacket {
+                codec,
+                data: Bytes::copy_from_slice(map.as_slice()),
+                rtp_ts,
+                arrival_us: now_micros(),
+                is_keyframe,
+                // Every packet carries a complete AU, so it is always
+                // the "last packet of the access unit".
+                marker: true,
+            });
+            Ok(gst::FlowSuccess::Ok)
+        })
+        .build()
 }
 
 /// Decode-chain element names between the tee and `audioconvert` for
@@ -375,7 +404,7 @@ where
     let cb = on_audio.clone();
     let h = handle.clone();
     appsink.set_callbacks(
-        gst_app::AppSinkCallbacks::builder()
+        AppSinkCallbacks::builder()
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                 let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;

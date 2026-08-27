@@ -28,7 +28,7 @@ pub struct AudioPacket {
 /// ignored, and zero-payload NALs (two start codes back to back) are
 /// dropped.
 pub fn split_au_into_nals(data: &[u8]) -> Vec<Bytes> {
-    let mut starts: Vec<(usize, usize)> = Vec::new(); // (offset, start-code len)
+    let mut starts: Vec<(usize, usize)> = Vec::new(); // (offset, start-code len), 找到完整的一帧nal记录位置
     let mut i = 0;
     while i + 3 <= data.len() {
         if data[i] == 0 && data[i + 1] == 0 {
