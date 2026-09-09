@@ -45,13 +45,16 @@ impl Default for GstStreamConfig {
     }
 }
 
-/// Where decoded audio goes, besides the encoded-frame callback.
+/// Where decoded audio goes for on-device playback. The browser always
+/// receives audio (transcoded to Opus into webrtcsink) whenever the
+/// camera provides an audio track; this only controls the additional
+/// local speaker branch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum AudioOutput {
-    /// Only deliver encoded audio frames via the callback.
+    /// No local playback; browser-only audio.
     #[default]
     Disabled,
-    /// Tee off a decode-and-play branch to an ALSA device.
+    /// Additionally tee off a decode-and-play branch to an ALSA device.
     Alsa { device: String },
 }
 

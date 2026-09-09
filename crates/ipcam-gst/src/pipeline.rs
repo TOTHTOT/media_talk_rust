@@ -1,13 +1,13 @@
 //! GStreamer pipeline implementation.
 //!
 //! Topology: `rtspsrc` → dynamic pads (`stream_%u`) → per-track
-//! `depay ! parse ! webrtcsink(video_%u)`. The encoded stream is
+//! `depay ! parse ! webrtcsink(video_%u)`. The encoded video is
 //! republished verbatim — no decode, no re-encode — so the browser does
 //! the decoding and the latency budget is the WebRTC jitter buffer
-//! (tens of ms) instead of an MSE buffer (seconds). With
-//! `AudioOutput::Alsa` the audio branch decodes and plays locally
-//! (webrtcsink's `audio_%u` pad only accepts raw/opus, so camera G.711
-//! audio is not forwarded to the browser yet).
+//! (tens of ms) instead of an MSE buffer (seconds). Audio transcodes
+//! (G.711/AAC → Opus) through a tee because webrtcsink's `audio_%u` pad
+//! only accepts raw/opus; the same tee optionally feeds a local
+//! decode-and-play branch to ALSA.
 //!
 //! webrtcsink's sink pads are **request pads**: each track requests
 //! `video_%u`/`audio_%u` when the rtspsrc pad appears. The element
@@ -176,7 +176,7 @@ fn install_pad_added(
                 }
             }
             "audio" => {
-                if let Err(e) = link_audio(&pipeline, pad, s, &tracks, &handle, &audio_output) {
+                if let Err(e) = link_audio(&pipeline, pad, s, &tracks, &ws, &handle, &audio_output) {
                     error!(%e, "link_audio failed");
                 }
             }
@@ -281,15 +281,17 @@ fn decode_chain_names(codec: AudioCodec) -> &'static [&'static str] {
 }
 
 /// Link the audio branch. webrtcsink's `audio_%u` pad only accepts
-/// raw/opus, so camera audio (G.711/AAC) is NOT forwarded to the
-/// browser; the branch exists solely for `AudioOutput::Alsa` local
-/// playback (`depay ! decode ! audioconvert ! audioresample ! alsasink`).
-/// With `AudioOutput::Disabled` the pad is left unlinked.
+/// raw/opus, while cameras send G.711/AAC — so unlike video (pass-through)
+/// the audio path transcodes: `depay ! decode ! tee`, one tee output to
+/// `queue ! audioconvert ! audioresample ! opusenc ! webrtcsink.audio_%u`
+/// for the browser, the other (only with `AudioOutput::Alsa`) to
+/// `queue ! audioconvert ! audioresample ! alsasink` for local playback.
 fn link_audio(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
     s: &gst::StructureRef,
     tracks: &Arc<Mutex<TrackState>>,
+    ws: &gst::Element,
     handle: &GstStreamHandle,
     audio_output: &AudioOutput,
 ) -> Result<(), GstStreamError> {
@@ -311,11 +313,6 @@ fn link_audio(
             "unsupported audio codec: encoding={encoding}, payload={payload:?}, track ignored"
         )));
     };
-
-    let AudioOutput::Alsa { device } = audio_output else {
-        info!(depay = depay_name, codec = ?codec, "audio track ignored (no local playback requested)");
-        return Ok(());
-    };
     {
         let mut t = tracks.lock();
         if t.audio_linked {
@@ -326,38 +323,72 @@ fn link_audio(
         t.audio_linked = true;
     }
 
-    let depay = make(depay_name)?;
     let decode_names = decode_chain_names(codec);
     if decode_names.is_empty() {
         return Err(GstStreamError::Link(format!(
-            "no decode chain for codec: {codec:?}, playing back nothing"
+            "no decode chain for codec: {codec:?}, dropping audio track"
         )));
     }
-    let mut names = vec![depay_name];
-    names.extend_from_slice(decode_names);
-    names.extend(["audioconvert", "audioresample", "alsasink"]);
-    let elems: Vec<gst::Element> = names
-        .iter()
-        .map(|n| make(n))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| {
-            GstStreamError::Link(format!("audio playback branch elements unavailable: {e}"))
-        })?;
-    let Some(alsasink) = elems.last() else {
-        return Err(GstStreamError::Link(
-            "playback branch missing alsasink".into(),
-        ));
+
+    // 解码段：depay → (alawdec / mulawdec / aacparse+avdec_aac) → tee
+    let mut chain_names = vec![depay_name];
+    chain_names.extend_from_slice(decode_names);
+    chain_names.push("tee");
+    let chain = build_elements(&chain_names)?;
+    let chain_refs: Vec<&gst::Element> = chain.iter().collect();
+    gst::Element::link_many(chain_refs.clone())
+        .map_err(|e| GstStreamError::Link(format!("failed to link audio decode chain: {e}")))?;
+    let depay = &chain[0];
+    let tee = chain.last().expect("chain always ends with tee");
+
+    // 浏览器分支：tee → queue → audioconvert → audioresample → opusenc → ws.audio_%u
+    let web = build_elements(&["queue", "audioconvert", "audioresample", "opusenc"])?;
+    let web_refs: Vec<&gst::Element> = web.iter().collect();
+    gst::Element::link_many(web_refs.clone())
+        .map_err(|e| GstStreamError::Link(format!("failed to link web audio branch: {e}")))?;
+    let ws_pad = ws
+        .request_pad_simple("audio_%u")
+        .ok_or(GstStreamError::Link(
+            "webrtcsink request pad audio_%u failed".into(),
+        ))?;
+    let opus_src = web.last().and_then(|e| e.static_pad("src")).ok_or(
+        GstStreamError::Link("opusenc has no src pad".into()),
+    )?;
+    opus_src
+        .link(&ws_pad)
+        .map_err(|e| GstStreamError::Link(format!("failed to link opusenc to webrtcsink: {e}")))?;
+    link_tee_branch(tee, &web[0])?;
+
+    // 本地播放分支（可选）：tee → queue → audioconvert → audioresample → alsasink
+    let alsa = match audio_output {
+        AudioOutput::Alsa { device } => {
+            let elems = build_elements(&["queue", "audioconvert", "audioresample", "alsasink"])?;
+            let Some(alsasink) = elems.last() else {
+                return Err(GstStreamError::Link(
+                    "playback branch missing alsasink".into(),
+                ));
+            };
+            alsasink.set_property("device", device);
+            let alsa_refs: Vec<&gst::Element> = elems.iter().collect();
+            gst::Element::link_many(alsa_refs).map_err(|e| {
+                GstStreamError::Link(format!("failed to link audio playback chain: {e}"))
+            })?;
+            link_tee_branch(tee, &elems[0])?;
+            Some(elems)
+        }
+        AudioOutput::Disabled => None,
     };
-    alsasink.set_property("device", device);
 
-    let refs: Vec<&gst::Element> = elems.iter().collect();
-    gst::Element::link_many(refs.clone())
-        .map_err(|e| GstStreamError::Link(format!("failed to link audio playback chain: {e}")))?;
-
+    // 全部元件入管道并对齐状态，最后把 rtspsrc 的 pad 接到 depay
+    let mut all: Vec<&gst::Element> = chain_refs;
+    all.extend(web_refs);
+    if let Some(alsa_elems) = &alsa {
+        all.extend(alsa_elems.iter());
+    }
     pipeline
-        .add_many(refs.clone())
+        .add_many(all.clone())
         .map_err(|e| GstStreamError::Link(format!("failed to add audio branch: {e}")))?;
-    for elem in &elems {
+    for elem in all {
         if let Err(e) = elem.sync_state_with_parent() {
             warn!(element = %elem.name(), %e, "sync state with parent failed");
         }
@@ -373,7 +404,31 @@ fn link_audio(
     if let Some(depay_src) = depay.static_pad("src") {
         install_stats_probe(&depay_src, handle.clone(), true);
     }
-    info!(depay = depay_name, codec = ?codec, "audio playback branch linked");
+    info!(depay = depay_name, codec = ?codec, alsa = alsa.is_some(), "audio track linked (opus → webrtcsink)");
+    Ok(())
+}
+
+/// Build a list of elements by factory name.
+fn build_elements(names: &[&str]) -> Result<Vec<gst::Element>, GstStreamError> {
+    names
+        .iter()
+        .map(|n| make(n))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| GstStreamError::Link(format!("audio branch elements unavailable: {e}")))
+}
+
+/// Request one tee src pad and link it to `first`'s sink pad (the first
+/// element of a branch chain, normally a queue).
+fn link_tee_branch(tee: &gst::Element, first: &gst::Element) -> Result<(), GstStreamError> {
+    let tee_src = tee
+        .request_pad_simple("src_%u")
+        .ok_or(GstStreamError::Link("tee request pad src_%u failed".into()))?;
+    let sink = first
+        .static_pad("sink")
+        .ok_or(GstStreamError::Link("branch head element has no sink pad".into()))?;
+    tee_src
+        .link(&sink)
+        .map_err(|e| GstStreamError::Link(format!("failed to link tee src pad: {e}")))?;
     Ok(())
 }
 
