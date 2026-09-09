@@ -1,16 +1,26 @@
-//! GStreamer pipeline implementation (feature `gst`).
+//! GStreamer pipeline implementation.
 //!
 //! Topology: `rtspsrc` → dynamic pads (`stream_%u`) → per-track
-//! `depay ! parse ! appsink`. Video AUs are split into single Annex-B
-//! NALs and delivered through `on_video`; audio frames are depayloaded
-//! and delivered through `on_audio`. With `AudioOutput::Alsa` the audio
-//! branch tees off a decode-and-play chain to the ALSA device.
+//! `depay ! parse ! webrtcsink(video_%u)`. The encoded stream is
+//! republished verbatim — no decode, no re-encode — so the browser does
+//! the decoding and the latency budget is the WebRTC jitter buffer
+//! (tens of ms) instead of an MSE buffer (seconds). With
+//! `AudioOutput::Alsa` the audio branch decodes and plays locally
+//! (webrtcsink's `audio_%u` pad only accepts raw/opus, so camera G.711
+//! audio is not forwarded to the browser yet).
+//!
+//! webrtcsink's sink pads are **request pads**: each track requests
+//! `video_%u`/`audio_%u` when the rtspsrc pad appears. The element
+//! registers as a producer on the process-wide signalling server (see
+//! [`crate::ensure_signalling_server`]) under `cfg.stream_name`.
 //!
 //! The bus/session thread owns the lifecycle: ERROR/EOS/RTSPSrcTimeout
 //! tear the pipeline down and rebuild it after exponential backoff
 //! (auth failures and exhausted retries go straight to `Failed`); a
 //! separate ticker logs stats every 10s while Playing. Both exit via
-//! the shared [`StopSignal`] when `stop()` fires.
+//! the shared [`StopSignal`] when `stop()` fires. Frame/byte counters
+//! come from buffer probes on the parse src pads (there is no appsink
+//! anymore).
 //!
 //! Every `start()` builds an independent pipeline instance; sessions
 //! share no mutable state (FR-007).
@@ -19,18 +29,14 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use bytes::Bytes;
 use gstreamer as gst;
 use gstreamer::prelude::*;
-use gstreamer_app as gst_app;
-use gstreamer_app::AppSinkCallbacks;
-use ipcam_core::{AudioCodec, EncodedPacket, VideoCodec, now_micros};
+use ipcam_core::{AudioCodec, VideoCodec};
 use parking_lot::Mutex;
 use tracing::{error, info, warn};
 
-use crate::packet::{pts_ns_to_rtp_ts90k, pts_ns_to_us};
 use crate::stats::{GstStreamHandle, StopSignal, StreamState, wait_or_stop};
-use crate::{AudioOutput, AudioPacket, GstStreamConfig, GstStreamError};
+use crate::{AudioOutput, GstStreamConfig, GstStreamError};
 
 /// Per-pipeline pad-added bookkeeping (recreated on every rebuild).
 struct TrackState {
@@ -40,23 +46,11 @@ struct TrackState {
 
 type SharedPipeline = Arc<Mutex<Option<gst::Pipeline>>>;
 
-pub(crate) fn start<V, A>(
-    cfg: GstStreamConfig,
-    on_video: V,
-    on_audio: A,
-) -> Result<GstStreamHandle, GstStreamError>
-where
-    V: FnMut(EncodedPacket) + Send + 'static,
-    A: FnMut(AudioPacket) + Send + 'static,
-{
+pub(crate) fn start(cfg: GstStreamConfig) -> Result<GstStreamHandle, GstStreamError> {
     gst::init().map_err(|e| GstStreamError::Init(format!("gst init: {e}")))?;
 
     let handle = GstStreamHandle::new();
-    let on_video = Arc::new(Mutex::new(on_video));
-    let on_audio = Arc::new(Mutex::new(on_audio));
-
-    let (pipeline, tracks) =
-        build_pipeline(&cfg, on_video.clone(), on_audio.clone(), handle.clone())?;
+    let (pipeline, tracks) = build_pipeline(&cfg, handle.clone())?;
     pipeline
         .set_state(gst::State::Playing)
         .map_err(|e| GstStreamError::Init(format!("pipeline set Playing: {e}")))?;
@@ -67,8 +61,6 @@ where
         pipeline,
         tracks,
         cfg,
-        on_video,
-        on_audio,
         handle.clone(),
         current.clone(),
         signal.clone(),
@@ -96,18 +88,13 @@ fn make(name: &str) -> Result<gst::Element, GstStreamError> {
         .map_err(|e| GstStreamError::Init(format!("missing element `{name}`: {e}")))
 }
 
-/// Build a fresh pipeline (rtspsrc + pad-added dispatch). Called by
-/// `start()` and again on every reconnect — must stay reentrant.
-fn build_pipeline<V, A>(
+/// Build a fresh pipeline (rtspsrc + webrtcsink + pad-added dispatch).
+/// Called by `start()` and again on every reconnect — must stay
+/// reentrant.
+fn build_pipeline(
     cfg: &GstStreamConfig,
-    on_video: Arc<Mutex<V>>,
-    on_audio: Arc<Mutex<A>>,
     handle: GstStreamHandle,
-) -> Result<(gst::Pipeline, Arc<Mutex<TrackState>>), GstStreamError>
-where
-    V: FnMut(EncodedPacket) + Send + 'static,
-    A: FnMut(AudioPacket) + Send + 'static,
-{
+) -> Result<(gst::Pipeline, Arc<Mutex<TrackState>>), GstStreamError> {
     let pipeline = gst::Pipeline::new();
     let src = make("rtspsrc")?;
     src.set_property("location", &cfg.uri);
@@ -120,9 +107,23 @@ where
         src.set_property("user-id", user);
         src.set_property("user-pw", pass);
     }
+
+    let ws = make("webrtcsink")?;
+    // Producer identity on the signalling channel; consumers match on
+    // `meta.name`. Keep it unique per session.
+    ws.set_property_from_str("meta", &format!("meta,name={}", cfg.stream_name));
+    // webrtcsink 连到进程内共享的信令服务器（ensure_signalling_server
+    // 起在 8443）——注意不是 signalling-server-host/port，那两个属性
+    // 是给“自己跑服务器”模式用的，连别人的服务器要走 signaller 的 uri
+    let signaller = ws.property::<gst::glib::Object>("signaller");
+    signaller.set_property(
+        "uri",
+        format!("ws://{}:{}", cfg.signalling_host, cfg.signalling_port),
+    );
+
     pipeline
-        .add(&src)
-        .map_err(|e| GstStreamError::Init(format!("pipeline add rtspsrc: {e}")))?;
+        .add_many([&src, &ws])
+        .map_err(|e| GstStreamError::Init(format!("pipeline add rtspsrc/webrtcsink: {e}")))?;
 
     let tracks = Arc::new(Mutex::new(TrackState {
         video_linked: false,
@@ -133,8 +134,7 @@ where
         &pipeline,
         tracks.clone(),
         cfg.audio_output.clone(),
-        on_video,
-        on_audio,
+        ws,
         handle,
     );
     Ok((pipeline, tracks))
@@ -148,18 +148,14 @@ where
 /// dynamic pads belong to it. Connecting on the pipeline (a Bin) never
 /// fires for rtspsrc's stream pads (the bin only reports its own ghost
 /// pads), which silently leaves every track unlinked.
-fn install_pad_added<V, A>(
+fn install_pad_added(
     src: &gst::Element,
     pipeline: &gst::Pipeline,
     tracks: Arc<Mutex<TrackState>>,
     audio_output: AudioOutput,
-    on_video: Arc<Mutex<V>>,
-    on_audio: Arc<Mutex<A>>,
+    ws: gst::Element,
     handle: GstStreamHandle,
-) where
-    V: FnMut(EncodedPacket) + Send + 'static,
-    A: FnMut(AudioPacket) + Send + 'static,
-{
+) {
     let weak = pipeline.downgrade();
 
     src.connect_pad_added(move |_src, pad| {
@@ -173,23 +169,14 @@ fn install_pad_added<V, A>(
             warn!(pad = %pad.name(), "pad without caps structure, ignored");
             return;
         };
-        info!(s = %s, "current pad capacity");
         match s.get::<&str>("media").unwrap_or("") {
             "video" => {
-                if let Err(e) = link_video(&pipeline, pad, s, &tracks, &on_video, &handle) {
+                if let Err(e) = link_video(&pipeline, pad, s, &tracks, &ws, &handle) {
                     error!(%e, "link_video failed");
                 }
             }
             "audio" => {
-                if let Err(e) = link_audio(
-                    &pipeline,
-                    pad,
-                    s,
-                    &tracks,
-                    &on_audio,
-                    &handle,
-                    &audio_output,
-                ) {
+                if let Err(e) = link_audio(&pipeline, pad, s, &tracks, &handle, &audio_output) {
                     error!(%e, "link_audio failed");
                 }
             }
@@ -198,25 +185,33 @@ fn install_pad_added<V, A>(
     });
 }
 
-/// Link `rtph264depay ! h264parse ! appsink` (or the H.265 equivalents)
-/// onto an rtspsrc video pad. Only the first video track is consumed;
-/// additional ones are logged and ignored.
-fn link_video<V>(
+/// Attach a buffer probe on `pad` that feeds the session's frame/byte
+/// counters (replaces the appsink callbacks of the fMP4 era).
+fn install_stats_probe(pad: &gst::Pad, handle: GstStreamHandle, is_audio: bool) {
+    pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
+        if let Some(gst::PadProbeData::Buffer(ref buffer)) = info.data {
+            handle.note_frame(buffer.size() as u64, is_audio);
+        }
+        gst::PadProbeReturn::Ok
+    });
+}
+
+/// Link `rtph264depay ! h264parse ! webrtcsink.video_%u` (or the H.265
+/// equivalents) onto an rtspsrc video pad. Only the first video track
+/// is consumed; additional ones are logged and ignored.
+fn link_video(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
     s: &gst::StructureRef,
     tracks: &Arc<Mutex<TrackState>>,
-    on_video: &Arc<Mutex<V>>,
+    ws: &gst::Element,
     handle: &GstStreamHandle,
-) -> Result<(), GstStreamError>
-where
-    V: FnMut(EncodedPacket) + Send + 'static,
-{
+) -> Result<(), GstStreamError> {
     let encoding = s.get::<&str>("encoding-name").unwrap_or("");
     let codec = VideoCodec::from_name(encoding);
-    let (depay_name, parse_name, caps_name) = match codec {
-        VideoCodec::H264 => ("rtph264depay", "h264parse", "video/x-h264"),
-        VideoCodec::H265 => ("rtph265depay", "h265parse", "video/x-h265"),
+    let (depay_name, parse_name) = match codec {
+        VideoCodec::H264 => ("rtph264depay", "h264parse"),
+        VideoCodec::H265 => ("rtph265depay", "h265parse"),
         other => {
             return Err(GstStreamError::Link(format!(
                 "unsupported video codec: {encoding} ({other:?}), track ignored"
@@ -233,33 +228,19 @@ where
         t.video_linked = true;
     }
 
-    let depay = make(depay_name)?; // 将输入的 rtp 包处理成 Annex-B NAL 然后丢给 parse
-    let parse = make(parse_name)?; // 将 depay 的结果组合成完整的 au, 最后丢给 appsink的回调
-    // byte-stream (Annex-B) + alignment=au matches the downstream
-    // Fmp4Muxer input contract carried over from play_loop.
-    let caps = gst::Caps::builder(caps_name)
-        .field("stream-format", "byte-stream")
-        .field("alignment", "au")
-        .build();
-    let appsink = gst_app::AppSink::builder().caps(&caps).build();
-    // 0.24: emit-signals isn't on AppSinkBuilder; set it post-build via property.
-    appsink.set_property("emit-signals", true);
-
+    let depay = make(depay_name)?; // RTP 包 → 编码码流（Annex-B NAL）
+    let parse = make(parse_name)?; // 组帧 + 提供 codec_data 给下游
     pipeline
-        .add_many([&depay, &parse, appsink.upcast_ref()])
-        .map_err(|e| {
-            GstStreamError::Link(format!("failed to add video branch to pipeline: {e}"))
-        })?;
-    gst::Element::link_many([&depay, &parse, appsink.upcast_ref()])
+        .add_many([&depay, &parse])
+        .map_err(|e| GstStreamError::Link(format!("failed to add video branch: {e}")))?;
+    gst::Element::link_many([&depay, &parse])
         .map_err(|e| GstStreamError::Link(format!("failed to link video branch: {e}")))?;
 
-    // 对其 element 初始状态, 其实也可以不用, 目前还没 play 都是 null 状态
-    for elem in [&depay, &parse, appsink.upcast_ref()] {
+    for elem in [&depay, &parse] {
         if let Err(e) = elem.sync_state_with_parent() {
             warn!(element = %elem.name(), %e, "sync state with parent failed");
         }
     }
-    // 提取 depay 的sink_pad然后与rtsp的src_pad连接
     let depay_sink = depay
         .static_pad("sink")
         .ok_or(GstStreamError::Link(format!(
@@ -269,65 +250,25 @@ where
         GstStreamError::Link(format!("failed to link rtspsrc pad to video branch: {e}"))
     })?;
 
-    appsink.set_callbacks(link_video_callback(codec, on_video.clone(), handle.clone()));
+    // webrtcsink 的 sink pad 是 request pad，用到时才申请
+    let ws_pad = ws
+        .request_pad_simple("video_%u")
+        .ok_or(GstStreamError::Link(
+            "webrtcsink request pad video_%u failed".into(),
+        ))?;
+    let parse_src = parse.static_pad("src").ok_or(GstStreamError::Link(format!(
+        "parse element `{parse_name}` has no src pad"
+    )))?;
+    parse_src
+        .link(&ws_pad)
+        .map_err(|e| GstStreamError::Link(format!("failed to link parse to webrtcsink: {e}")))?;
+    install_stats_probe(&parse_src, handle.clone(), false);
+
     info!(codec = ?codec, "video track linked");
     Ok(())
 }
 
-///
-///
-/// Builds [`AppSinkCallbacks`] for the video branch.
-///
-/// The callback is invoked by GStreamer's appsink each time a complete
-/// access unit (one frame, `alignment=au`) is available. It extracts the
-/// raw Annex-B NAL data and PTS from the buffer, wraps them in an
-/// [`EncodedPacket`], and forwards it through `cb`. [`GstStreamHandle`]
-/// is used only for byte-count bookkeeping.
-///
-/// # Arguments
-///
-/// * `codec`: video codec (H.264 or H.265), copied into every packet.
-/// * `cb`: wrapped callback invoked once per complete access unit.
-/// * `h`: stream handle used for byte-count accounting.
-///
-/// returns: AppSinkCallbacks
-fn link_video_callback<V>(
-    codec: VideoCodec,
-    cb: Arc<Mutex<V>>,
-    h: GstStreamHandle,
-) -> AppSinkCallbacks
-where
-    V: FnMut(EncodedPacket) + Send + 'static,
-{
-    AppSinkCallbacks::builder()
-        .new_sample(move |sink| {
-            let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-            let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
-            let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-            let rtp_ts = pts_ns_to_rtp_ts90k(buffer.pts().map_or(0, |t| t.nseconds()));
-            // alignment=au on the appsink caps guarantees one buffer ==
-            // one complete access unit (Annex-B). Deliver it whole —
-            // splitting into per-NAL packets would only force the
-            // consumer to reassemble what is already assembled here.
-            h.note_frame(map.len() as u64, false);
-            // GStreamer marks non-keyframe buffers DELTA_UNIT.
-            let is_keyframe = !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT);
-            cb.lock()(EncodedPacket {
-                codec,
-                data: Bytes::copy_from_slice(map.as_slice()),
-                rtp_ts,
-                arrival_us: now_micros(),
-                is_keyframe,
-                // Every packet carries a complete AU, so it is always
-                // the "last packet of the access unit".
-                marker: true,
-            });
-            Ok(gst::FlowSuccess::Ok)
-        })
-        .build()
-}
-
-/// Decode-chain element names between the tee and `audioconvert` for
+/// Decode-chain element names between the depay and `audioconvert` for
 /// `AudioOutput::Alsa` playback (`avdec_aac` comes from gst-libav —
 /// needs `gstreamer1.0-libav` on the target).
 fn decode_chain_names(codec: AudioCodec) -> &'static [&'static str] {
@@ -339,23 +280,19 @@ fn decode_chain_names(codec: AudioCodec) -> &'static [&'static str] {
     }
 }
 
-/// Link the audio branch: `rtppcmadepay`/`rtppcmudepay`/`rtpmp4adepay`
-/// → appsink delivering `AudioPacket` via `on_audio`. With
-/// `AudioOutput::Alsa` a `tee` sits behind the depay element and a
-/// decode → audioconvert → audioresample → alsasink chain plays the
-/// stream on the target's speaker.
-fn link_audio<A>(
+/// Link the audio branch. webrtcsink's `audio_%u` pad only accepts
+/// raw/opus, so camera audio (G.711/AAC) is NOT forwarded to the
+/// browser; the branch exists solely for `AudioOutput::Alsa` local
+/// playback (`depay ! decode ! audioconvert ! audioresample ! alsasink`).
+/// With `AudioOutput::Disabled` the pad is left unlinked.
+fn link_audio(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
     s: &gst::StructureRef,
     tracks: &Arc<Mutex<TrackState>>,
-    on_audio: &Arc<Mutex<A>>,
     handle: &GstStreamHandle,
     audio_output: &AudioOutput,
-) -> Result<(), GstStreamError>
-where
-    A: FnMut(AudioPacket) + Send + 'static,
-{
+) -> Result<(), GstStreamError> {
     let encoding = s.get::<&str>("encoding-name").unwrap_or("");
     let payload = s.get::<i32>("payload").ok();
     let codec = match encoding.to_ascii_uppercase().as_str() {
@@ -374,6 +311,11 @@ where
             "unsupported audio codec: encoding={encoding}, payload={payload:?}, track ignored"
         )));
     };
+
+    let AudioOutput::Alsa { device } = audio_output else {
+        info!(depay = depay_name, codec = ?codec, "audio track ignored (no local playback requested)");
+        return Ok(());
+    };
     {
         let mut t = tracks.lock();
         if t.audio_linked {
@@ -385,124 +327,22 @@ where
     }
 
     let depay = make(depay_name)?;
-    let appsink = gst_app::AppSink::builder().build();
-    appsink.set_property("emit-signals", true);
-
-    match audio_output {
-        AudioOutput::Disabled => {
-            assemble(pipeline, pad, &[&depay, appsink.upcast_ref()])?;
-            depay
-                .link(appsink.upcast_ref::<gst::Element>())
-                .map_err(|e| GstStreamError::Link(format!("failed to link audio branch: {e}")))?;
-        }
-        AudioOutput::Alsa { device } => {
-            link_audio_with_playback(pipeline, pad, &depay, &appsink, codec, device)?;
-        }
-    }
-
-    let cb = on_audio.clone();
-    let h = handle.clone();
-    appsink.set_callbacks(
-        AppSinkCallbacks::builder()
-            .new_sample(move |sink| {
-                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
-                let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                let (rate, channels) = match codec {
-                    // G.711 over RTP is always 8 kHz mono.
-                    AudioCodec::G711A | AudioCodec::G711U => (8000, 1),
-                    _ => match sample.caps().and_then(|c| c.structure(0)) {
-                        Some(st) => (
-                            st.get::<i32>("rate").unwrap_or(0) as u32,
-                            st.get::<i32>("channels").unwrap_or(0) as u32,
-                        ),
-                        None => {
-                            warn!(codec = ?codec, "audio sample without caps; rate/channels set to 0");
-                            (0, 0)
-                        }
-                    },
-                };
-                let pkt = AudioPacket {
-                    codec,
-                    data: Bytes::copy_from_slice(map.as_slice()),
-                    pts_us: pts_ns_to_us(buffer.pts().map_or(0, |t| t.nseconds())),
-                    rate,
-                    channels,
-                };
-                h.note_frame(pkt.data.len() as u64, true);
-                cb.lock()(pkt);
-                Ok(gst::FlowSuccess::Ok)
-            })
-            .build(),
-    );
-    info!(depay = depay_name, codec = ?codec, "audio track linked");
-    Ok(())
-}
-
-/// Add `elems` to the pipeline, sync their state with the parent and
-/// link the rtspsrc pad to the first element's sink pad. Shared by the
-/// plain and the tee'd audio branch.
-fn assemble(
-    pipeline: &gst::Pipeline,
-    pad: &gst::Pad,
-    elems: &[&gst::Element],
-) -> Result<(), GstStreamError> {
-    if let Err(e) = pipeline.add_many(elems.iter().copied()) {
-        return Err(GstStreamError::Link(format!(
-            "failed to add audio branch to pipeline: {e}"
-        )));
-    }
-    for elem in elems {
-        if let Err(e) = elem.sync_state_with_parent() {
-            warn!(element = %elem.name(), %e, "sync state with parent failed");
-        }
-    }
-    let Some(first_sink) = elems[0].static_pad("sink") else {
-        return Err(GstStreamError::Link(
-            "first audio branch element has no sink pad".into(),
-        ));
-    };
-    if let Err(e) = pad.link(&first_sink) {
-        return Err(GstStreamError::Link(format!(
-            "failed to link rtspsrc pad to audio branch: {e}"
-        )));
-    }
-    Ok(())
-}
-
-/// `depay ! tee`, one tee output to the appsink queue, the other to
-/// `decode ! audioconvert ! audioresample ! alsasink`. Tee src pads are
-/// request pads (decodebin example pattern).
-fn link_audio_with_playback(
-    pipeline: &gst::Pipeline,
-    pad: &gst::Pad,
-    depay: &gst::Element,
-    appsink: &gst_app::AppSink,
-    codec: AudioCodec,
-    device: &str,
-) -> Result<(), GstStreamError> {
     let decode_names = decode_chain_names(codec);
     if decode_names.is_empty() {
         return Err(GstStreamError::Link(format!(
             "no decode chain for codec: {codec:?}, playing back nothing"
         )));
     }
-
-    let mut names = vec!["tee", "queue", "queue"];
+    let mut names = vec![depay_name];
     names.extend_from_slice(decode_names);
     names.extend(["audioconvert", "audioresample", "alsasink"]);
-    let elems: Vec<gst::Element> =
-        match names.iter().map(|n| make(n)).collect::<Result<Vec<_>, _>>() {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(GstStreamError::Link(format!(
-                    "audio playback branch elements unavailable: {e}"
-                )));
-            }
-        };
-    let tee = &elems[0];
-    let queue_cb = &elems[1];
-    let queue_play = &elems[2];
+    let elems: Vec<gst::Element> = names
+        .iter()
+        .map(|n| make(n))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| {
+            GstStreamError::Link(format!("audio playback branch elements unavailable: {e}"))
+        })?;
     let Some(alsasink) = elems.last() else {
         return Err(GstStreamError::Link(
             "playback branch missing alsasink".into(),
@@ -510,48 +350,31 @@ fn link_audio_with_playback(
     };
     alsasink.set_property("device", device);
 
-    // Static links: depay→tee, queue_cb→appsink, and the playback chain
-    // queue_play→decode…→alsasink.
-    if let Err(e) = depay.link(tee) {
-        return Err(GstStreamError::Link(format!(
-            "failed to link depay to tee: {e}"
-        )));
-    }
-    if let Err(e) = queue_cb.link(appsink.upcast_ref::<gst::Element>()) {
-        return Err(GstStreamError::Link(format!(
-            "failed to link callback queue to appsink: {e}"
-        )));
-    }
-    let play_chain: Vec<&gst::Element> = elems[2..].iter().collect();
-    if let Err(e) = gst::Element::link_many(play_chain) {
-        return Err(GstStreamError::Link(format!(
-            "failed to link audio playback chain: {e}"
-        )));
-    }
+    let refs: Vec<&gst::Element> = elems.iter().collect();
+    gst::Element::link_many(refs.clone())
+        .map_err(|e| GstStreamError::Link(format!("failed to link audio playback chain: {e}")))?;
 
-    // Request tee src pads and connect both outputs.
-    for (branch, queue) in [("callback", queue_cb), ("playback", queue_play)] {
-        let Some(tee_src) = tee.request_pad_simple("src_%u") else {
-            return Err(GstStreamError::Link(format!(
-                "tee request pad src_%u failed for {branch} branch"
-            )));
-        };
-        let Some(queue_sink) = queue.static_pad("sink") else {
-            return Err(GstStreamError::Link(format!(
-                "queue has no sink pad for {branch} branch"
-            )));
-        };
-        if let Err(e) = tee_src.link(&queue_sink) {
-            return Err(GstStreamError::Link(format!(
-                "failed to link tee src pad ({branch}): {e}"
-            )));
+    pipeline
+        .add_many(refs.clone())
+        .map_err(|e| GstStreamError::Link(format!("failed to add audio branch: {e}")))?;
+    for elem in &elems {
+        if let Err(e) = elem.sync_state_with_parent() {
+            warn!(element = %elem.name(), %e, "sync state with parent failed");
         }
     }
+    let depay_sink = depay.static_pad("sink").ok_or(GstStreamError::Link(
+        "audio depay element has no sink pad".into(),
+    ))?;
+    pad.link(&depay_sink).map_err(|e| {
+        GstStreamError::Link(format!("failed to link rtspsrc pad to audio branch: {e}"))
+    })?;
 
-    let mut all: Vec<&gst::Element> = vec![depay];
-    all.extend(elems.iter());
-    all.push(appsink.upcast_ref());
-    assemble(pipeline, pad, &all)
+    // 统计：数 depay 输出的编码帧（解码后样本计数意义不大）
+    if let Some(depay_src) = depay.static_pad("src") {
+        install_stats_probe(&depay_src, handle.clone(), true);
+    }
+    info!(depay = depay_name, codec = ?codec, "audio playback branch linked");
+    Ok(())
 }
 
 /// Outcome of one bus watch round on the session thread.
@@ -567,22 +390,14 @@ enum BusOutcome {
 /// whole pipeline after exponential backoff (R5). Auth failures (401
 /// wording) and exhausted `max_attempts` end the session as `Failed`;
 /// `stop()` interrupts backoff immediately.
-// reason: one argument per session-owned resource; bundling them into
-// a struct would just reshuffle the same list.
-#[allow(clippy::too_many_arguments)]
-fn spawn_session_loop<V, A>(
+fn spawn_session_loop(
     pipeline: gst::Pipeline,
     tracks: Arc<Mutex<TrackState>>,
     cfg: GstStreamConfig,
-    on_video: Arc<Mutex<V>>,
-    on_audio: Arc<Mutex<A>>,
     handle: GstStreamHandle,
     current: SharedPipeline,
     signal: Arc<StopSignal>,
-) where
-    V: FnMut(EncodedPacket) + Send + 'static,
-    A: FnMut(AudioPacket) + Send + 'static,
-{
+) {
     thread::spawn(move || {
         let mut pipeline = pipeline;
         let mut tracks = tracks;
@@ -616,7 +431,7 @@ fn spawn_session_loop<V, A>(
                     break 'outer;
                 }
                 handle.transition(StreamState::Connecting);
-                match build_pipeline(&cfg, on_video.clone(), on_audio.clone(), handle.clone()) {
+                match build_pipeline(&cfg, handle.clone()) {
                     Ok((p, t)) => match p.set_state(gst::State::Playing) {
                         Ok(_) => {
                             *current.lock() = Some(p.clone());

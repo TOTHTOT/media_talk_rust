@@ -2,7 +2,6 @@
 //! frames — no tokio, no web server, just `ipcam_gst::start`.
 //! Usage: cargo run -p ipcam-gst --example ingest -- <rtsp_url> [secs]
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -21,36 +20,29 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(6);
 
-    let frames = std::sync::Arc::new(AtomicU64::new(0));
-    let bytes = std::sync::Arc::new(AtomicU64::new(0));
-    let f = frames.clone();
-    let b = bytes.clone();
+    // webrtcsink needs the signalling server to register with; host it
+    // in-process so the example is self-contained.
+    ipcam_gst::ensure_signalling_server().expect("signalling server");
 
     let cfg = ipcam_gst::GstStreamConfig {
         uri: url,
+        stream_name: "ingest-example".into(),
         ..Default::default()
     };
-    let handle = ipcam_gst::start(
-        cfg,
-        move |pkt| {
-            f.fetch_add(1, Ordering::Relaxed);
-            b.fetch_add(pkt.data.len() as u64, Ordering::Relaxed);
-        },
-        |_audio| {},
-    )
-    .expect("start");
+    let handle = ipcam_gst::start(cfg).expect("start");
 
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_secs(secs) {
         std::thread::sleep(Duration::from_secs(1));
+        let s = handle.stats();
         println!(
             "t={}s state={:?} frames={} bytes={}",
             t0.elapsed().as_secs(),
             handle.state(),
-            frames.load(Ordering::Relaxed),
-            bytes.load(Ordering::Relaxed)
+            s.frames_video,
+            s.bytes
         );
     }
     handle.stop();
-    println!("DONE frames={}", frames.load(Ordering::Relaxed));
+    println!("DONE frames={}", handle.stats().frames_video);
 }

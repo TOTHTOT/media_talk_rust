@@ -17,8 +17,8 @@ thiserror = { workspace = true }
 # Real GStreamer bindings (unconditional). Requires GStreamer + pkg-config
 # on the build host (the target board / Linux dev boxes / a Windows dev box
 # with the GStreamer MSVC SDK on PATH).
-gstreamer = "0.24"
-gstreamer-app = "0.24"
+gstreamer = "0.25.3"
+gstreamer-app = "0.25.2"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

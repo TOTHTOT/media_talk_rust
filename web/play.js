@@ -46,13 +46,39 @@
     el.classList.add("active");
   }
 
-  async function selectDevice(d, el) {
+  function selectDevice(d, el) {
     markActive(el);
     console.log("selected device", d);
   }
 
+  // The backend republishes every session on the in-process webrtcsink
+  // signalling server (ws://<host>:8443) with meta.name = session id.
+  // One GstWebRTCAPI instance is reused across profile switches; only
+  // the consumer session is swapped.
+  const api = new GstWebRTCAPI({
+    meta: { name: "web-" + Date.now() },
+    signalingServerUrl: "ws://" + location.hostname + ":8443",
+  });
+
+  let current = null; // { sessionId, consumer }
+
+  function stopCurrent() {
+    if (!current) return;
+    const { sessionId, consumer } = current;
+    current = null;
+    if (consumer) {
+      try { consumer.close(); } catch (e) { /* already closed */ }
+    }
+    const video = document.getElementById("player");
+    video.pause();
+    video.srcObject = null;
+    // Tell the backend to tear the camera pipeline down.
+    fetch(`/api/sessions/${sessionId}`, { method: "DELETE" }).catch(() => {});
+  }
+
   async function selectProfile(d, p, el) {
     markActive(el);
+    stopCurrent();
     let resp;
     try {
       resp = await fetchJson("/api/sessions", {
@@ -69,32 +95,45 @@
 
   function openStream(sessionId) {
     const video = document.getElementById("player");
-    const ms = new MediaSource();
-    video.src = URL.createObjectURL(ms);
-    let sb = null;
-    let queue = [];
-    let feeding = false;
-    function feed() {
-      if (!sb || feeding || queue.length === 0 || ms.readyState !== "open") return;
-      feeding = true;
-      sb.appendBuffer(queue.shift());
-    }
-    ms.addEventListener("sourceopen", () => {
-      sb = ms.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
-      sb.addEventListener("updateend", () => { feeding = false; feed(); });
-      sb.addEventListener("error", (e) => console.error("source buffer error", e));
-      feed();
-    });
-    const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/" + sessionId);
-    ws.binaryType = "arraybuffer";
-    ws.onmessage = (ev) => {
-      if (ev.data instanceof ArrayBuffer) {
-        queue.push(ev.data);
-        feed();
-      }
+    const entry = { sessionId, consumer: null };
+    current = entry;
+
+    const attach = (producer) => {
+      if (current !== entry || entry.consumer) return;
+      if (!producer.meta || producer.meta.name !== sessionId) return;
+      const consumer = api.createConsumerSession(producer.id);
+      entry.consumer = consumer;
+      consumer.addEventListener("streamsChanged", () => {
+        if (current !== entry) return;
+        const streams = consumer.streams;
+        if (streams.length > 0) {
+          video.srcObject = streams[0];
+          video.play().catch(() => {});
+        }
+      });
+      consumer.addEventListener("error", (e) => console.error("consumer error", e.message, e.error));
+      consumer.addEventListener("closed", () => {
+        if (entry.consumer === consumer) entry.consumer = null;
+      });
+      consumer.connect();
     };
-    ws.onerror = (e) => console.error("ws error", e);
+
+    api.registerPeerListener({
+      producerAdded: attach,
+      producerRemoved: (p) => {
+        // Pipeline restart (reconnect) drops the producer; the matching
+        // producerAdded re-attaches automatically.
+        if (p.meta && p.meta.name === sessionId && entry.consumer) {
+          try { entry.consumer.close(); } catch (e) { /* ignore */ }
+          entry.consumer = null;
+        }
+      },
+    });
+    // The producer may already be registered if the pipeline started fast.
+    for (const producer of api.getAvailableProducers()) attach(producer);
   }
+
+  window.addEventListener("beforeunload", stopCurrent);
 
   refreshDevices();
 })();

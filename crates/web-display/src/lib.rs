@@ -2,25 +2,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use dashmap::DashMap;
-use futures_util::{SinkExt, StreamExt};
 use ipcam_core::{DiscoveredDevice, SessionId, SessionInfo, SessionState};
 use ipcam_discovery::DiscoveryCredentials;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::info;
 
-pub mod mux;
 pub mod stream;
 
-use mux::{AvcConfig, Fmp4Muxer};
 use stream::spawn_streaming;
 
 #[derive(Clone)]
@@ -61,7 +57,9 @@ pub struct SessionRegistry {
 
 struct SessionEntry {
     info: SessionInfo,
-    muxer: Arc<parking_lot::Mutex<Fmp4Muxer>>,
+    /// GStreamer session backing this entry; `stop()`ped on removal so
+    /// a closed page doesn't leave a camera connection running.
+    handle: parking_lot::Mutex<Option<ipcam_gst::GstStreamHandle>>,
 }
 
 impl SessionRegistry {
@@ -102,10 +100,16 @@ impl SessionRegistry {
             session_id,
             SessionEntry {
                 info,
-                muxer: Arc::new(parking_lot::Mutex::new(Fmp4Muxer::new())),
+                handle: parking_lot::Mutex::new(None),
             },
         );
         Some(session_id)
+    }
+
+    pub fn set_handle(&self, session_id: SessionId, handle: ipcam_gst::GstStreamHandle) {
+        if let Some(entry) = self.sessions.get(&session_id) {
+            *entry.handle.lock() = Some(handle);
+        }
     }
 
     pub fn list_sessions(&self) -> Vec<SessionInfo> {
@@ -116,41 +120,11 @@ impl SessionRegistry {
         self.sessions.get(&session_id).map(|kv| kv.info.clone())
     }
 
-    pub fn push_packet(&self, session_id: SessionId, pkt: bytes::Bytes) {
-        if let Some(entry) = self.sessions.get(&session_id) {
-            entry.muxer.lock().push_packet(pkt);
-        }
-    }
-
-    pub fn configure_muxer(&self, session_id: SessionId, cfg: AvcConfig) {
-        if let Some(entry) = self.sessions.get(&session_id) {
-            entry.muxer.lock().set_avc_config(cfg);
-        }
-    }
-
-    pub fn init_segment_for(&self, session_id: SessionId) -> Option<bytes::Bytes> {
-        let entry = self.sessions.get(&session_id)?;
-        let mux = entry.muxer.lock();
-        if mux.is_ready() {
-            Some(mux.make_init_segment())
-        } else {
-            None
-        }
-    }
-
-    pub fn take_segments_since(&self, session_id: SessionId, since: usize) -> Vec<bytes::Bytes> {
-        let Some(entry) = self.sessions.get(&session_id) else {
-            return Vec::new();
-        };
-        entry.muxer.lock().take_segments_since(since)
-    }
-
-    pub fn muxer(&self, session_id: SessionId) -> Option<Arc<parking_lot::Mutex<Fmp4Muxer>>> {
-        self.sessions.get(&session_id).map(|kv| kv.muxer.clone())
-    }
-
     pub fn remove(&self, session_id: SessionId) -> Option<SessionInfo> {
         self.sessions.remove(&session_id).map(|(_, mut e)| {
+            if let Some(h) = e.handle.lock().take() {
+                h.stop();
+            }
             e.info.state = SessionState::Ended;
             e.info.clone()
         })
@@ -171,6 +145,11 @@ impl WebDisplay {
         manual_devices: Vec<DiscoveredDevice>,
         audio_out: Option<String>,
     ) -> anyhow::Result<Self> {
+        // All WebRTC sessions register on this one in-process signalling
+        // server (ws://<host>:8443); must be up before the first stream.
+        ipcam_gst::ensure_signalling_server()
+            .context("failed to start WebRTC signalling server")?;
+
         let registry = Arc::new(SessionRegistry::new(credentials.clone()));
         let (state_tx, _rx) = broadcast::channel(64);
 
@@ -248,10 +227,10 @@ fn build_router(inner: Arc<Inner>) -> Router {
             "/api/sessions/{id}",
             get(get_session).delete(delete_session),
         )
-        .route("/ws/{id}", get(ws_handler))
         .route("/", get(index_page))
         .route("/index.html", get(index_page))
         .route("/play.js", get(play_js))
+        .route("/gstwebrtc-api.min.js", get(gstwebrtc_api_js))
         .with_state(inner)
 }
 
@@ -297,21 +276,14 @@ async fn create_session(
             .into_response();
     }
 
-    let mux = match inner.registry.muxer(session_id) {
-        Some(m) => m,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, "muxer missing").into_response(),
-    };
-
     spawn_streaming(
         session_id,
         device.xaddr.clone(),
         profile.profile_id,
         profile.uri,
-        profile.width,
-        profile.height,
         inner.registry.credentials(),
         inner.audio_out.clone(),
-        mux,
+        inner.registry.clone(),
         inner.state_tx.clone(),
     );
 
@@ -336,77 +308,6 @@ async fn delete_session(State(inner): State<Arc<Inner>>, Path(id): Path<SessionI
     }
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(inner): State<Arc<Inner>>,
-    Path(id): Path<SessionId>,
-) -> Response {
-    ws.on_upgrade(move |socket| ws_loop(socket, inner, id))
-}
-
-async fn ws_loop(socket: WebSocket, inner: Arc<Inner>, session_id: SessionId) {
-    let (mut sender, mut receiver) = socket.split();
-
-    let mut ticker = tokio::time::interval(Duration::from_millis(50));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut init_sent = false;
-    let mut init_wait_logged = false;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-
-    loop {
-        tokio::select! {
-            _ = ticker.tick() => {
-                if !init_sent {
-                    if let Some(init) = inner.registry.init_segment_for(session_id) {
-                        if sender.send(Message::Binary(init)).await.is_err() {
-                            warn!("ws send init failed");
-                            return;
-                        }
-                        init_sent = true;
-                        info!(%session_id, "init segment sent to ws");
-                    } else if !init_wait_logged {
-                        info!(%session_id, "ws waiting for muxer config (waiting on SPS/PPS)");
-                        init_wait_logged = true;
-                    }
-                    if tokio::time::Instant::now() > deadline {
-                        warn!(%session_id, "init wait deadline exceeded");
-                        let _ = sender
-                            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
-                                code: axum::extract::ws::close_code::POLICY,
-                                reason: "init timeout".into(),
-                            })))
-                            .await;
-                        return;
-                    }
-                }
-                if init_sent {
-                    // take_segments_since is DESTRUCTIVE (split_off): the
-                    // drained segments leave the muxer's buffer, so the
-                    // next drain must start at index 0 again. An absolute
-                    // "last_sent" counter would skip every other segment.
-                    let segments = inner.registry.take_segments_since(session_id, 0);
-                    for seg in segments {
-                        if sender.send(Message::Binary(seg)).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-            msg = receiver.next() => {
-                match msg {
-                    Some(Ok(Message::Close(_))) => break,
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => {
-                        warn!(err = %e, "ws receive error");
-                        break;
-                    }
-                    None => break,
-                }
-            }
-        }
-    }
-}
-
 async fn index_page() -> impl IntoResponse {
     let body = include_str!("../../../web/index.html");
     ([("content-type", "text/html; charset=utf-8")], body)
@@ -414,6 +315,11 @@ async fn index_page() -> impl IntoResponse {
 
 async fn play_js() -> impl IntoResponse {
     let body = include_str!("../../../web/play.js");
+    ([("content-type", "application/javascript")], body)
+}
+
+async fn gstwebrtc_api_js() -> impl IntoResponse {
+    let body = include_str!("../../../web/gstwebrtc-api.min.js");
     ([("content-type", "application/javascript")], body)
 }
 

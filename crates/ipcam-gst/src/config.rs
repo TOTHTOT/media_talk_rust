@@ -18,6 +18,14 @@ pub struct GstStreamConfig {
     pub audio_output: AudioOutput,
     /// Reconnect/back-off policy after a stream failure.
     pub reconnect: ReconnectPolicy,
+    /// Producer name announced on the WebRTC signalling channel
+    /// (`meta,name=...`); browser consumers match on this exact string.
+    pub stream_name: String,
+    /// Signalling server the stream's webrtcsink registers with
+    /// (started once per process by [`crate::ensure_signalling_server`]).
+    pub signalling_host: String,
+    /// Signalling server port.
+    pub signalling_port: u16,
 }
 
 impl Default for GstStreamConfig {
@@ -30,6 +38,9 @@ impl Default for GstStreamConfig {
             latency_ms: 200,
             audio_output: AudioOutput::default(),
             reconnect: ReconnectPolicy::default(),
+            stream_name: "stream".into(),
+            signalling_host: "127.0.0.1".into(),
+            signalling_port: 8443,
         }
     }
 }
@@ -105,6 +116,11 @@ pub fn validate(cfg: &GstStreamConfig) -> Result<(), GstStreamError> {
             "reconnect max_delay ({:?}) < initial_delay ({:?})",
             cfg.reconnect.max_delay, cfg.reconnect.initial_delay
         )));
+    }
+    if cfg.stream_name.is_empty() {
+        return Err(GstStreamError::InvalidConfig(
+            "stream_name must not be empty".into(),
+        ));
     }
     Ok(())
 }

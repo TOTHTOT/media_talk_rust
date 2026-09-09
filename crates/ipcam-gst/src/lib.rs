@@ -1,27 +1,28 @@
-//! GStreamer-based RTSP A/V ingest engine (replaces `ipcam-rtsp` `play_loop`).
+//! GStreamer-based RTSP → WebRTC republishing engine.
 //!
-//! Pulls an RTSP stream from an IP camera and delivers encoded frames
-//! through callbacks: video as [`ipcam_core::EncodedPacket`] (Annex-B,
-//! one complete access unit per packet — h264parse runs with
-//! `alignment=au`) and audio as [`AudioPacket`]. Session state and
-//! counters are observable through [`GstStreamHandle`].
+//! Pulls an RTSP stream from an IP camera and republishes it to browsers
+//! through `webrtcsink` (rswebrtc): the pipeline is
+//! `rtspsrc → depay → parse → webrtcsink`, and every session registers
+//! itself as a named producer on the process-wide signalling server
+//! started by [`ensure_signalling_server`]. Session state and counters
+//! are observable through [`GstStreamHandle`].
 //!
 //! The GStreamer pipeline requires GStreamer + pkg-config on the build
 //! host; the bindings are an unconditional dependency of this crate.
 
+use std::sync::OnceLock;
+
+use gstreamer as gst;
+use gstreamer::prelude::*;
 use thiserror::Error;
 
 pub mod config;
-pub mod packet;
 pub mod stats;
 
 mod pipeline;
 
 pub use config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
-pub use packet::AudioPacket;
 pub use stats::{GstStreamHandle, StreamState, StreamStats};
-
-use ipcam_core::EncodedPacket;
 
 #[derive(Debug, Error)]
 pub enum GstStreamError {
@@ -48,19 +49,42 @@ pub fn validate(cfg: &GstStreamConfig) -> Result<(), GstStreamError> {
     config::validate(cfg)
 }
 
-/// Start a streaming session: build the pipeline and enter the
-/// background event loop. Frames are delivered on GStreamer streaming
-/// threads, so the callbacks must be lightweight (clone the `Bytes`
-/// and hand off; never block).
-pub fn start<V, A>(
-    cfg: GstStreamConfig,
-    on_video: V,
-    on_audio: A,
-) -> Result<GstStreamHandle, GstStreamError>
-where
-    V: FnMut(EncodedPacket) + Send + 'static,
-    A: FnMut(AudioPacket) + Send + 'static,
-{
+/// Anchor pipeline hosting the process-wide WebRTC signalling server.
+static SIGNALLING_ANCHOR: OnceLock<gst::Pipeline> = OnceLock::new();
+
+/// Start the shared WebRTC signalling server (default 0.0.0.0:8443) if
+/// it is not running yet. The server lives on an anchor `webrtcsink`
+/// held in a static for the process lifetime; every streaming session
+/// then connects to it as a producer via `signalling_host/port`.
+/// Idempotent — safe to call from every server startup.
+pub fn ensure_signalling_server() -> Result<(), GstStreamError> {
+    gst::init().map_err(|e| GstStreamError::Init(format!("gst init: {e}")))?;
+    if SIGNALLING_ANCHOR.get().is_some() {
+        return Ok(());
+    }
+    let pipeline = gst::Pipeline::new();
+    let ws = gst::ElementFactory::make("webrtcsink")
+        .build()
+        .map_err(|e| GstStreamError::Init(format!("missing element `webrtcsink`: {e}")))?;
+    ws.set_property("run-signalling-server", true);
+    ws.set_property_from_str("meta", "meta,name=signalling-anchor");
+    pipeline
+        .add(&ws)
+        .map_err(|e| GstStreamError::Init(format!("anchor pipeline add webrtcsink: {e}")))?;
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|e| GstStreamError::Init(format!("anchor pipeline set Playing: {e}")))?;
+    // Lost a race with a concurrent caller: tear the duplicate down.
+    if SIGNALLING_ANCHOR.set(pipeline.clone()).is_err() {
+        let _ = pipeline.set_state(gst::State::Null);
+    }
+    Ok(())
+}
+
+/// Start a streaming session: build the RTSP → webrtcsink pipeline and
+/// enter the background event loop. The stream becomes visible to WebRTC
+/// consumers under `cfg.stream_name` once the pipeline reaches Playing.
+pub fn start(cfg: GstStreamConfig) -> Result<GstStreamHandle, GstStreamError> {
     validate(&cfg)?;
-    pipeline::start(cfg, on_video, on_audio)
+    pipeline::start(cfg)
 }
