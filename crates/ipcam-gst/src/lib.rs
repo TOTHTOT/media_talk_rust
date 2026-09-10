@@ -18,11 +18,13 @@ use thiserror::Error;
 
 pub mod config;
 pub mod stats;
+pub mod tap;
 
 mod pipeline;
 
 pub use config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
 pub use stats::{GstStreamHandle, StreamState, StreamStats};
+pub use tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};
 
 #[derive(Debug, Error)]
 pub enum GstStreamError {
@@ -85,6 +87,16 @@ pub fn ensure_signalling_server() -> Result<(), GstStreamError> {
 /// enter the background event loop. The stream becomes visible to WebRTC
 /// consumers under `cfg.stream_name` once the pipeline reaches Playing.
 pub fn start(cfg: GstStreamConfig) -> Result<GstStreamHandle, GstStreamError> {
+    start_with_taps(cfg, RawTaps::default())
+}
+
+/// Like [`start`], additionally teeing decoded frames into `taps`
+/// (native GUI / analytics). Each set tap adds a decode branch; with no
+/// taps this is identical to [`start`].
+pub fn start_with_taps(
+    cfg: GstStreamConfig,
+    taps: RawTaps,
+) -> Result<GstStreamHandle, GstStreamError> {
     validate(&cfg)?;
-    pipeline::start(cfg)
+    pipeline::start(cfg, taps)
 }

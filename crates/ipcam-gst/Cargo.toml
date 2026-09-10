@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 # with the GStreamer MSVC SDK on PATH).
 gstreamer = "0.25.3"
 gstreamer-app = "0.25.2"
+gstreamer-video = "0.25.2"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
