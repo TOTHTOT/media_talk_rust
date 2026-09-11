@@ -7,7 +7,7 @@ rust-version.workspace = true
 description = "Linux ALSA PCM capture/playback wrapper (Linux-only)"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-alsa = "0.9"
+alsa = { workspace = true }
 ipcam-core = { path = "../ipcam-core" }
 bytes = { workspace = true }
 tracing = { workspace = true }

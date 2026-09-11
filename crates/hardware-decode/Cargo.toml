@@ -23,10 +23,10 @@ tokio = { workspace = true }
 parking_lot = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-bindgen = { version = "0.69", optional = true }
+bindgen = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
-bindgen = { version = "0.69", optional = true }
+bindgen = { workspace = true, optional = true }
 
 [[bin]]
 name = "mpp-bindgen"

@@ -9,6 +9,7 @@ members = [
     "crates/ipcam-alsa",
     "crates/v4l2-device-cap",
     "crates/ipcam-gst",
+    "crates/ipcam-sip",
 ]
 
 [workspace.package]
@@ -42,6 +43,17 @@ clap = { version = "4.5", features = ["derive"] }
 sha-1 = "0.10"
 base64 = "0.23.1"
 nix = { version = "0.31.3", features = ["ioctl"] }
+local-ip-address = "0.6"
+alsa = "0.9"
+bindgen = "0.69"
+if-addrs = "0.10"
+rand = "0.8"
+# ONVIF client — strict-pinned: single-maintainer 0.x crate, churn is high;
+# any 0.16+ upgrade is a new change.
+oxvif = { version = "=0.15.0", default-features = false, features = ["mock"] }
+gstreamer = "0.25.3"
+gstreamer-app = "0.25.2"
+gstreamer-video = "0.25.3"
 
 [profile.release]
 opt-level = 3

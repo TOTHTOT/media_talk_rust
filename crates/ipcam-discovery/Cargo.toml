@@ -24,14 +24,13 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
-if-addrs = "0.10"
-rand = "0.8"
+if-addrs = { workspace = true }
+rand = { workspace = true }
 
-# ONVIF client implementation — strict-pinned to 0.12.0.
-# Single-maintainer 0.x crate, churn is high; any 0.13+ upgrade is a new change.
-oxvif = { version = "=0.15.0", default-features = false, features = ["mock"] }
+# ONVIF client implementation — version pin lives in workspace Cargo.toml.
+oxvif = { workspace = true }
 
 [dev-dependencies]
 # mirror of the main oxvif dep so `cargo test -p ipcam-discovery`
 # builds + resolves the dependency graph without warnings
-oxvif = { version = "=0.15.0", default-features = false, features = ["mock"] }
+oxvif = { workspace = true }
