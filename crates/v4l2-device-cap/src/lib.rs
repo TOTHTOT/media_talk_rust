@@ -118,7 +118,7 @@ mod imp {
 
     unsafe fn ioctl_querycap(fd: i32) -> V4l2Capability {
         let mut cap = V4l2Capability::default();
-        let r = nix::libc::ioctl(fd, VIDIOC_QUERYCAP as _, &mut cap as *mut _);
+        let r = unsafe { nix::libc::ioctl(fd, VIDIOC_QUERYCAP as _, &mut cap as *mut _) };
         if r != 0 {
             cap = V4l2Capability::default();
         }
@@ -134,7 +134,7 @@ mod imp {
                 r#type: 1,
                 ..Default::default()
             };
-            let r = nix::libc::ioctl(fd, VIDIOC_ENUM_FMT as _, &mut fmtdesc as *mut _);
+            let r = unsafe { nix::libc::ioctl(fd, VIDIOC_ENUM_FMT as _, &mut fmtdesc as *mut _) };
             if r != 0 {
                 break;
             }
@@ -160,7 +160,7 @@ mod imp {
                 r#type: 0,
                 ..Default::default()
             };
-            let r = nix::libc::ioctl(fd, VIDIOC_ENUM_FRAMESIZES as _, &mut e as *mut _);
+            let r = unsafe { nix::libc::ioctl(fd, VIDIOC_ENUM_FRAMESIZES as _, &mut e as *mut _) };
             if r != 0 {
                 break;
             }
