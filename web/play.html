@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>内网 WebRTC 完美基准测试页</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a1a; color: #fff; text-align: center; padding: 20px; margin: 0; }
+        .container { max-width: 900px; margin: 0 auto; background: #262626; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        h2 { margin-top: 0; color: #4caf50; }
+        video { width: 100%; max-height: 500px; background: #000; border-radius: 8px; margin-top: 15px; border: 2px solid #333; }
+        #status { background: #333; padding: 10px; border-radius: 6px; color: #e0e0e0; font-size: 14px; font-family: monospace; word-break: break-all; min-height: 20px; margin: 10px 0; }
+        .log-box { text-align: left; background: #000; font-family: monospace; font-size: 11px; color: #00ff00; padding: 10px; height: 120px; overflow-y: auto; border-radius: 6px; margin-top: 15px; border: 1px solid #444; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>本地 GStreamer WebRTC 画面 (Benchmark 基准)</h2>
+    <div id="status">准备连接信令服务器...</div>
+    <video id="video" autoplay playsinline controls muted></video>
+    <div class="log-box" id="logBox"></div>
+</div>
+
+<script>
+    const statusDiv = document.getElementById('status');
+    const videoEl = document.getElementById('video');
+    const logBox = document.getElementById('logBox');
+
+    // 核心参数：对应 GStreamer webrtcsink 默认端口
+    const WS_URL = 'ws://127.0.0.1:8443';
+
+    let ws = null;
+    let pc = null;
+    let producerId = null;
+
+    function log(msg) {
+        console.log(msg);
+        const p = document.createElement('div');
+        p.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        logBox.appendChild(p);
+        logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    function changeStatus(text) {
+        statusDiv.innerText = text;
+        log(text);
+    }
+
+    function connectSignalling() {
+        changeStatus(`正在建立 WebSocket 连接 -> ${WS_URL}`);
+        ws = new WebSocket(WS_URL);
+
+        ws.onopen = () => {
+            changeStatus("信令通道已建立！正在注册为 Listener 身份并检索视频源...");
+
+            // 1. 注册成为消费者(Listener)
+            ws.send(JSON.stringify({
+                type: "setPeerStatus",
+                roles: ["listener"],
+                meta: null
+            }));
+
+            // 2. 关键优化：延迟150ms主动发出 "list" 强制拉取指令，防止错过 GStreamer 的初始化广播
+            setTimeout(() => {
+                log("主动向后端发送 'list' 握手请求...");
+                ws.send(JSON.stringify({ type: "list" }));
+            }, 150);
+        };
+
+        ws.onmessage = async (msg) => {
+            let data;
+            try {
+                data = JSON.parse(msg.data);
+            } catch(e) {
+                log("解析信令 JSON 失败: " + msg.data);
+                return;
+            }
+
+            // A. 解析主动拉取返回的列表 (解决先开 GStreamer 后开网页、或刷新页面拿不到 ID 的问题)
+            // A. 解析主动拉取返回的列表
+            if (data.type === "list") {
+                log("收到后端返回的在线源列表，开始兼容性匹配...");
+                let foundId = null;
+
+                if (data.producers && Array.isArray(data.producers) && data.producers.length > 0) {
+                    // 【核心修复】如果数组项是对象，取其中的 peerId 属性；如果是字符串，直接取值
+                    const firstProducer = data.producers[0];
+                    foundId = (typeof firstProducer === 'object') ? firstProducer.peerId : firstProducer;
+                } else if (data.producers) {
+                    foundId = (typeof data.producers === 'object') ? data.producers.peerId : data.producers;
+                }
+
+                if (foundId) {
+                    startWebrtcFlow(foundId);
+                } else {
+                    changeStatus("⏳ 列表目前为空。请确保 PowerShell 中的 gst-launch-1.0 正在正常运行！");
+                }
+            }
+
+            // B. 监听可能随时到达的实时广播事件
+            if (data.type === "peerStatusChanged") {
+                if (data.roles && data.roles.includes("producer")) {
+                    log(`捕获到生产者上线广播: ${data.peerId}`);
+                    startWebrtcFlow(data.peerId);
+                }
+            }
+
+            // C. 核心步骤：收到 GStreamer 引擎推送的 SDP Offer
+            if (data.type === "offer") {
+                if (!pc) {
+                    log("异常：收到 Offer 但本地 RTC 状态未初始化，尝试紧急修复...");
+                    initWebRTC(data.peerId || producerId);
+                }
+                changeStatus("⚡ 收到视频 Offer，正在生成应答(Session Description Answer)...");
+                try {
+                    await pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: data.sdp }));
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+
+                    // 发送 Answer 响应回 GStreamer
+                    ws.send(JSON.stringify({
+                        type: "answer",
+                        sdp: pc.localDescription.sdp
+                    }));
+                    log("应答(Answer)发送成功，等待 P2P 隧道开通。");
+                } catch (err) {
+                    changeStatus("❌ RTC 配置失败: " + err.message);
+                }
+            }
+
+            // D. 接收网络穿透的候选信息 (ICE Candidate)
+            if (data.candidate && pc) {
+                try {
+                    await pc.addIceCandidate(new RTCIceCandidate({
+                        candidate: data.candidate,
+                        sdpMLineIndex: data.sdpMLineIndex,
+                        sdpMid: data.sdpMid
+                    }));
+                } catch(e) {
+                    // 局域网直连可能会跳过部分复杂候选，报错可忽略
+                    console.warn("跳过不兼容的关键候选点", e);
+                }
+            }
+        };
+
+        ws.onclose = () => { changeStatus("❌ 信令已断开，5秒后自动尝试重连..."); setTimeout(connectSignalling, 5000); };
+        ws.onerror = (e) => { changeStatus("❌ 连接信令服务失败。请确认 8443 端口未被占用。"); };
+    }
+
+    function startWebrtcFlow(targetProducerId) {
+        if (producerId === targetProducerId) return; // 避免重复建连
+        producerId = targetProducerId;
+        changeStatus(`🎯 锁定视频源 ID: ${producerId}，正在建立 WebRTC 连接...`);
+
+        initWebRTC(producerId);
+
+        // 向信令发送 connect 请求，触发 GStreamer 生成 Offer 给我们
+        ws.send(JSON.stringify({
+            type: "connect",
+            peerId: producerId
+        }));
+    }
+
+    function initWebRTC(targetId) {
+        if (pc) {
+            try { pc.close(); } catch(e){}
+        }
+
+        // 局域网直连，主要走 Host 类型候选点，不需要公网复杂的 STUN 服务器进行穿透
+        pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:://google.com' }]
+        });
+
+        // 当捕获到视频轨道时，塞入 DOM 节点渲染
+        pc.ontrack = (event) => {
+            changeStatus("🎉 WebRTC 管道握手彻底成功！实时画面已渲染。");
+            if (videoEl.srcObject !== event.streams[0]) {
+                videoEl.srcObject = event.streams[0];
+            }
+        };
+
+        // 本地生成 ICE 信息，发还给 GStreamer
+        pc.onicecandidate = (event) => {
+            if (event.candidate && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "candidate",
+                    peerId: targetId,
+                    candidate: event.candidate.candidate,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex,
+                    sdpMid: event.candidate.sdpMid
+                }));
+            }
+        };
+    }
+
+    // 页面加载自动开启循环
+    window.onload = connectSignalling;
+</script>
+</body>
+</html>
