@@ -26,8 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux system deps (ALSA dev headers for ipcam-alsa)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install Linux system deps (ALSA + GStreamer dev)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -41,8 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux system deps (ALSA dev headers for ipcam-alsa)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install Linux system deps (ALSA + GStreamer dev)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -54,8 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux system deps (ALSA dev headers for ipcam-alsa)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install Linux system deps (ALSA + GStreamer dev)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
