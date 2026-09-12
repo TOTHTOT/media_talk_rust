@@ -26,3 +26,7 @@ target/build-*/out
 # speckit session state — "current feature" pointer is per-developer;
 # templates/scripts under .specify/ stay tracked as shared workflow config
 /.specify/feature.json
+/.vscode
+
+# Per-developer Claude Code MCP server config (mirrors settings.local.json)
+/.mcp.json
