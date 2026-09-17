@@ -1,5 +1,6 @@
 use anyhow::Context;
 use ipcam_discovery::DiscoveryCredentials;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 /// Return the first local IPv4 address, or "unknown" on error.
@@ -24,6 +25,7 @@ pub async fn run(
     password: Option<String>,
     rtsp_urls: Vec<String>,
     audio_out: Option<String>,
+    shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     info!(bind = %format_args!("http://{}", bind), local_ip = %format_args!("http://{}:8080", local_ip()), discovery_timeout_secs, ?username, manual = rtsp_urls.len(), audio_out = ?audio_out, "starting media server");
     let timeout = std::time::Duration::from_secs(discovery_timeout_secs);
@@ -38,11 +40,15 @@ pub async fn run(
         Some(credentials),
         manual_devices_from_urls(&rtsp_urls),
         audio_out,
+        shutdown.clone(),
     )
     .await
     .context("failed to start web display server")?;
     info!(addr = %web.local_addr(), "server ready");
-    web.wait_for_shutdown().await
+    shutdown.cancelled().await;
+    info!("shutdown requested, cleaning up");
+    web.shutdown().await;
+    Ok(())
 }
 
 /// Build `DiscoveredDevice` entries from a list of user-supplied RTSP URLs.

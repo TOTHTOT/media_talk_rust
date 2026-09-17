@@ -24,7 +24,7 @@ enum Commands {
         password: Option<String>,
     },
     Serve {
-        #[arg(long, default_value = "0.0.0.0:8080")]
+        #[arg(long, default_value = "0.0.0.0:8081")]
         bind: String,
         #[arg(long, default_value_t = 5)]
         discovery_timeout_secs: u64,
@@ -92,6 +92,7 @@ async fn main() -> ExitCode {
             rtsp_url,
             audio_out,
         } => {
+            let shutdown = ipc::shutdown::install();
             ipc::serve::run(
                 bind,
                 discovery_timeout_secs,
@@ -99,6 +100,7 @@ async fn main() -> ExitCode {
                 password,
                 rtsp_url,
                 audio_out,
+                shutdown,
             )
             .await
         }

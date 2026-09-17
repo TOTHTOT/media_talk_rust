@@ -32,6 +32,7 @@ chrono = { workspace = true }
 bytes = { workspace = true }
 uuid = { workspace = true }
 local-ip-address = { workspace = true }
+tokio-util = { workspace = true }
 
 [features]
 default = ["sw-decode"]

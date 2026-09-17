@@ -13,6 +13,7 @@ use ipcam_discovery::DiscoveryCredentials;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 pub mod stream;
@@ -30,6 +31,8 @@ struct Inner {
     state_tx: broadcast::Sender<SessionStateEvent>,
     /// ALSA device for on-board audio playback (`None` = disabled).
     audio_out: Option<String>,
+    /// axum serve 任务的句柄，shutdown 时取出 await（带硬超时）
+    server: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +132,15 @@ impl SessionRegistry {
             e.info.clone()
         })
     }
+
+    /// 关停时停掉所有摄像头会话（remove 会对每个 handle 调 stop()，
+    /// pipeline 置 Null，浏览器侧的 WebRTC 连接随之中断）
+    pub fn stop_all(&self) {
+        let ids: Vec<SessionId> = self.sessions.iter().map(|kv| *kv.key()).collect();
+        for id in ids {
+            self.remove(id);
+        }
+    }
 }
 
 impl Default for SessionRegistry {
@@ -144,6 +156,7 @@ impl WebDisplay {
         credentials: Option<DiscoveryCredentials>,
         manual_devices: Vec<DiscoveredDevice>,
         audio_out: Option<String>,
+        shutdown: CancellationToken,
     ) -> anyhow::Result<Self> {
         // All WebRTC sessions register on this one in-process signalling
         // server (ws://<host>:8443); must be up before the first stream.
@@ -171,6 +184,7 @@ impl WebDisplay {
             registry,
             state_tx,
             audio_out,
+            server: parking_lot::Mutex::new(None),
         });
         let app = build_router(inner.clone());
 
@@ -180,14 +194,21 @@ impl WebDisplay {
         let local_addr = listener.local_addr()?;
         info!(addr = %local_addr, "web display server listening");
 
-        let me = WebDisplay {
-            inner: inner.clone(),
-        };
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, app).await {
+        // root token 触发 axum graceful shutdown：停止接受新连接，
+        // 存量请求处理完后 serve 返回（句柄留给 shutdown() await）
+        let server = tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+            {
                 tracing::error!(err = %e, "axum serve error");
             }
         });
+        *inner.server.lock() = Some(server);
+
+        let me = WebDisplay {
+            inner: inner.clone(),
+        };
         Ok(me)
     }
 
@@ -195,27 +216,18 @@ impl WebDisplay {
         self.inner.bind.clone()
     }
 
-    pub async fn wait_for_shutdown(&self) -> anyhow::Result<()> {
-        let ctrl_c = async {
-            tokio::signal::ctrl_c().await.ok();
-        };
-        let term = async {
-            #[cfg(unix)]
-            {
-                let mut s =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
-                if let Some(sig) = s.as_mut() {
-                    sig.recv().await;
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                std::future::pending::<()>().await;
-            }
-        };
-        tokio::select! { _ = ctrl_c => {}, _ = term => {} }
-        info!("shutdown signal received");
-        Ok(())
+    /// 优雅关停：先停所有摄像头会话（gst pipeline 置 Null，浏览器
+    /// WebRTC/WS 连接随之中断），再等 axum 收尾。硬超时兜底——
+    /// 长连接可能赖着不走，不能让它拖死整个关停流程
+    pub async fn shutdown(&self) {
+        const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+        self.inner.registry.stop_all();
+        let handle = self.inner.server.lock().take();
+        if let Some(h) = handle
+            && tokio::time::timeout(SHUTDOWN_TIMEOUT, h).await.is_err()
+        {
+            tracing::warn!("axum graceful shutdown timed out, giving up");
+        }
     }
 }
 
