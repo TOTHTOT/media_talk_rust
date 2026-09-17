@@ -90,6 +90,7 @@ cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 --release --features hw-d
 
 ## 5. 代码风格约定
 
+- **标点符号**:所有中文文本 (回复、代码注释、文档、提交消息) 一律用英文标点,并在标点后加一个空格。例:用 `, ` 不用 `,`,用 `. ` 不用 `。`,用 `: ` 不用 `:`。数字/英文与中文之间同样加空格分隔
 - **错误处理**:库 crate 用 `thiserror::Error` 派生枚举;二进制 (`media_talk`) 用 `anyhow::Result` 在顶层边界
 - **日志**:只用 `tracing` (`info!` / `warn!` / `error!` / `info_span!`)。**禁止** `println!` / `eprintln!` / `dbg!` 出现在生产代码
 - **结构化字段**:`info!(user_id, ?err, "msg")`,把字段放前,消息放最后;`?` 用 Debug,`%` 用 Display
