@@ -6,10 +6,12 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rsipstack = {workspace = true}
-local-ip-address = {workspace = true}
-anyhow = {workspace = true}
-tracing = {workspace = true}
-tracing-test = {workspace = true}
-tokio-util = {workspace = true}
-tokio = {workspace = true}
+rsipstack = { workspace = true }
+local-ip-address = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio-util = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

@@ -55,7 +55,6 @@ gstreamer = "0.25.3"
 gstreamer-app = "0.25.2"
 gstreamer-video = "0.25.3"
 rsipstack = "0.6.10"
-tracing-test = "0.2"
 tokio-util = { version = "0.7", features = ["rt"] }
 
 [profile.release]
