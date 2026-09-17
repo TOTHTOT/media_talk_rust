@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 rsipstack = { workspace = true }
+sdp-rs = { workspace = true }
+vec1 = { workspace = true }
 local-ip-address = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -15,3 +17,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+clap = { workspace = true }

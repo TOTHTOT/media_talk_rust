@@ -13,6 +13,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
+pub mod sdp;
+
 #[derive(Debug)]
 pub struct SipClientConfig {
     register_name: String,
