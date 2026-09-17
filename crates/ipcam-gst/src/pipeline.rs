@@ -379,14 +379,10 @@ fn build_video_tap_branch(
     let tee = make("tee")?;
     let gui_queue = leaky_queue()?;
     let decoder = make(decoder_name)?;
-    cfg_select! {
-        all(target_os = "linux", target_arch = "aarch64") => {
-            return Err(GstStreamError::Link(format!("not supported aarch64")))
-        }
-        _=>{
-            let conv = make("videoconvert")?;
-        }
+    if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        return Err(GstStreamError::Link("not supported aarch64".into()));
     }
+    let conv = make("videoconvert")?;
     let appsink = build_video_appsink(sink);
     Ok(VideoTapBranch {
         tee,
