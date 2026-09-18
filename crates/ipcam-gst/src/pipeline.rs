@@ -89,7 +89,7 @@ pub(crate) fn start(
 /// Create an element, mapping a missing factory/plugin to `Init` with
 /// the element name in the message (a missing `rtspsrc` usually means
 /// `gstreamer1.0-plugins-good` is not installed on the target).
-fn make(name: &str) -> Result<gst::Element, GstStreamError> {
+pub(crate) fn make(name: &str) -> Result<gst::Element, GstStreamError> {
     gst::ElementFactory::make(name)
         .build()
         .map_err(|e| GstStreamError::Init(format!("missing element `{name}`: {e}")))

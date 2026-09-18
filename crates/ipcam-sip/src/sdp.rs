@@ -13,6 +13,7 @@ use sdp_rs::lines::media::{MediaType, ProtoType};
 use sdp_rs::lines::{Attribute, Connection, Media, Origin, SessionName, Version};
 use sdp_rs::{MediaDescription, SessionDescription, Time};
 use std::net::{IpAddr, SocketAddr};
+use tracing::info;
 use vec1::vec1;
 
 /// RFC 3551 静态 payload type
@@ -234,6 +235,7 @@ pub struct PeerMedias {
 pub fn parse_answer_all(body: &[u8]) -> Result<PeerMedias> {
     let text = std::str::from_utf8(body)?;
     let sdp = SessionDescription::try_from(text).map_err(|e| anyhow!("invalid SDP: {e}"))?;
+    info!(?sdp, "parsed Sdp");
     let mut out = PeerMedias::default();
     for media in &sdp.media_descriptions {
         let peer = peer_from_media(sdp.connection.as_ref(), media)?;

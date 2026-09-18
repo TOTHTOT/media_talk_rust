@@ -1,11 +1,11 @@
-//! 实机呼叫冒烟工具：注册 → INVITE（带音频 SDP offer）→ 解析 200 OK
-//! 里的 answer, 打印协商出的对端 RTP 地址/编码. **只协商、不流真实
-//! 媒体**——拿到 peer 地址后接 GStreamer 是下一步. Ctrl+C 发 BYE 挂断,
-//! 然后走和 register example 相同的 best-effort 注销退出.
+//! 实机呼叫冒烟工具：注册 → INVITE（带音视频 SDP offer）→ 解析 200 OK
+//! 里的 answer → 起 RTP 发送器把媒体文件 (默认 assets/oceans.mp4) 灌给
+//! 对端. Ctrl+C 停流发 BYE 挂断, 然后走和 register example 相同的
+//! best-effort 注销退出.
 //!
 //! ```bash
 //! cargo run -p ipcam-sip --example call -- 1002
-//! cargo run -p ipcam-sip --example call -- sip:1002@192.168.1.17:5062 -u 1001 -p changeme
+//! cargo run -p ipcam-sip --example call -- 1002 --file assets/oceans.mp4
 //! ```
 
 use anyhow::{Result, anyhow};
@@ -18,6 +18,7 @@ use rsipstack::dialog::invitation::InviteOption;
 use rsipstack::sip as rsip;
 use rsipstack::transaction::Endpoint;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
@@ -40,6 +41,9 @@ struct Args {
     /// 注册有效期（秒）
     #[arg(short, long, default_value_t = 60)]
     expires: u32,
+    /// 协商成功后发给对端的媒体文件 (视频必须 H264 编码)
+    #[arg(long, default_value = "assets/oceans.mp4")]
+    file: PathBuf,
 }
 
 #[tokio::main]
@@ -112,7 +116,7 @@ async fn main() -> Result<()> {
         r = &mut reg => {
             warn!(result = ?r, "register loop exited unexpectedly");
         }
-        r = call_until_hangup(dialog_layer, invite_option, state_sender) => {
+        r = call_until_hangup(dialog_layer, invite_option, state_sender, args.file) => {
             if let Err(e) = r {
                 warn!(error = ?e, "call failed");
             }
@@ -127,11 +131,13 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// INVITE → 等最终响应 → 打印 answer 协商结果 → 挂着等 Ctrl+C → BYE
+/// INVITE → 等最终响应 → 打印协商结果 → 起 RTP 发送器往对端灌媒体文件 →
+/// 挂着等 Ctrl+C → 停流 → BYE
 async fn call_until_hangup(
     dialog_layer: Arc<DialogLayer>,
     invite_option: InviteOption,
     state_sender: rsipstack::dialog::dialog::DialogStateSender,
+    file: PathBuf,
 ) -> Result<()> {
     let (dialog, resp) = dialog_layer.do_invite(invite_option, state_sender).await?;
     let resp = resp.ok_or_else(|| anyhow!("INVITE got no final response"))?;
@@ -142,27 +148,28 @@ async fn call_until_hangup(
 
     let peers = parse_answer_all(resp.body())?;
     if let Some(audio) = &peers.audio {
-        info!(
-            addr = %audio.addr,
-            payload_type = audio.payload_type,
-            codec = %audio.codec,
-            "SDP 协商结果: 音频"
-        );
+        info!(?audio, "SDP consult result");
     }
     if let Some(video) = &peers.video {
-        info!(
-            addr = %video.addr,
-            payload_type = video.payload_type,
-            codec = %video.codec,
-            "SDP 协商结果: 视频"
-        );
+        info!(?video, "SDP consult result");
     }
-    if peers.video.is_none() {
-        info!("对端没有接视频路 (纯音频设备)");
-    }
-    info!("call established (no media yet), ctrl+c to hang up");
+
+    // 发送 pt 必须用对端 answer 里的值 (动态 pt 分方向, 见 sdp 模块注释)
+    let sender = ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
+        file,
+        audio: peers.audio.map(|p| ipcam_gst::RtpDest {
+            addr: p.addr,
+            payload_type: p.payload_type,
+        }),
+        video: peers.video.map(|p| ipcam_gst::RtpDest {
+            addr: p.addr,
+            payload_type: p.payload_type,
+        }),
+    })?;
+    info!("call established, streaming media file, ctrl+c to hang up");
 
     tokio::signal::ctrl_c().await.ok();
+    sender.stop();
     dialog.bye_with_headers(None).await?;
     info!("BYE sent");
     Ok(())

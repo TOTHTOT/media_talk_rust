@@ -21,8 +21,10 @@ pub mod stats;
 pub mod tap;
 
 mod pipeline;
+mod rtp_send;
 
 pub use config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
+pub use rtp_send::{RtpDest, RtpSendConfig, RtpSender, start_rtp_sender};
 pub use stats::{GstStreamHandle, StreamState, StreamStats};
 pub use tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};
 

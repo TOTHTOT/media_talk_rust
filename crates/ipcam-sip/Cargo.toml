@@ -18,3 +18,4 @@ tokio = { workspace = true }
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
+ipcam-gst = { path = "../ipcam-gst" }
