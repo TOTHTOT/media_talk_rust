@@ -28,7 +28,13 @@ pub use rtp_send::{RtpDest, RtpSendConfig, RtpSender, start_rtp_sender};
 pub use stats::{GstStreamHandle, StreamState, StreamStats};
 pub use tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};
 
-#[derive(Debug, Error)]
+fn ensure_init_internal() -> Result<(), GstStreamError> {
+    static DONE: OnceLock<Result<(), GstStreamError>> = OnceLock::new();
+    DONE.get_or_init(|| gst::init().map_err(|e| GstStreamError::Init(format!("gst init: {e}"))))
+        .clone()
+}
+
+#[derive(Debug, Clone, Error)]
 pub enum GstStreamError {
     /// Static configuration error, reported by [`validate`].
     #[error("invalid config: {0}")]
@@ -62,7 +68,7 @@ static SIGNALLING_ANCHOR: OnceLock<gst::Pipeline> = OnceLock::new();
 /// then connects to it as a producer via `signalling_host/port`.
 /// Idempotent — safe to call from every server startup.
 pub fn ensure_signalling_server() -> Result<(), GstStreamError> {
-    gst::init().map_err(|e| GstStreamError::Init(format!("gst init: {e}")))?;
+    ensure_init_internal()?;
     if SIGNALLING_ANCHOR.get().is_some() {
         return Ok(());
     }

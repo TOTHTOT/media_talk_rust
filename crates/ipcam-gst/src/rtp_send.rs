@@ -18,17 +18,17 @@
 //! - 发送用的 payload type 必须取对端 answer 里的值 (动态 pt 分方向,
 //!   见 ipcam-sip sdp 模块注释)
 
+use gstreamer as gst;
+use gstreamer::prelude::*;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
-
-use gstreamer as gst;
-use gstreamer::prelude::*;
 use tracing::{debug, info, warn};
 
 use crate::GstStreamError;
+use crate::ensure_init_internal;
 use crate::pipeline::make;
 
 /// 一路媒体的发送目标: 对端收包地址 + 对端 answer 里协商出的 pt
@@ -84,7 +84,7 @@ impl Drop for RtpSender {
 }
 
 pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError> {
-    gst::init().map_err(|e| GstStreamError::Init(format!("gst init: {e}")))?;
+    ensure_init_internal()?;
     if !cfg.file.exists() {
         return Err(GstStreamError::InvalidConfig(format!(
             "media file not found: {}",
