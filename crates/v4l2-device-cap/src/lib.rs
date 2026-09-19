@@ -43,8 +43,8 @@ mod imp {
     use super::*;
     use nix::fcntl::{OFlag, open};
     use nix::sys::stat::Mode;
-    use nix::unistd::close;
     use std::fs;
+    use std::os::fd::{AsRawFd, RawFd};
 
     const VIDIOC_QUERYCAP: u64 = 0x80685600;
     const VIDIOC_ENUM_FMT: u64 = 0xC0405602;
@@ -103,11 +103,15 @@ mod imp {
     fn probe(path: &str) -> Result<V4l2Device, V4l2Error> {
         let fd = open(path, OFlag::O_RDWR | OFlag::O_NONBLOCK, Mode::empty())
             .map_err(|e| V4l2Error::Io(format!("open {path}: {e}")))?;
-        let cap = unsafe { ioctl_querycap(fd) };
+        // nix 0.27+ 返回 OwnedFd (持有 fd, Drop 自动 close).
+        // libc::ioctl 仍吃 RawFd (= i32), 用 as_raw_fd() 转一下.
+        let raw = fd.as_raw_fd();
+        let cap = unsafe { ioctl_querycap(raw) };
         let driver = read_string(&cap.driver);
         let bus_info = Some(read_string(&cap.bus_info));
-        let formats = unsafe { ioctl_enum_fmts(fd).unwrap_or_default() };
-        let _ = close(fd);
+        let formats = unsafe { ioctl_enum_fmts(raw).unwrap_or_default() };
+        // 不调 close: OwnedFd Drop 自动关 fd, 显式 close 会双关
+        drop(fd);
         Ok(V4l2Device {
             path: path.to_string(),
             driver,
@@ -116,7 +120,7 @@ mod imp {
         })
     }
 
-    unsafe fn ioctl_querycap(fd: i32) -> V4l2Capability {
+    unsafe fn ioctl_querycap(fd: RawFd) -> V4l2Capability {
         let mut cap = V4l2Capability::default();
         let r = unsafe { nix::libc::ioctl(fd, VIDIOC_QUERYCAP as _, &mut cap as *mut _) };
         if r != 0 {
@@ -125,7 +129,7 @@ mod imp {
         cap
     }
 
-    unsafe fn ioctl_enum_fmts(fd: i32) -> Result<Vec<PixelFormatInfo>, V4l2Error> {
+    unsafe fn ioctl_enum_fmts(fd: RawFd) -> Result<Vec<PixelFormatInfo>, V4l2Error> {
         let mut out = Vec::new();
         let mut idx = 0u32;
         loop {
@@ -149,7 +153,7 @@ mod imp {
         Ok(out)
     }
 
-    unsafe fn enum_frame_sizes(fd: i32, pf: [u8; 4]) -> Result<Vec<FrameSize>, V4l2Error> {
+    unsafe fn enum_frame_sizes(fd: RawFd, pf: [u8; 4]) -> Result<Vec<FrameSize>, V4l2Error> {
         let mut out = Vec::new();
         let pf_u32: u32 = u32::from_le_bytes(pf);
         let mut idx = 0u32;
