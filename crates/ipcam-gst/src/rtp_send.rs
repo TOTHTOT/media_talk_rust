@@ -216,7 +216,8 @@ fn link_video_chain(
     let queue = make("queue")?;
     let parse = make("h264parse")?;
     parse.set_property("config-interval", 1i32);
-    // mp4 里是 avcC, 强制转成 byte-stream(annexb)/au 再交给 payloader
+    // mp4 里是 avcC, 强制转成 byte-stream(annexb)/au 再交给 payloader,
+    // h264parse 本身也支持 byte-stream(Annex-B), 但是有可能先被解析成 avcC 导致打包失败
     let caps = make("capsfilter")?;
     caps.set_property(
         "caps",
@@ -283,7 +284,21 @@ fn make_udpsink(dest: RtpDest) -> Result<gst::Element, GstStreamError> {
     Ok(sink)
 }
 
-/// 在 payloader 的 src pad 上数包: 每个 buffer = 一个 RTP 包
+/// 在 payloader 的 src pad 上数包: 每个 buffer = 一个 RTP 包, 这是个探测器
+///
+/// # Arguments
+///
+/// * `pay`:
+/// * `stats`:
+/// * `is_audio`:
+///
+/// returns: Result<(), GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 fn install_pkt_probe(
     pay: &gst::Element,
     stats: Arc<SendStats>,
