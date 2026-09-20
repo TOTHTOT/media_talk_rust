@@ -87,6 +87,39 @@ pub enum TrackSource {
     Mic,
 }
 
+impl TrackSource {
+    /// 日志用标签: Rtsp uri 可能内嵌凭据 (rtsp://user:pass@...),
+    /// 必须先脱敏再进日志
+    fn label(&self) -> String {
+        match self {
+            Self::File(path) => format!("file:{}", path.display()),
+            Self::Rtsp { uri } => format!("rtsp:{}", redact_uri_credentials(uri)),
+            Self::LocalCamera { device } => {
+                format!("camera:{}", device.as_deref().unwrap_or("default"))
+            }
+            Self::Mic => "mic".to_string(),
+        }
+    }
+}
+
+/// 把 uri authority 里的 user:pass@ 换成 ***:***@; 无凭据原样返回
+fn redact_uri_credentials(uri: &str) -> String {
+    let Some(scheme_end) = uri.find("://") else {
+        return uri.to_string();
+    };
+    let after_scheme = &uri[scheme_end + 3..];
+    let authority_end = after_scheme.find('/').unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    let Some(at) = authority.rfind('@') else {
+        return uri.to_string();
+    };
+    format!(
+        "{}://***:***@{}",
+        &uri[..scheme_end],
+        &after_scheme[at + 1..]
+    )
+}
+
 /// 要建的是哪一路 (源段按它匹配 uridecodebin 的裸流 pad)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrackKind {
@@ -202,8 +235,8 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
         .set_state(gst::State::Playing)
         .map_err(|e| GstStreamError::Init(format!("pipeline set Playing: {e}")))?;
     info!(
-        audio = ?cfg.audio,
-        video = ?cfg.video,
+        audio = ?cfg.audio.as_ref().map(|(source, _)| source.label()),
+        video = ?cfg.video.as_ref().map(|(source, _)| source.label()),
         "rtp sender started"
     );
     Ok(RtpSender {
@@ -271,6 +304,14 @@ fn build_video_track(
                 link_video_send_chain(&chain_pipeline, &pad, dest, stats.clone())
             })
         }
+        TrackSource::Rtsp { uri } => {
+            let uri = uri.clone();
+            let pipeline = pipeline.clone();
+            let chain_pipeline = pipeline.clone();
+            plug_uri_source(&pipeline, &uri, TrackKind::Video, move |pad| {
+                link_video_send_chain(&chain_pipeline, &pad, dest, stats.clone())
+            })
+        }
         other => Err(GstStreamError::InvalidConfig(format!(
             "video source not wired yet: {other:?}"
         ))),
@@ -286,6 +327,14 @@ fn build_audio_track(
     match source {
         TrackSource::File(path) => {
             let uri = file_uri(path)?;
+            let pipeline = pipeline.clone();
+            let chain_pipeline = pipeline.clone();
+            plug_uri_source(&pipeline, &uri, TrackKind::Audio, move |pad| {
+                link_audio_send_chain(&chain_pipeline, &pad, dest, stats.clone())
+            })
+        }
+        TrackSource::Rtsp { uri } => {
+            let uri = uri.clone();
             let pipeline = pipeline.clone();
             let chain_pipeline = pipeline.clone();
             plug_uri_source(&pipeline, &uri, TrackKind::Audio, move |pad| {
@@ -438,6 +487,27 @@ mod tests {
         assert_eq!(AudioCodec::from_codec_name("PCMA"), Some(AudioCodec::Pcma));
         assert_eq!(AudioCodec::from_codec_name("pcma"), Some(AudioCodec::Pcma));
         assert_eq!(AudioCodec::from_codec_name("opus"), None);
+    }
+
+    /// Rtsp 标签必须脱敏内嵌凭据: user:pass 不得出现在日志文本里
+    #[test]
+    fn rtsp_label_redacts_credentials() {
+        let source = TrackSource::Rtsp {
+            uri: "rtsp://admin:secret@192.168.1.10:8554/ch01".to_string(),
+        };
+        let label = source.label();
+        assert!(!label.contains("secret"), "credential leaked: {label}");
+        assert!(!label.contains("admin"), "username leaked: {label}");
+        assert!(
+            label.contains("192.168.1.10:8554/ch01"),
+            "host lost: {label}"
+        );
+
+        // 无凭据的 uri 原样保留
+        let plain = TrackSource::Rtsp {
+            uri: "rtsp://192.168.1.10:8554/ch01".to_string(),
+        };
+        assert_eq!(plain.label(), "rtsp:rtsp://192.168.1.10:8554/ch01");
     }
 
     /// 文件源视频轨: 解码重编码后 3 秒内必须出 RTP 包
