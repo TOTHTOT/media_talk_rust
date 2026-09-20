@@ -1,8 +1,8 @@
-//! ONVIF WS-Discovery + Device Management for `media_talk`.
+//! ONVIF WS-Discovery + Device Management for `media_talk_rust`.
 //!
 //! Implementation delegates to the `oxvif` 0.12.0 crate (strict pin).
 //! Public API (`probe_all_with_config`, [`DeviceManagementClient`], [`Discovery`])
-//! stays identical to the pre-oxvif implementation so callers in `media_talk`
+//! stays identical to the pre-oxvif implementation so callers in `media_talk_rust`
 //! and `web-display` need no changes.
 
 use std::time::Duration;

@@ -162,7 +162,7 @@ cargo run -p ipcam-gst --example rawtap -- \
 
 ```bash
 # 管线拓扑导出（Graphviz .dot，纯按 link 关系绘制，与 add 顺序无关）
-GST_DEBUG_DUMP_DOT_DIR=/tmp/dots media_talk serve ...
+GST_DEBUG_DUMP_DOT_DIR=/tmp/dots media_talk_rust serve ...
 
 # GStreamer 内部日志
 GST_DEBUG=3                   # 全局

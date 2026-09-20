@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/media_talk",
+    "crates/media_talk_rust",
     "crates/ipcam-core",
     "crates/ipcam-discovery",
     "crates/hardware-decode",

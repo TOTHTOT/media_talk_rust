@@ -1,12 +1,12 @@
 # 优雅关停（Ctrl+C / SIGTERM）
 
-全进程统一的关停信号层，实现在 `crates/media_talk/src/ipc/shutdown.rs`。
+全进程统一的关停信号层，实现在 `crates/media_talk_rust/src/ipc/shutdown.rs`。
 目标：**一次 Ctrl+C 干净退出**（停流、断 WebRTC、释放端口），**两次 Ctrl+C 立即强退**，
 任何卡死的子系统都拖不住关停。
 
 ## 三条纪律
 
-1. **只有二进制碰 OS 信号**——信号处理只存在于 `media_talk` 的 `shutdown.rs`；
+1. **只有二进制碰 OS 信号**——信号处理只存在于 `media_talk_rust` 的 `shutdown.rs`；
    库 crate（web-display、ipcam-gst……）一律只接收 `CancellationToken`，
    不直接 `tokio::signal`。
 2. **cancel 语义 = 停止接新活 + 快速收尾**，不是立即死。子系统收到 cancel 后
@@ -79,6 +79,6 @@ main 返回 ExitCode::SUCCESS
 
 ## systemd 集成
 
-`media_talk.service` 以独立用户运行；`systemctl stop media_talk` 默认发
+`media_talk_rust.service` 以独立用户运行；`systemctl stop media_talk_rust` 默认发
 SIGTERM，走的就是上面第一次信号的优雅路径。若服务卡死，systemd 自己的
 `TimeoutStopSec`（默认 90s）到点会 SIGKILL，与进程内"第二次信号强退"同理。

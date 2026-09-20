@@ -5,7 +5,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 mod ipc;
 
 #[derive(Parser, Debug)]
-#[command(name = "media_talk", version, about = "mediatalk IP camera media server")]
+#[command(name = "media_talk_rust", version, about = "media talk server")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

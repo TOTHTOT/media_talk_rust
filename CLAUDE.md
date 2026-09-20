@@ -50,7 +50,7 @@ cargo test  --workspace --features sw-decode
 
 ```text
 crates/
-├── media_talk/        # 二进制入口 (clap 子命令)
+├── media_talk_rust/        # 二进制入口 (clap 子命令)
 ├── ipcam-core/         # 共享类型 (EncodedPacket / DecodedFrame / Decoder trait)
 ├── ipcam-discovery/    # ONVIF WS-Discovery + Device Management (SOAP)
 ├── ipcam-gst/          # GStreamer 拉流引擎 (rtspsrc→appsink)
@@ -60,11 +60,11 @@ crates/
 └── v4l2-device-cap/    # V4L2 capture 能力枚举 (仅 Linux)
 
 openspec/                # OpenSpec change + baseline specs
-media_talk.service      # systemd unit (生产部署)
+media_talk_rust.service      # systemd unit (生产部署)
 .github/workflows/       # CI: fmt / clippy / test / cross-check
 ```
 
-依赖方向:`media_talk` → 所有 `ipcam-*` / `hardware-decode` / `web-display`。库 crate 之间**禁止**互相依赖形成环。
+依赖方向:`media_talk_rust` → 所有 `ipcam-*` / `hardware-decode` / `web-display`。库 crate 之间**禁止**互相依赖形成环。
 
 ---
 
@@ -91,7 +91,7 @@ cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 --release --features hw-d
 ## 5. 代码风格约定
 
 - **标点符号**:所有中文文本 (回复、代码注释、文档、提交消息) 一律用英文标点,并在标点后加一个空格。例:用 `, ` 不用 `,`,用 `. ` 不用 `。`,用 `: ` 不用 `:`。数字/英文与中文之间同样加空格分隔
-- **错误处理**:库 crate 用 `thiserror::Error` 派生枚举;二进制 (`media_talk`) 用 `anyhow::Result` 在顶层边界
+- **错误处理**:库 crate 用 `thiserror::Error` 派生枚举;二进制 (`media_talk_rust`) 用 `anyhow::Result` 在顶层边界
 - **日志**:只用 `tracing` (`info!` / `warn!` / `error!` / `info_span!`)。**禁止** `println!` / `eprintln!` / `dbg!` 出现在生产代码
 - **结构化字段**:`info!(user_id, ?err, "msg")`,把字段放前,消息放最后;`?` 用 Debug,`%` 用 Display
 - **Span**:长时间事务 (一整个 RTSP session、一次 mux) 包一个 `info_span!`,用 `.instrument(span)` 绑定到 async future
@@ -123,7 +123,7 @@ cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 --release --features hw-d
 
 - 新 crate 或新模块边界
 - 任一现有 crate 的公开 API 变更
-- `media_talk` CLI 子命令的行为变化
+- `media_talk_rust` CLI 子命令的行为变化
 - 新 feature flag
 - 跨 ≥ 2 个 crate 的改动
 
@@ -146,7 +146,7 @@ cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 --release --features hw-d
 - ❌ 不要写 `unsafe`,除非有明确 safety 注释 + 单元测试
 - ❌ 不要提交 `target/` / `.repowise/` / `.idea/` / 根目录的 `mediatalk` 二进制
 - ❌ 不要把 secrets (admin 密码、ONVIF 凭据) 写进日志或单元测试 fixture
-- ❌ 不要硬编码路径 — 用 `StateDirectory=media_talk` (systemd) / `std::env::var` (应用)
+- ❌ 不要硬编码路径 — 用 `StateDirectory=media_talk_rust` (systemd) / `std::env::var` (应用)
 - ❌ **不要 `git commit` / `git push` 未经用户显式确认** — AI 代理不主动对外发布代码;用户说"提交 / 推上去"才能 commit。OpenSpec change 在 archive 之前也禁止 commit
 
 ---

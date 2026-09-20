@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test for media_talk serve.
+# Smoke test for media_talk_rust serve.
 #
 # Boots a temporary instance on 127.0.0.1:18080, polls /api/devices and opens
 # a single WebSocket session (if any device + profile exists in the
@@ -13,7 +13,7 @@
 #   BIND      - listen address (default 127.0.0.1:18080)
 #   USER / PASS - ONVIF credentials to forward
 #   TIMEOUT_S - discovery / per-request timeout (default 5)
-#   BINARY    - path to media_talk (default target/debug/media_talk)
+#   BINARY    - path to media_talk_rust (default target/debug/media_talk_rust)
 
 set -euo pipefail
 
@@ -21,7 +21,7 @@ BIND="${BIND:-127.0.0.1:18080}"
 USER="${USER:-}"
 PASS="${PASS:-}"
 TIMEOUT_S="${TIMEOUT_S:-5}"
-BINARY="${BINARY:-target/debug/media_talk}"
+BINARY="${BINARY:-target/debug/media_talk_rust}"
 WORKDIR="${WORKDIR:-$(mktemp -d -t mediatalk_smoke.XXXXXX)}"
 LOG="${WORKDIR}/mediatalk.log"
 PID_FILE="${WORKDIR}/mediatalk.pid"
@@ -51,10 +51,10 @@ trap cleanup EXIT
 
 if [[ ! -x "$BINARY" ]]; then
   echo "[smoke] building $BINARY"
-  cargo build --bin media_talk --features sw-decode >/dev/null
+  cargo build --bin media_talk_rust --features sw-decode >/dev/null
 fi
 
-echo "[smoke] starting media_talk serve on $BIND"
+echo "[smoke] starting media_talk_rust serve on $BIND"
 auth_args=()
 if [[ -n "$USER" && -n "$PASS" ]]; then
   auth_args=(--username "$USER" --password "$PASS")

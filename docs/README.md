@@ -1,4 +1,4 @@
-# media_talk 文档
+# media_talk_rust 文档
 
 - [architecture.md](architecture.md) — workspace 整体架构：crate 分工、数据流、依赖与开发约定
 - [streaming-engine.md](streaming-engine.md) — `ipcam-gst` 流媒体引擎深挖：管线拓扑、链接纪律、重连、RawTaps 原始帧出口

@@ -2,14 +2,14 @@
 
 [![Rust CI](https://github.com/TOTHTOT/media_talk_rust/actions/workflows/rust.yml/badge.svg)](https://github.com/TOTHTOT/media_talk_rust/actions/workflows/rust.yml)
 
-`media_talk` 是某嵌入式厂商 (mediatalk) Linux 设备上跑的网络摄像头媒体服务。它在局域网内
+`media_talk_rust` 是某嵌入式厂商 (mediatalk) Linux 设备上跑的网络摄像头媒体服务。它在局域网内
 通过 ONVIF 发现 IP 摄像头、拉 RTSP 流、做 (可选) 硬件解码、把 H.264 重新打成
 fMP4 通过 WebSocket 推到浏览器里用 `MediaSource` 播放。
 
 - **目标板**: `radxa-cm3-rpi-cm4-io` (SoC `rk356x`,aarch64,GNU libc 2.31)
 - **工具链**: `cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 --release`
 - **运行时**: 板端 `librockchip_mpp.so` 必须位于动态链接器搜索路径 (见
-  `media_talk.service` 注释)
+  `media_talk_rust.service` 注释)
 
 ## 仓库结构
 
@@ -17,7 +17,7 @@ fMP4 通过 WebSocket 推到浏览器里用 `MediaSource` 播放。
 media_talk_rust/
 ├── Cargo.toml              # workspace
 ├── crates/
-│   ├── media_talk/        # 二进制入口 (clap subcommands)
+│   ├── media_talk_rust/        # 二进制入口 (clap subcommands)
 │   ├── ipcam-core/         # 共享类型 + Decoder/Sink trait
 │   ├── ipcam-discovery/    # ONVIF WS-Discovery + Device Management
 │   ├── ipcam-gst/          # GStreamer RTSP 拉流引擎
@@ -27,7 +27,7 @@ media_talk_rust/
 │   └── v4l2-device-cap/    # V4L2 capture 能力探测 (仅 Linux)
 ├── web/                    # 前端 index.html + play.js
 ├── scripts/smoke.sh        # 烟雾测试
-├── media_talk.service     # systemd unit
+├── media_talk_rust.service     # systemd unit
 ├── .github/workflows/      # CI: fmt / clippy / test / cross-check
 └── openspec/changes/       # OpenSpec change specs
 ```
@@ -42,8 +42,8 @@ cargo build --workspace --features sw-decode
 cargo test  --workspace --features sw-decode
 
 # 列出本机音频 / V4L2 设备 (仅 Linux 下有内容)
-cargo run --bin media_talk -- audio list-devices
-cargo run --bin media_talk -- v4l2 list
+cargo run --bin media_talk_rust -- audio list-devices
+cargo run --bin media_talk_rust -- v4l2 list
 ```
 
 ### 2. 交叉编译到板端
@@ -59,16 +59,16 @@ cargo install cargo-zigbuild
 cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 \
                --release --features hw-decode
 
-# 产物: target/aarch64-unknown-linux-gnu.2.31/release/media_talk
+# 产物: target/aarch64-unknown-linux-gnu.2.31/release/media_talk_rust
 ```
 
 ### 3. 部署到板端
 
 ```bash
 # 上传二进制 + systemd unit
-scp target/aarch64-unknown-linux-gnu.2.31/release/media_talk \
+scp target/aarch64-unknown-linux-gnu.2.31/release/media_talk_rust \
     radxa@radxa-cm3-rpi-cm4-io:/usr/local/bin/
-scp media_talk.service radxa@radxa-cm3-rpi-cm4-io:/etc/systemd/system/
+scp media_talk_rust.service radxa@radxa-cm3-rpi-cm4-io:/etc/systemd/system/
 
 # 板端需要 librockchip_mpp.so
 # 注意: 不能用 LD_LIBRARY_PATH (systemd 沙箱会吞),改走 ld.so.conf.d:
@@ -77,11 +77,11 @@ echo '/opt/mediatalk/lib' | sudo tee /etc/ld.so.conf.d/mediatalk.conf
 sudo ldconfig
 
 # 专用账户 (service file 默认以 mediatalk 身份运行)
-sudo useradd --system --home /var/lib/media_talk --shell /usr/sbin/nologin mediatalk
+sudo useradd --system --home /var/lib/media_talk_rust --shell /usr/sbin/nologin mediatalk
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now media_talk
-journalctl -u media_talk -f
+sudo systemctl enable --now media_talk_rust
+journalctl -u media_talk_rust -f
 ```
 
 ### 4. 浏览器播放
@@ -100,20 +100,20 @@ journalctl -u media_talk -f
 | `v4l2 list` | V4L2 capture 设备能力 (仅 Linux) |
 
 ```bash
-media_talk discover --timeout-secs 5 --json \
+media_talk_rust discover --timeout-secs 5 --json \
   --username admin --password changeme
 
 # 标准 ONVIF 走法
-media_talk serve --bind 0.0.0.0:8080 \
+media_talk_rust serve --bind 0.0.0.0:8080 \
   --username admin --password changeme
 
 # 绕过 ONVIF,直接喂 RTSP URL (允许多次传入多路)
-media_talk serve --bind 0.0.0.0:8080 \
+media_talk_rust serve --bind 0.0.0.0:8080 \
   --rtsp-url rtsp://admin:changeme@192.168.1.10/Streaming/Tracks/101
-media_talk serve --bind 0.0.0.0:8080 \
+media_talk_rust serve --bind 0.0.0.0:8080 \
   --rtsp-url rtsp://camera-a/track1 --rtsp-url rtsp://camera-b/track1
 
-media_talk decode-bench path/to/clip.h264 --max-frames 300
+media_talk_rust decode-bench path/to/clip.h264 --max-frames 300
 ```
 
 ## GStreamer 拉流
@@ -128,7 +128,7 @@ media_talk decode-bench path/to/clip.h264 --max-frames 300
   `GstStreamError::Init` 报错并指明元件名。
 - **Windows 开发机调试**: 装 GStreamer 官方 MSVC runtime + devel 两个 MSI,
   把 `C:\gstreamer\1.0\msvc_x86_64\bin` 放到 PATH **最前** (自带 pkg-config.exe
-  必须优先),然后 `cargo build -p media_talk` 即可。
+  必须优先),然后 `cargo build -p media_talk_rust` 即可。
 - **交叉编译 (WSL2/Docker 内)**: sysroot 含 `libgstreamer1.0-dev` 与
   `libgstreamer-plugins-base1.0-dev` (可直接用目标板 rootfs),然后:
 
@@ -142,7 +142,7 @@ cargo build --release --target aarch64-unknown-linux-gnu
 板端扬声器播放摄像机现场声音 (G.711/AAC 管线内解码):
 
 ```bash
-media_talk serve --rtsp-url "rtsp://..." --audio-out hw:0,0
+media_talk_rust serve --rtsp-url "rtsp://..." --audio-out hw:0,0
 ```
 
 断流自动重连默认开启: bus ERROR/EOS/RTSPSrcTimeout 后按 1s→30s 指数退避

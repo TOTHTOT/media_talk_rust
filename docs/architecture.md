@@ -1,6 +1,6 @@
 # 整体架构
 
-`media_talk` 是跑在某嵌入式厂商 Linux 设备（目标板 `radxa-cm3-rpi-cm4-io`，SoC rk356x，
+`media_talk_rust` 是跑在某嵌入式厂商 Linux 设备（目标板 `radxa-cm3-rpi-cm4-io`，SoC rk356x，
 aarch64）上的网络摄像头媒体服务：局域网内 ONVIF 发现摄像头、GStreamer 拉 RTSP 流、
 通过 WebRTC（webrtcsink）转发给浏览器播放，同时支持板端扬声器出声和原生 GUI 取帧。
 
@@ -8,7 +8,7 @@ aarch64）上的网络摄像头媒体服务：局域网内 ONVIF 发现摄像头
 
 ```text
 crates/
-├── media_talk/        # 二进制入口（clap 子命令：discover / serve / decode-bench / audio / v4l2）
+├── media_talk_rust/        # 二进制入口（clap 子命令：discover / serve / decode-bench / audio / v4l2）
 ├── ipcam-core/         # 共享类型 + Decoder/Sink trait（不依赖任何兄弟 crate）
 ├── ipcam-discovery/    # ONVIF WS-Discovery 探活 + Device Management（GetProfiles/GetStreamUri）
 ├── ipcam-gst/          # GStreamer 拉流与转发引擎（核心，见 streaming-engine.md）
@@ -20,7 +20,7 @@ crates/
 ```
 
 **依赖方向**：上层 → 下层，只允许单向。`ipcam-core` 是所有 crate 的公共底座；
-`media_talk`（二进制）处于最顶端，串联 discovery / gst / web-display。
+`media_talk_rust`（二进制）处于最顶端，串联 discovery / gst / web-display。
 `ipcam-sip` 为楼宇对讲功能预留，尚无任何实现。
 
 ## 运行时数据流
@@ -31,7 +31,7 @@ crates/
      │                                     │
      │        ONVIF GetProfiles/           │ 拿到 RTSP URI + 凭据校验
      │        GetStreamUri                 ▼
-     │                              media_talk serve
+     │                              media_talk_rust serve
      │ RTSP (TCP/UDP)                      │
      └─────────────────────────────▶ ipcam-gst 管线
                                      rtspsrc → depay → parse → tee
