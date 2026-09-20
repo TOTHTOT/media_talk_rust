@@ -18,7 +18,6 @@ use rsipstack::dialog::invitation::InviteOption;
 use rsipstack::sip as rsip;
 use rsipstack::transaction::Endpoint;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
@@ -41,6 +40,12 @@ struct Args {
     /// 注册有效期（秒）
     #[arg(short, long, default_value_t = 60)]
     expires: u32,
+    /// 视频源: file:<路径> | rtsp://<uri> | camera[:<设备>]
+    #[arg(long, default_value = "file:assets/oceans.mp4")]
+    video_src: String,
+    /// 音频源: file:<路径> | mic
+    #[arg(long, default_value = "file:assets/oceans.mp4")]
+    audio_src: String,
 }
 
 #[tokio::main]
@@ -52,6 +57,8 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
+    let video_src = ipcam_gst::parse_track_source(&args.video_src).map_err(anyhow::Error::msg)?;
+    let audio_src = ipcam_gst::parse_track_source(&args.audio_src).map_err(anyhow::Error::msg)?;
 
     // 与 register example 相同：Contact/SDP 都要用对端可达的 LAN 地址
     let IpAddr::V4(local) = local_ip_address::local_ip()? else {
@@ -118,7 +125,7 @@ async fn main() -> Result<()> {
         r = &mut reg => {
             warn!(result = ?r, "register loop exited unexpectedly");
         }
-        r = call_until_hangup(dialog_layer, invite_option, state_sender) => {
+        r = call_until_hangup(dialog_layer, invite_option, state_sender, video_src, audio_src) => {
             if let Err(e) = r {
                 warn!(error = ?e, "call failed");
             }
@@ -139,6 +146,8 @@ async fn call_until_hangup(
     dialog_layer: Arc<DialogLayer>,
     invite_option: InviteOption,
     state_sender: rsipstack::dialog::dialog::DialogStateSender,
+    video_src: TrackSource,
+    audio_src: TrackSource,
 ) -> Result<()> {
     let (dialog, resp) = dialog_layer.do_invite(invite_option, state_sender).await?;
     let resp = resp.ok_or_else(|| anyhow!("INVITE got no final response"))?;
@@ -169,12 +178,11 @@ async fn call_until_hangup(
                 None
             })
     });
-    let file = TrackSource::File(PathBuf::from("assets/oceans.mp4"));
     let sender = ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
-        audio: audio.map(|d| (file.clone(), d)),
+        audio: audio.map(|d| (audio_src.clone(), d)),
         video: peers.video.map(|p| {
             (
-                file,
+                video_src.clone(),
                 ipcam_gst::RtpDest {
                     addr: p.addr,
                     payload_type: p.payload_type,

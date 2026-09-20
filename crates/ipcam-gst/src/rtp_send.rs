@@ -102,6 +102,30 @@ impl TrackSource {
     }
 }
 
+/// CLI 源描述解析: file:<路径> | rtsp://<uri> | camera[:<设备>] | mic
+pub fn parse_track_source(s: &str) -> Result<TrackSource, String> {
+    if let Some(path) = s.strip_prefix("file:") {
+        return Ok(TrackSource::File(PathBuf::from(path)));
+    }
+    if s.starts_with("rtsp://") {
+        return Ok(TrackSource::Rtsp { uri: s.to_string() });
+    }
+    if s == "camera" {
+        return Ok(TrackSource::LocalCamera { device: None });
+    }
+    if let Some(dev) = s.strip_prefix("camera:") {
+        return Ok(TrackSource::LocalCamera {
+            device: Some(dev.to_string()),
+        });
+    }
+    if s == "mic" {
+        return Ok(TrackSource::Mic);
+    }
+    Err(format!(
+        "unknown track source: {s} (file:/rtsp://camera/mic)"
+    ))
+}
+
 /// 把 uri authority 里的 user:pass@ 换成 ***:***@; 无凭据原样返回
 fn redact_uri_credentials(uri: &str) -> String {
     let Some(scheme_end) = uri.find("://") else {
@@ -573,6 +597,28 @@ mod tests {
             uri: "rtsp://192.168.1.10:8554/ch01".to_string(),
         };
         assert_eq!(plain.label(), "rtsp:rtsp://192.168.1.10:8554/ch01");
+    }
+
+    #[test]
+    fn parse_track_source_variants() {
+        assert!(matches!(
+            parse_track_source("file:a/b.mp4"),
+            Ok(TrackSource::File(p)) if p == std::path::Path::new("a/b.mp4")
+        ));
+        assert!(matches!(
+            parse_track_source("rtsp://cam/1"),
+            Ok(TrackSource::Rtsp { uri }) if uri == "rtsp://cam/1"
+        ));
+        assert!(matches!(
+            parse_track_source("camera"),
+            Ok(TrackSource::LocalCamera { device: None })
+        ));
+        assert!(matches!(
+            parse_track_source("camera:/dev/video1"),
+            Ok(TrackSource::LocalCamera { device: Some(d) }) if d == "/dev/video1"
+        ));
+        assert!(matches!(parse_track_source("mic"), Ok(TrackSource::Mic)));
+        assert!(parse_track_source("bogus").is_err());
     }
 
     /// 平台分发: windows 用 ksvideosrc/wasapisrc, 其余平台 v4l2src/alsasrc
