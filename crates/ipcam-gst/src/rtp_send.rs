@@ -460,4 +460,34 @@ mod tests {
         sender.stop();
         assert!(video > 0, "no video RTP packets emitted");
     }
+
+    /// 双轨都来自同一文件: 两路都必须出包 (文件会被解码两次, 联调工具不做共享)
+    #[test]
+    fn av_file_tracks_emit_packets() {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+        let file = TrackSource::File(PathBuf::from("../../assets/oceans.mp4"));
+        let sender = start_rtp_sender(RtpSendConfig {
+            audio: Some((
+                file.clone(),
+                AudioDest {
+                    addr: "127.0.0.1:40000".parse().unwrap(),
+                    payload_type: 8,
+                    codec: AudioCodec::Pcma,
+                },
+            )),
+            video: Some((
+                file,
+                RtpDest {
+                    addr: "127.0.0.1:40002".parse().unwrap(),
+                    payload_type: 96,
+                },
+            )),
+        })
+        .expect("sender starts");
+        std::thread::sleep(Duration::from_secs(3));
+        let (video, audio) = sender.packet_counts();
+        sender.stop();
+        assert!(video > 0, "no video RTP packets emitted");
+        assert!(audio > 0, "no audio RTP packets emitted");
+    }
 }
