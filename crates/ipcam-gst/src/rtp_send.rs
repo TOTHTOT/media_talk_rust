@@ -2,7 +2,8 @@
 //! 本机相机/麦克风), 解码后统一重编码发出.
 //!
 //! 链形 (每轨独立):
-//!   视频: 源 → [解码] → queue → videoconvert → x264enc
+//!   视频: 源 → [解码] → queue → videoconvert → videoscale
+//!         → capsfilter(width≤640, 保持宽高比) → x264enc
 //!         → rtph264pay(config-interval=1) → udpsink
 //!   音频: 源 → [解码] → queue → audioconvert → audioresample
 //!         → capsfilter(8kHz/mono) → alawenc|mulawenc
