@@ -40,9 +40,9 @@ pub fn build_av_offer(
     local_ip: IpAddr,
     audio_port: u16,
     video_port: u16,
-    audio_pt: u8,
+    audio_pts: &[u8],
 ) -> SessionDescription {
-    let mut sdp = build_audio_offer(local_ip, audio_port, audio_pt);
+    let mut sdp = build_audio_offer(local_ip, audio_port, audio_pts);
     sdp.media_descriptions
         .push(video_media_description(video_port));
     sdp
@@ -103,12 +103,31 @@ fn video_media_description(port: u16) -> MediaDescription {
 /// a=ptime:20                           <- attribute: 每包 20ms 音频
 /// a=sendrecv                           <- attribute: 双向收发
 /// ```
-pub fn build_audio_offer(local_ip: IpAddr, port: u16, payload_type: u8) -> SessionDescription {
+pub fn build_audio_offer(local_ip: IpAddr, port: u16, payload_types: &[u8]) -> SessionDescription {
     let addrtype = match local_ip {
         IpAddr::V4(_) => Addrtype::Ip4,
         IpAddr::V6(_) => Addrtype::Ip6,
     };
-    let codec = codec_name(payload_type);
+    // fmt 列表 = 我们支持的所有音频编码, 对端 answer 从中挑一个.
+    // 多给几个是为了兼容只认 PCMU 的老设备 (某嵌入式厂商门口机/室内机原生 PCMU)
+    let fmt = payload_types
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut attributes: Vec<Attribute> = payload_types
+        .iter()
+        .map(|&pt| {
+            Attribute::Rtpmap(Rtpmap {
+                payload_type: pt as u32,
+                encoding_name: codec_name(pt).into(),
+                clock_rate: 8000,      // G.711 家族固定 8kHz 采样
+                encoding_params: None, // 声道数等附加参数, 单声道留空
+            })
+        })
+        .collect();
+    attributes.push(Attribute::Ptime(20.0));
+    attributes.push(Attribute::Sendrecv);
     SessionDescription {
         // v=0 -- SDP 版本号, RFC 4566 定死就是 0, 没有 1
         version: Version::V0,
@@ -164,14 +183,14 @@ pub fn build_audio_offer(local_ip: IpAddr, port: u16, payload_type: u8) -> Sessi
         media_descriptions: vec![MediaDescription {
             // m=<类型> <端口> <协议> <载荷类型列表>
             // audio + RTP/AVP (裸 RTP/UDP; SAVP 才是 SRTP).
-            // fmt 里的 8 = PCMA, 对端 answer 会从我们给的列表里挑它
-            // 支持的 -- 只给一个就是 "没得挑, 不行就拒"
+            // fmt 里列出所有支持的编码, 对端 answer 从中挑一个
+            // 它支持的 -- 只给一个就是 "没得挑, 不行就拒"
             media: Media {
                 media: MediaType::Audio,
                 port,
                 num_of_ports: None, // 组播端口组才用, 单播留空
                 proto: ProtoType::RtpAvp,
-                fmt: payload_type.to_string(),
+                fmt,
             },
             info: None,
             // 媒体级 c= 为空 -> 继承上面的会话级 c= (RFC 4566 的继承规则).
@@ -179,24 +198,15 @@ pub fn build_audio_offer(local_ip: IpAddr, port: u16, payload_type: u8) -> Sessi
             connections: vec![],
             bandwidths: vec![],
             key: None,
-            attributes: vec![
-                // a=rtpmap:<pt> <编码名>/<时钟> -- 把数字 pt 映射到具体编码.
-                // PCMA(8)/PCMU(0) 是 RFC 3551 静态分配的, 这行其实可省,
-                // 写上是为了显式可读; 动态 pt (96-127, 比如 H264 视频)
-                // 这行就是强制的, 少了对端直接不认
-                Attribute::Rtpmap(Rtpmap {
-                    payload_type: payload_type as u32,
-                    encoding_name: codec.into(),
-                    clock_rate: 8000,      // G.711 家族固定 8kHz 采样
-                    encoding_params: None, // 声道数等附加参数, 单声道留空
-                }),
-                // a=ptime:20 -- 每个 RTP 包承载 20ms 音频 (PCMA 即 160 字节
-                // 载荷). 对端按这个节奏发包, 收端 jitter buffer 按它估算
-                Attribute::Ptime(20.0),
-                // a=sendrecv -- 方向协商: 双向收发. 对讲通话必须是它;
-                // sendonly/recvonly 用于单向广播/监听场景
-                Attribute::Sendrecv,
-            ],
+            // a=rtpmap:<pt> <编码名>/<时钟> -- 把数字 pt 映射到具体编码.
+            // PCMA(8)/PCMU(0) 是 RFC 3551 静态分配的, 这行其实可省,
+            // 写上是为了显式可读; 动态 pt (96-127, 比如 H264 视频)
+            // 这行就是强制的, 少了对端直接不认.
+            // a=ptime:20 -- 每个 RTP 包承载 20ms 音频 (G.711 即 160 字节
+            // 载荷). 对端按这个节奏发包, 收端 jitter buffer 按它估算.
+            // a=sendrecv -- 方向协商: 双向收发. 对讲通话必须是它;
+            // sendonly/recvonly 用于单向广播/监听场景
+            attributes,
         }],
     }
 }
@@ -316,14 +326,18 @@ mod tests {
     #[test]
     fn offer_roundtrip() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 11, 100));
-        let offer = build_audio_offer(ip, 40000, PT_PCMA);
+        let offer = build_audio_offer(ip, 40000, &[PT_PCMU, PT_PCMA]);
         let text = offer.to_string();
 
         // 必须能被标准解析器读回来 (手拼字符串最容易死在这)
         let parsed = SessionDescription::try_from(text.as_str()).expect("offer must parse");
         let m = &parsed.media_descriptions[0];
         assert_eq!(m.media.port, 40000);
-        assert_eq!(m.media.fmt, "8");
+        assert_eq!(m.media.fmt, "0 8");
+        assert!(
+            text.contains("a=rtpmap:0 PCMU/8000") && text.contains("a=rtpmap:8 PCMA/8000"),
+            "offer:\n{text}"
+        );
         assert_eq!(
             parsed.connection.unwrap().connection_address.base,
             IpAddr::V4(Ipv4Addr::new(192, 168, 11, 100))
@@ -337,7 +351,7 @@ mod tests {
     #[test]
     fn av_offer_roundtrip() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 11, 100));
-        let offer = build_av_offer(ip, 40000, 40002, PT_PCMA);
+        let offer = build_av_offer(ip, 40000, 40002, &[PT_PCMU, PT_PCMA]);
         let text = offer.to_string();
 
         // 视频路的关键行必须原样出现在序列化结果里

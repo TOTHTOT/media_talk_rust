@@ -5,7 +5,8 @@
 //!   视频: filesrc → qtdemux → h264parse(config-interval=1)
 //!         → rtph264pay(config-interval=1) → udpsink
 //!   音频: filesrc → qtdemux → aacparse → avdec_aac → audioconvert
-//!         → audioresample → capsfilter(8kHz/mono) → alawenc → rtppcmapay → udpsink
+//!         → audioresample → capsfilter(8kHz/mono) → alawenc|mulawenc
+//!         → rtppcmapay|rtppcmupay → udpsink  (编码按 SDP answer 选)
 //!
 //! 设计约束:
 //! - 视频不重编码: 源文件必须已经是 H264 (rtph264pay 只吃 H264 流)
@@ -38,12 +39,50 @@ pub struct RtpDest {
     pub payload_type: u8,
 }
 
+/// 音频编码 (G.711 两兄弟, SIP 对讲场景基本只遇到这两个)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioCodec {
+    /// PCMA (A-law), 静态 pt 8
+    Pcma,
+    /// PCMU (u-law), 静态 pt 0, 某嵌入式厂商设备的原生偏好
+    Pcmu,
+}
+
+impl AudioCodec {
+    /// 从 SDP rtpmap 的编码名解析; None = 我们不支持发这种编码
+    pub fn from_codec_name(name: &str) -> Option<Self> {
+        match name.to_ascii_uppercase().as_str() {
+            "PCMA" => Some(Self::Pcma),
+            "PCMU" => Some(Self::Pcmu),
+            _ => None,
+        }
+    }
+
+    /// (encoder, payloader) 元件名
+    fn elements(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Pcma => ("alawenc", "rtppcmapay"),
+            Self::Pcmu => ("mulawenc", "rtppcmupay"),
+        }
+    }
+}
+
+/// 音频路的发送目标: 地址 + pt + answer 协商出的编码.
+/// 编码必须取 answer 里的值 -- 对端收窄到 PCMU 我们还发 PCMA,
+/// 就是标签和内容都对不上的错包 (RFC 3264)
+#[derive(Debug, Clone, Copy)]
+pub struct AudioDest {
+    pub addr: SocketAddr,
+    pub payload_type: u8,
+    pub codec: AudioCodec,
+}
+
 #[derive(Debug, Clone)]
 pub struct RtpSendConfig {
     /// 源文件路径 (视频必须 H264, 音频任意可解码格式)
     pub file: PathBuf,
     /// None = 不发这路 (对端没接这路媒体时)
-    pub audio: Option<RtpDest>,
+    pub audio: Option<AudioDest>,
     pub video: Option<RtpDest>,
 }
 
@@ -231,11 +270,11 @@ fn link_video_chain(
     add_link_and_plug(pipeline, demux_pad, &[&queue, &parse, &pay, &sink], "video")
 }
 
-/// 音频链: AAC 解码后重编码成 G.711 A-law (PCMA, 8kHz 单声道)
+/// 音频链: AAC 解码后重编码成 answer 协商出的 G.711 (8kHz 单声道)
 fn link_audio_chain(
     pipeline: &gst::Pipeline,
     demux_pad: &gst::Pad,
-    dest: RtpDest,
+    dest: AudioDest,
     stats: Arc<SendStats>,
 ) -> Result<(), GstStreamError> {
     let queue = make("queue")?;
@@ -252,11 +291,17 @@ fn link_audio_chain(
             .field("channels", 1i32)
             .build(),
     );
-    let enc = make("alawenc")?;
-    let pay = make("rtppcmapay")?;
+    // 编码器/payloader 按 answer 协商结果选: PCMA→alawenc/rtppcmapay,
+    // PCMU→mulawenc/rtppcmupay
+    let (enc_name, pay_name) = dest.codec.elements();
+    let enc = make(enc_name)?;
+    let pay = make(pay_name)?;
     pay.set_property("pt", dest.payload_type as u32);
     install_pkt_probe(&pay, stats.clone(), true)?;
-    let sink = make_udpsink(dest)?;
+    let sink = make_udpsink(RtpDest {
+        addr: dest.addr,
+        payload_type: dest.payload_type,
+    })?;
     add_link_and_plug(
         pipeline,
         demux_pad,
@@ -351,9 +396,10 @@ mod tests {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
         let sender = start_rtp_sender(RtpSendConfig {
             file: PathBuf::from("../../assets/oceans.mp4"),
-            audio: Some(RtpDest {
+            audio: Some(AudioDest {
                 addr: "127.0.0.1:40000".parse().unwrap(),
                 payload_type: 8,
+                codec: AudioCodec::Pcma,
             }),
             video: Some(RtpDest {
                 addr: "127.0.0.1:40002".parse().unwrap(),

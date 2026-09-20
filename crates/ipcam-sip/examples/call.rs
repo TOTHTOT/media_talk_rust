@@ -10,7 +10,7 @@
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use ipcam_sip::sdp::{PT_PCMA, build_av_offer, parse_answer_all};
+use ipcam_sip::sdp::{PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all};
 use ipcam_sip::{SipClient, SipClientConfig};
 use rsipstack::dialog::dialog::DialogState;
 use rsipstack::dialog::dialog_layer::DialogLayer;
@@ -94,7 +94,14 @@ async fn main() -> Result<()> {
     let video_rtp_sock = std::net::UdpSocket::bind((local, 0))?;
     let audio_port = audio_rtp_sock.local_addr()?.port();
     let video_port = video_rtp_sock.local_addr()?.port();
-    let offer = build_av_offer(IpAddr::V4(local), audio_port, video_port, PT_PCMA);
+    let offer = build_av_offer(
+        IpAddr::V4(local),
+        audio_port,
+        video_port,
+        // PCMU 放前面: 某嵌入式厂商设备原生偏好 PCMU, 多给一个 PCMA 兜底,
+        // answer 挑哪个我们发哪个 (见 rtp_send AudioDest)
+        &[PT_PCMU, PT_PCMA],
+    );
     info!(%callee, audio_port, video_port, "calling, SDP offer:\n{}", offer.to_string());
 
     let dialog_layer = client.dialog_layer.clone();
@@ -154,13 +161,23 @@ async fn call_until_hangup(
         info!(?video, "SDP consult result");
     }
 
-    // 发送 pt 必须用对端 answer 里的值 (动态 pt 分方向, 见 sdp 模块注释)
+    // 发送 pt/编码必须用对端 answer 里的值 (动态 pt 分方向, 编码同理 --
+    // answer 收窄成什么就发什么, 见 sdp 模块注释)
+    let audio = peers.audio.and_then(|p| {
+        ipcam_gst::AudioCodec::from_codec_name(&p.codec)
+            .map(|codec| ipcam_gst::AudioDest {
+                addr: p.addr,
+                payload_type: p.payload_type,
+                codec,
+            })
+            .or_else(|| {
+                warn!(codec = %p.codec, "answer picked an audio codec we cannot send, skip audio");
+                None
+            })
+    });
     let sender = ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
         file,
-        audio: peers.audio.map(|p| ipcam_gst::RtpDest {
-            addr: p.addr,
-            payload_type: p.payload_type,
-        }),
+        audio,
         video: peers.video.map(|p| ipcam_gst::RtpDest {
             addr: p.addr,
             payload_type: p.payload_type,
