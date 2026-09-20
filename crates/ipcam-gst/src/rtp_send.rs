@@ -3,18 +3,18 @@
 //!
 //! 管线 (按需各起一路, qtdemux 的 pad 是动态的, pad-added 里分流):
 //!   视频: filesrc → qtdemux → h264parse(config-interval=1)
-//!         → capsfilter(byte-stream/au) → rtph264pay → udpsink
+//!         → rtph264pay(config-interval=1) → udpsink
 //!   音频: filesrc → qtdemux → aacparse → avdec_aac → audioconvert
 //!         → audioresample → capsfilter(8kHz/mono) → alawenc → rtppcmapay → udpsink
 //!
 //! 设计约束:
 //! - 视频不重编码: 源文件必须已经是 H264 (rtph264pay 只吃 H264 流)
-//! - 强制 byte-stream/au: mp4 里是 avcC 格式, rtph264pay 对 annexb
-//!   (byte-stream) 兼容性最稳, 别赌对端实现对 avc 的支持
+//! - avc(avcC) 直接喂 payloader, 不转 byte-stream: 转 annexb 时
+//!   h264parse 会插 AUD NAL, 部分嵌入式设备 (某嵌入式厂商门口机) 不认
 //! - udpsink sync=true: 按 buffer 时间戳限速, 否则文件会以最快速度泼出去,
 //!   对端 jitter buffer 直接炸
-//! - h264parse config-interval=1: SPS/PPS 周期随码流带内重发. SIP 不像
-//!   MP4 有带外参数集, 对端从中途开始收也要能解
+//! - rtph264pay config-interval=1: SPS/PPS 按秒级周期随 RTP 重发. SIP 不像
+//!   MP4 有带外参数集, 对端中途开始收也要能解
 //! - 发送用的 payload type 必须取对端 answer 里的值 (动态 pt 分方向,
 //!   见 ipcam-sip sdp 模块注释)
 
@@ -151,6 +151,7 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
                 "rtp sender stats"
             );
         }
+        info!("");
     });
 
     pipeline
@@ -216,16 +217,9 @@ fn link_video_chain(
     let queue = make("queue")?;
     let parse = make("h264parse")?;
     parse.set_property("config-interval", 1i32);
-    // mp4 里是 avcC, 强制转成 byte-stream(annexb)/au 再交给 payloader,
-    // h264parse 本身也支持 byte-stream(Annex-B), 但是有可能先被解析成 avcC 导致打包失败
-    let caps = make("capsfilter")?;
-    caps.set_property(
-        "caps",
-        gst::Caps::builder("video/x-h264")
-            .field("stream-format", "byte-stream")
-            .field("alignment", "au")
-            .build(),
-    );
+    // 不强制 byte-stream: avcC(avc) 直接交给 rtph264pay. 转 annexb 时
+    // h264parse 会给每个 AU 插 AUD NAL, 某嵌入式厂商设备的 RTP 接收器不认
+    // (实测 Linphone 的无 AUD 流能出画面). avc 路径不插 AUD
     let pay = make("rtph264pay")?;
     pay.set_property("pt", dest.payload_type as u32);
     // SPS/PPS 按秒级周期随 RTP 重发: payloader 缓存见过的参数集,
@@ -234,12 +228,7 @@ fn link_video_chain(
     pay.set_property("config-interval", 1i32);
     install_pkt_probe(&pay, stats.clone(), false)?;
     let sink = make_udpsink(dest)?;
-    add_link_and_plug(
-        pipeline,
-        demux_pad,
-        &[&queue, &parse, &caps, &pay, &sink],
-        "video",
-    )
+    add_link_and_plug(pipeline, demux_pad, &[&queue, &parse, &pay, &sink], "video")
 }
 
 /// 音频链: AAC 解码后重编码成 G.711 A-law (PCMA, 8kHz 单声道)

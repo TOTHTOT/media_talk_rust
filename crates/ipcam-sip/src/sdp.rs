@@ -27,7 +27,7 @@ pub const PT_H264: u8 = 96;
 /// ```text
 /// m=video 40002 RTP/AVP 96             <- 视频用动态 pt 96
 /// a=rtpmap:96 H264/90000               <- 视频时钟固定 90000, 写错播放速率全乱
-/// a=fmtp:96 profile-level-id=42e01f;packetization-mode=1
+/// a=fmtp:96 profile-level-id=42e01f
 /// a=sendrecv
 /// ```
 ///
@@ -68,15 +68,16 @@ fn video_media_description(port: u16) -> MediaDescription {
                 clock_rate: 90000,
                 encoding_params: None,
             }),
-            // profile-level-id=42e01f: Baseline profile level 3.1;
-            // packetization-mode=1: 允许 FU-A 分片 (相机大帧必用).
+            // profile-level-id=42e01f: Baseline profile level 3.1.
+            // 不写 packetization-mode = mode 0 (单 NAL 模式): 某嵌入式厂商门口机/
+            // 室内机的 RTP 接收器不认 FU-A 分片, 实测 Linphone (mode 0)
+            // 能出画面而我们 mode 1 黑屏. 代价是片源必须切成小于 MTU 的
+            // slice (rtp_send 的测试片源已按 slice-max-size=1300 重编码).
             // sdp-rs 0.2.1 的 Attribute 枚举没有 Fmtp 变体, 走 Other,
             // Display 出来就是标准 a=fmtp:... 行
             Attribute::Other(
                 "fmtp".into(),
-                Some(format!(
-                    "{PT_H264} profile-level-id=42e01f;packetization-mode=1"
-                )),
+                Some(format!("{PT_H264} profile-level-id=42e01f")),
             ),
             Attribute::Sendrecv,
         ],
