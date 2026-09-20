@@ -280,6 +280,53 @@ fn plug_uri_source(
     Ok(())
 }
 
+/// 平台分发集中在这两个函数, 不用 #[cfg] 散布.
+/// 未知平台编译能过, 运行时 make() 报元件不存在 (与缺插件行为一致)
+fn camera_src_name() -> &'static str {
+    if cfg!(windows) {
+        "ksvideosrc"
+    } else {
+        "v4l2src"
+    }
+}
+
+fn mic_src_name() -> &'static str {
+    if cfg!(windows) {
+        "wasapisrc"
+    } else {
+        "alsasrc"
+    }
+}
+
+/// 设备源出来直接是裸流 (或可被下游 negotiate 成裸流), src pad 静态存在
+fn plug_device_source(
+    pipeline: &gst::Pipeline,
+    element_name: &str,
+    device: Option<&str>,
+    on_raw_pad: impl FnOnce(gst::Pad) -> Result<(), GstStreamError>,
+) -> Result<(), GstStreamError> {
+    let src = make(element_name)?;
+    if let Some(dev) = device {
+        // v4l2src 用 device=/dev/videoX; ksvideosrc 用 device-path.
+        // MIPI 相机在 Linux 上同为 v4l2src, 只是节点不同
+        let prop = if element_name == "ksvideosrc" {
+            "device-path"
+        } else {
+            "device"
+        };
+        src.set_property(prop, dev);
+    }
+    pipeline
+        .add(&src)
+        .map_err(|e| GstStreamError::Init(format!("add {element_name}: {e}")))?;
+    src.sync_state_with_parent()
+        .map_err(|e| GstStreamError::Init(format!("sync {element_name}: {e}")))?;
+    let pad = src
+        .static_pad("src")
+        .ok_or_else(|| GstStreamError::Link(format!("{element_name} has no src pad")))?;
+    on_raw_pad(pad)
+}
+
 fn file_uri(path: &std::path::Path) -> Result<String, GstStreamError> {
     let abs = path.canonicalize().map_err(|e| {
         GstStreamError::InvalidConfig(format!("media file not found: {}: {e}", path.display()))
@@ -312,8 +359,19 @@ fn build_video_track(
                 link_video_send_chain(&chain_pipeline, &pad, dest, stats.clone())
             })
         }
+        TrackSource::LocalCamera { device } => {
+            let pipeline = pipeline.clone();
+            let chain_pipeline = pipeline.clone();
+            let device = device.clone();
+            plug_device_source(
+                &pipeline,
+                camera_src_name(),
+                device.as_deref(),
+                move |pad| link_video_send_chain(&chain_pipeline, &pad, dest, stats.clone()),
+            )
+        }
         other => Err(GstStreamError::InvalidConfig(format!(
-            "video source not wired yet: {other:?}"
+            "unsupported source for video track: {other:?}"
         ))),
     }
 }
@@ -341,8 +399,15 @@ fn build_audio_track(
                 link_audio_send_chain(&chain_pipeline, &pad, dest, stats.clone())
             })
         }
+        TrackSource::Mic => {
+            let pipeline = pipeline.clone();
+            let chain_pipeline = pipeline.clone();
+            plug_device_source(&pipeline, mic_src_name(), None, move |pad| {
+                link_audio_send_chain(&chain_pipeline, &pad, dest, stats.clone())
+            })
+        }
         other => Err(GstStreamError::InvalidConfig(format!(
-            "audio source not wired yet: {other:?}"
+            "unsupported source for audio track: {other:?}"
         ))),
     }
 }
@@ -508,6 +573,18 @@ mod tests {
             uri: "rtsp://192.168.1.10:8554/ch01".to_string(),
         };
         assert_eq!(plain.label(), "rtsp:rtsp://192.168.1.10:8554/ch01");
+    }
+
+    /// 平台分发: windows 用 ksvideosrc/wasapisrc, 其余平台 v4l2src/alsasrc
+    #[test]
+    fn device_src_names_match_platform() {
+        if cfg!(windows) {
+            assert_eq!(camera_src_name(), "ksvideosrc");
+            assert_eq!(mic_src_name(), "wasapisrc");
+        } else {
+            assert_eq!(camera_src_name(), "v4l2src");
+            assert_eq!(mic_src_name(), "alsasrc");
+        }
     }
 
     /// 文件源视频轨: 解码重编码后 3 秒内必须出 RTP 包
