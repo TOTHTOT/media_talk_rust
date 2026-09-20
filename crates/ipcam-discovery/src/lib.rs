@@ -179,8 +179,7 @@ mod tests {
 
     #[test]
     fn parse_xaddr_endpoint_returns_first_url() {
-        let url =
-            parse_xaddr_endpoint("http://192.168.1.144/onvif/device_service").expect("parse");
+        let url = parse_xaddr_endpoint("http://192.168.1.144/onvif/device_service").expect("parse");
         assert_eq!(url.scheme(), "http");
         assert_eq!(url.host_str(), Some("192.168.1.144"));
     }
