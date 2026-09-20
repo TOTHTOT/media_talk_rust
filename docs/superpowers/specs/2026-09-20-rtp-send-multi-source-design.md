@@ -1,7 +1,7 @@
 # rtp_send 多输入源设计
 
 日期: 2026-09-20
-状态: 已确认 (brainstorming 输出)
+状态: 已实现 (branch rtp-send-multi-source, 2026-09-20)
 范围: `crates/ipcam-gst/src/rtp_send.rs` 重构 + `ipcam-sip/examples/call.rs` 参数扩展
 
 ## 背景
