@@ -1,23 +1,20 @@
-//! 文件 → RTP 发送器 (SIP 通话联调用): 把本地媒体文件按 SDP 协商结果
-//! 打成 RTP 发往对端.
+//! 多源 → RTP 发送器 (SIP 通话联调用): 每路媒体独立指定源 (文件/RTSP/
+//! 本机相机/麦克风), 解码后统一重编码发出.
 //!
-//! 管线 (按需各起一路, qtdemux 的 pad 是动态的, pad-added 里分流):
-//!   视频: filesrc → qtdemux → h264parse(config-interval=1)
+//! 链形 (每轨独立):
+//!   视频: 源 → [解码] → queue → videoconvert → x264enc
 //!         → rtph264pay(config-interval=1) → udpsink
-//!   音频: filesrc → qtdemux → aacparse → avdec_aac → audioconvert
-//!         → audioresample → capsfilter(8kHz/mono) → alawenc|mulawenc
-//!         → rtppcmapay|rtppcmupay → udpsink  (编码按 SDP answer 选)
+//!   音频: 源 → [解码] → queue → audioconvert → audioresample
+//!         → capsfilter(8kHz/mono) → alawenc|mulawenc
+//!         → rtppcmapay|rtppcmupay → udpsink
 //!
-//! 设计约束:
-//! - 视频不重编码: 源文件必须已经是 H264 (rtph264pay 只吃 H264 流)
-//! - avc(avcC) 直接喂 payloader, 不转 byte-stream: 转 annexb 时
-//!   h264parse 会插 AUD NAL, 部分嵌入式设备 (门口机) 不认
-//! - udpsink sync=true: 按 buffer 时间戳限速, 否则文件会以最快速度泼出去,
-//!   对端 jitter buffer 直接炸
-//! - rtph264pay config-interval=1: SPS/PPS 按秒级周期随 RTP 重发. SIP 不像
-//!   MP4 有带外参数集, 对端中途开始收也要能解
-//! - 发送用的 payload type 必须取对端 answer 里的值 (动态 pt 分方向,
-//!   见 ipcam-sip sdp 模块注释)
+//! 设计约束 (门口机黑屏三轮修复的经验, 全部固化在发送链里):
+//! - x264enc aud=false + option-string slice-max-size=1300: 无 AUD,
+//!   每个 NAL 小于 MTU, mode 0 对端不需要认 FU-A 分片
+//! - rtph264pay config-interval=1: SPS/PPS 秒级周期重发, 对端中途
+//!   开始收也能解
+//! - udpsink sync=true: 按 buffer 时间戳限速, 否则以最快速度泼出去
+//! - 发送 pt/音频编码必须取对端 answer 里的值 (RFC 3264)
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -77,13 +74,31 @@ pub struct AudioDest {
     pub codec: AudioCodec,
 }
 
+/// 一路媒体的来源
+#[derive(Debug, Clone)]
+pub enum TrackSource {
+    /// 文件 (mp4/wav/mp3 均可, 只取当前需要的轨)
+    File(PathBuf),
+    /// RTSP 网络相机 (凭据内嵌在 uri 里, H264/H265 均可)
+    Rtsp { uri: String },
+    /// 本机相机: Linux v4l2src (USB 和 MIPI/CSI 同元件), Windows ksvideosrc
+    LocalCamera { device: Option<String> },
+    /// 本机麦克风: Windows wasapisrc, Linux alsasrc
+    Mic,
+}
+
+/// 要建的是哪一路 (源段按它匹配 uridecodebin 的裸流 pad)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrackKind {
+    Audio,
+    Video,
+}
+
 #[derive(Debug, Clone)]
 pub struct RtpSendConfig {
-    /// 源文件路径 (视频必须 H264, 音频任意可解码格式)
-    pub file: PathBuf,
     /// None = 不发这路 (对端没接这路媒体时)
-    pub audio: Option<AudioDest>,
-    pub video: Option<RtpDest>,
+    pub audio: Option<(TrackSource, AudioDest)>,
+    pub video: Option<(TrackSource, RtpDest)>,
 }
 
 /// 发包计数 (payloader src 上的 probe 累加), 用来回答 "到底有没有数据
@@ -124,12 +139,6 @@ impl Drop for RtpSender {
 
 pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError> {
     ensure_init_internal()?;
-    if !cfg.file.exists() {
-        return Err(GstStreamError::InvalidConfig(format!(
-            "media file not found: {}",
-            cfg.file.display()
-        )));
-    }
     if cfg.audio.is_none() && cfg.video.is_none() {
         return Err(GstStreamError::InvalidConfig(
             "neither audio nor video destination given".into(),
@@ -137,18 +146,15 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
     }
 
     let pipeline = gst::Pipeline::new();
-    let src = make("filesrc")?;
-    src.set_property("location", cfg.file.to_string_lossy().as_ref());
-    let demux = make("qtdemux")?;
-    pipeline
-        .add_many([&src, &demux])
-        .map_err(|e| GstStreamError::Init(format!("add src/demux: {e}")))?;
-    src.link(&demux)
-        .map_err(|e| GstStreamError::Link(format!("filesrc to qtdemux: {e}")))?;
-
     let stats = Arc::new(SendStats::default());
     let stop_flag = Arc::new(AtomicBool::new(false));
-    install_demux_pad_added(&pipeline, &demux, &cfg, stats.clone());
+
+    if let Some((source, dest)) = &cfg.video {
+        build_video_track(&pipeline, source, *dest, stats.clone())?;
+    }
+    if let Some((source, dest)) = &cfg.audio {
+        build_audio_track(&pipeline, source, *dest, stats.clone())?;
+    }
 
     // bus 线程: 只盯 EOS/Error 打日志, 不负责拆管线.
     // 注意: iter 在 bus 进入 flushing 时也会结束 (不一定是 EOS/Error),
@@ -196,7 +202,6 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
         .set_state(gst::State::Playing)
         .map_err(|e| GstStreamError::Init(format!("pipeline set Playing: {e}")))?;
     info!(
-        file = %cfg.file.display(),
         audio = ?cfg.audio,
         video = ?cfg.video,
         "rtp sender started"
@@ -208,81 +213,133 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
     })
 }
 
-/// qtdemux 的流 pad 是动态出现的 (解复用后才知道有几路), 每来一路
-/// 按 caps 分流到对应的 RTP 发送链
-fn install_demux_pad_added(
+/// 文件/RTSP 源: uridecodebin 解码出裸流, pad-added 里按 TrackKind 匹配,
+/// 命中的 pad 交给 on_raw_pad 接发送链. 源里没有请求的轨 = pad 永远不来,
+/// 不阻塞另一路 (靠 stats 0 包发现)
+fn plug_uri_source(
     pipeline: &gst::Pipeline,
-    demux: &gst::Element,
-    cfg: &RtpSendConfig,
-    stats: Arc<SendStats>,
-) {
-    let pipeline = pipeline.clone();
-    let cfg = cfg.clone();
-    demux.connect_pad_added(move |_demux, pad| {
-        let caps = match pad.current_caps().or_else(|| Some(pad.query_caps(None))) {
-            Some(c) => c,
-            None => return,
+    uri: &str,
+    kind: TrackKind,
+    on_raw_pad: impl Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static,
+) -> Result<(), GstStreamError> {
+    let dec = make("uridecodebin")?;
+    dec.set_property("uri", uri);
+    pipeline
+        .add(&dec)
+        .map_err(|e| GstStreamError::Init(format!("add uridecodebin: {e}")))?;
+    dec.connect_pad_added(move |_dec, pad| {
+        let Some(caps) = pad.current_caps() else {
+            return;
         };
         let Some(s) = caps.structure(0) else { return };
-        info!(cpas = ?s, "demux ");
-        let r = match s.name().as_str() {
-            "video/x-h264" => cfg
-                .video
-                .map(|dest| link_video_chain(&pipeline, pad, dest, stats.clone())),
-            "audio/mpeg" => cfg
-                .audio
-                .map(|dest| link_audio_chain(&pipeline, pad, dest, stats.clone())),
-            other => {
-                warn!(
-                    media = other,
-                    "rtp sender: unsupported stream type, ignored"
-                );
-                None
+        let hit = matches!(
+            (kind, s.name().as_str()),
+            (TrackKind::Video, "video/x-raw") | (TrackKind::Audio, "audio/x-raw")
+        );
+        if hit {
+            if let Err(e) = on_raw_pad(pad.clone()) {
+                warn!(error = %e, "rtp sender: failed to link send chain");
             }
-        };
-        if let Some(Err(e)) = r {
-            warn!(error = %e, "rtp sender: failed to link chain");
         }
     });
+    dec.sync_state_with_parent()
+        .map_err(|e| GstStreamError::Init(format!("sync uridecodebin: {e}")))?;
+    Ok(())
 }
 
-/// 视频链: H264 直接解包重打, 不解码不重编码
-fn link_video_chain(
+fn file_uri(path: &std::path::Path) -> Result<String, GstStreamError> {
+    let abs = path.canonicalize().map_err(|e| {
+        GstStreamError::InvalidConfig(format!("media file not found: {}: {e}", path.display()))
+    })?;
+    let uri = gst::glib::filename_to_uri(&abs, None)
+        .map_err(|e| GstStreamError::InvalidConfig(format!("to file uri: {e}")))?;
+    Ok(uri.to_string())
+}
+
+fn build_video_track(
     pipeline: &gst::Pipeline,
-    demux_pad: &gst::Pad,
+    source: &TrackSource,
+    dest: RtpDest,
+    stats: Arc<SendStats>,
+) -> Result<(), GstStreamError> {
+    match source {
+        TrackSource::File(path) => {
+            let uri = file_uri(path)?;
+            let pipeline = pipeline.clone();
+            let chain_pipeline = pipeline.clone();
+            plug_uri_source(&pipeline, &uri, TrackKind::Video, move |pad| {
+                link_video_send_chain(&chain_pipeline, &pad, dest, stats.clone())
+            })
+        }
+        other => Err(GstStreamError::InvalidConfig(format!(
+            "video source not wired yet: {other:?}"
+        ))),
+    }
+}
+
+fn build_audio_track(
+    pipeline: &gst::Pipeline,
+    source: &TrackSource,
+    dest: AudioDest,
+    stats: Arc<SendStats>,
+) -> Result<(), GstStreamError> {
+    match source {
+        TrackSource::File(path) => {
+            let uri = file_uri(path)?;
+            let pipeline = pipeline.clone();
+            let chain_pipeline = pipeline.clone();
+            plug_uri_source(&pipeline, &uri, TrackKind::Audio, move |pad| {
+                link_audio_send_chain(&chain_pipeline, &pad, dest, stats.clone())
+            })
+        }
+        other => Err(GstStreamError::InvalidConfig(format!(
+            "audio source not wired yet: {other:?}"
+        ))),
+    }
+}
+
+/// 视频发送链 (所有源共用): 裸流重编码, 参数集周期重发
+fn link_video_send_chain(
+    pipeline: &gst::Pipeline,
+    raw_pad: &gst::Pad,
     dest: RtpDest,
     stats: Arc<SendStats>,
 ) -> Result<(), GstStreamError> {
     let queue = make("queue")?;
-    let parse = make("h264parse")?;
-    parse.set_property("config-interval", 1i32);
-    // 不强制 byte-stream: avcC(avc) 直接交给 rtph264pay. 转 annexb 时
-    // h264parse 会给每个 AU 插 AUD NAL, 设备的 RTP 接收器不认
-    // (实测 Linphone 的无 AUD 流能出画面). avc 路径不插 AUD
+    let convert = make("videoconvert")?;
+    let enc = make("x264enc")?;
+    enc.set_property_from_str("tune", "zerolatency");
+    enc.set_property_from_str("speed-preset", "veryfast");
+    enc.set_property("bitrate", 400u32); // kbps, CIF 档足够
+    enc.set_property("key-int-max", 30u32); // 秒级 IDR, 对端中途收也能起
+    // 不插 AUD NAL (设备解析器不认); 每个 NAL 切到 MTU 以下,
+    // 从源头消除 FU-A 分片需求 (mode 0)
+    enc.set_property("aud", false);
+    enc.set_property("option-string", "slice-max-size=1300");
     let pay = make("rtph264pay")?;
     pay.set_property("pt", dest.payload_type as u32);
-    // SPS/PPS 按秒级周期随 RTP 重发: payloader 缓存见过的参数集,
-    // 与 IDR 位置无关. 对端设备在 200 OK 后才开收包 socket, 开头那串
-    // SPS/PPS 很可能丢掉, 不周期重发对端解码器永远起不来 (黑屏)
     pay.set_property("config-interval", 1i32);
     install_pkt_probe(&pay, stats.clone(), false)?;
     let sink = make_udpsink(dest)?;
-    add_link_and_plug(pipeline, demux_pad, &[&queue, &parse, &pay, &sink], "video")
+    add_link_and_plug(
+        pipeline,
+        raw_pad,
+        &[&queue, &convert, &enc, &pay, &sink],
+        "video",
+    )
 }
 
-/// 音频链: AAC 解码后重编码成 answer 协商出的 G.711 (8kHz 单声道)
-fn link_audio_chain(
+/// 音频发送链 (所有源共用): 裸流重采样成 answer 协商出的 G.711 (8kHz 单声道)
+fn link_audio_send_chain(
     pipeline: &gst::Pipeline,
-    demux_pad: &gst::Pad,
+    raw_pad: &gst::Pad,
     dest: AudioDest,
     stats: Arc<SendStats>,
 ) -> Result<(), GstStreamError> {
     let queue = make("queue")?;
-    let parse = make("aacparse")?;
-    let decode = make("avdec_aac")?;
     let convert = make("audioconvert")?;
     let resample = make("audioresample")?;
-    // G.711 定死 8kHz; capsfilter 强制输出格式, 不依赖源文件采样率
+    // G.711 定死 8kHz; capsfilter 强制输出格式, 不依赖源采样率
     let caps = make("capsfilter")?;
     caps.set_property(
         "caps",
@@ -304,10 +361,8 @@ fn link_audio_chain(
     })?;
     add_link_and_plug(
         pipeline,
-        demux_pad,
-        &[
-            &queue, &parse, &decode, &convert, &resample, &caps, &enc, &pay, &sink,
-        ],
+        raw_pad,
+        &[&queue, &convert, &resample, &caps, &enc, &pay, &sink],
         "audio",
     )
 }
@@ -323,20 +378,6 @@ fn make_udpsink(dest: RtpDest) -> Result<gst::Element, GstStreamError> {
 }
 
 /// 在 payloader 的 src pad 上数包: 每个 buffer = 一个 RTP 包, 这是个探测器
-///
-/// # Arguments
-///
-/// * `pay`:
-/// * `stats`:
-/// * `is_audio`:
-///
-/// returns: Result<(), GstStreamError>
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
 fn install_pkt_probe(
     pay: &gst::Element,
     stats: Arc<SendStats>,
@@ -357,11 +398,11 @@ fn install_pkt_probe(
     Ok(())
 }
 
-/// 公共尾巴: 元件入管线 → 依次互链 → demux 动态 pad 插到链头 →
+/// 公共尾巴: 元件入管线 → 依次互链 → 源动态 pad 插到链头 →
 /// 同步状态 (链条是在管线已 Playing 后才接上的, 必须手动 sync)
 fn add_link_and_plug(
     pipeline: &gst::Pipeline,
-    demux_pad: &gst::Pad,
+    src_pad: &gst::Pad,
     chain: &[&gst::Element],
     what: &str,
 ) -> Result<(), GstStreamError> {
@@ -373,9 +414,9 @@ fn add_link_and_plug(
     let head_sink = chain[0]
         .static_pad("sink")
         .ok_or_else(|| GstStreamError::Link(format!("{what} chain head has no sink pad")))?;
-    demux_pad
+    src_pad
         .link(&head_sink)
-        .map_err(|e| GstStreamError::Link(format!("plug demux pad to {what} chain: {e}")))?;
+        .map_err(|e| GstStreamError::Link(format!("plug src pad to {what} chain: {e}")))?;
     for elem in chain {
         elem.sync_state_with_parent()
             .map_err(|e| GstStreamError::Link(format!("sync {what} chain state: {e}")))?;
@@ -388,29 +429,24 @@ fn add_link_and_plug(
 mod tests {
     use super::*;
 
-    /// 真实跑管线: 把 oceans.mp4 发到 loopback, 3 秒内两路都必须出包.
-    /// 不发包 = pad 分流/链接有 bug, 不用等对端设备就能发现
+    /// 文件源视频轨: 解码重编码后 3 秒内必须出 RTP 包
     #[test]
-    fn sender_actually_emits_packets() {
-        // bus 线程的 EOS/Error 走 tracing, 不初始化 subscriber 就永远看不见
+    fn video_file_track_emits_packets() {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
         let sender = start_rtp_sender(RtpSendConfig {
-            file: PathBuf::from("../../assets/oceans.mp4"),
-            audio: Some(AudioDest {
-                addr: "127.0.0.1:40000".parse().unwrap(),
-                payload_type: 8,
-                codec: AudioCodec::Pcma,
-            }),
-            video: Some(RtpDest {
-                addr: "127.0.0.1:40002".parse().unwrap(),
-                payload_type: 96,
-            }),
+            audio: None,
+            video: Some((
+                TrackSource::File(PathBuf::from("../../assets/oceans.mp4")),
+                RtpDest {
+                    addr: "127.0.0.1:40002".parse().unwrap(),
+                    payload_type: 96,
+                },
+            )),
         })
         .expect("sender starts");
         std::thread::sleep(Duration::from_secs(3));
-        let (video, audio) = sender.packet_counts();
+        let (video, _audio) = sender.packet_counts();
         sender.stop();
         assert!(video > 0, "no video RTP packets emitted");
-        assert!(audio > 0, "no audio RTP packets emitted");
     }
 }

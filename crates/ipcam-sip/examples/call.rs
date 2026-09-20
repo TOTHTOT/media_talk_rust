@@ -5,11 +5,11 @@
 //!
 //! ```bash
 //! cargo run -p ipcam-sip --example call -- 1002
-//! cargo run -p ipcam-sip --example call -- 1002 --file assets/oceans.mp4
 //! ```
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
+use ipcam_gst::TrackSource;
 use ipcam_sip::sdp::{PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all};
 use ipcam_sip::{SipClient, SipClientConfig};
 use rsipstack::dialog::dialog::DialogState;
@@ -41,9 +41,6 @@ struct Args {
     /// 注册有效期（秒）
     #[arg(short, long, default_value_t = 60)]
     expires: u32,
-    /// 协商成功后发给对端的媒体文件 (视频必须 H264 编码)
-    #[arg(long, default_value = "assets/oceans.mp4")]
-    file: PathBuf,
 }
 
 #[tokio::main]
@@ -121,7 +118,7 @@ async fn main() -> Result<()> {
         r = &mut reg => {
             warn!(result = ?r, "register loop exited unexpectedly");
         }
-        r = call_until_hangup(dialog_layer, invite_option, state_sender, args.file) => {
+        r = call_until_hangup(dialog_layer, invite_option, state_sender) => {
             if let Err(e) = r {
                 warn!(error = ?e, "call failed");
             }
@@ -142,7 +139,6 @@ async fn call_until_hangup(
     dialog_layer: Arc<DialogLayer>,
     invite_option: InviteOption,
     state_sender: rsipstack::dialog::dialog::DialogStateSender,
-    file: PathBuf,
 ) -> Result<()> {
     let (dialog, resp) = dialog_layer.do_invite(invite_option, state_sender).await?;
     let resp = resp.ok_or_else(|| anyhow!("INVITE got no final response"))?;
@@ -173,12 +169,17 @@ async fn call_until_hangup(
                 None
             })
     });
+    let file = TrackSource::File(PathBuf::from("assets/oceans.mp4"));
     let sender = ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
-        file,
-        audio,
-        video: peers.video.map(|p| ipcam_gst::RtpDest {
-            addr: p.addr,
-            payload_type: p.payload_type,
+        audio: audio.map(|d| (file.clone(), d)),
+        video: peers.video.map(|p| {
+            (
+                file,
+                ipcam_gst::RtpDest {
+                    addr: p.addr,
+                    payload_type: p.payload_type,
+                },
+            )
         }),
     })?;
     info!("call established, streaming media file, ctrl+c to hang up");
