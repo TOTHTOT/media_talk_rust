@@ -30,3 +30,6 @@ target/build-*/out
 
 # Per-developer Claude Code MCP server config (mirrors settings.local.json)
 /.mcp.json
+/assets/oceans_baseline.mp4
+/assets/oceans_processed.mp4
+/assets/test_800x480_call.mp4

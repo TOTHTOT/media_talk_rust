@@ -246,7 +246,7 @@ pub struct PeerMedias {
 pub fn parse_answer_all(body: &[u8]) -> Result<PeerMedias> {
     let text = std::str::from_utf8(body)?;
     let sdp = SessionDescription::try_from(text).map_err(|e| anyhow!("invalid SDP: {e}"))?;
-    info!(?sdp, "parsed Sdp");
+    info!("calling, answer sdp = {}", sdp.to_string());
     let mut out = PeerMedias::default();
     for media in &sdp.media_descriptions {
         let peer = peer_from_media(sdp.connection.as_ref(), media)?;

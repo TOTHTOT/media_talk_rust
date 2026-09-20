@@ -53,7 +53,7 @@ impl AudioCodec {
     pub fn from_codec_name(name: &str) -> Option<Self> {
         match name.to_ascii_uppercase().as_str() {
             "PCMA" => Some(Self::Pcma),
-            "PCMU" => Some(Self::Pcmu),
+            "PCMU" => Some(Self::Pcma),
             _ => None,
         }
     }
@@ -190,7 +190,6 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
                 "rtp sender stats"
             );
         }
-        info!("");
     });
 
     pipeline
@@ -225,6 +224,7 @@ fn install_demux_pad_added(
             None => return,
         };
         let Some(s) = caps.structure(0) else { return };
+        info!(cpas = ?s, "demux ");
         let r = match s.name().as_str() {
             "video/x-h264" => cfg
                 .video

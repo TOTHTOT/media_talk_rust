@@ -175,13 +175,31 @@ IDR 的片源救不了场.
 **解法**: 去掉强制 byte-stream 的 capsfilter, avc 直接喂 rtph264pay
 (它本来就支持 avc 输入), 不转换就不插 AUD (commit `ac06371`).
 
-### answer 收窄编码后, 必须按 answer 发
+### answer 收窄编码后, 必须按 answer 发 — 音频错配会拖死视频
+
+**现象**: 视频码流形状全部修对之后 (分支 3, commit `ac06371`), 设备
+依然黑屏; 只改音频协商的分支 4 (commit `4652edd`) 反而出画面. A/B
+实测确认: 视频的最后一个拦路虎是音频.
 
 **根因**: 设备 answer 把音频收窄成 PCMU (pt 0), 我们发送链写死 PCMA
-(pt 8) — 标签和内容都对不上的错包 (违反 RFC 3264).
+(pt 8) — 发的包 pt 和 answer 对不上 (违反 RFC 3264). 某嵌入式厂商这套嵌入式
+栈 (全志 awplayer + ortp) 的媒体处理是会话级的: ortp 检测到 RTP 包的
+payload type 和会话不符就重置 jitter buffer (日志里
+`Jitter buffer stays unconverged... reset it`), 音频线程反复 reset
+(`AudioModule::reset` 刷屏, alsa 反复重开), 整个媒体会话被拖住, 视频
+解码器抢不到运行时间 (`decoder slice timeout` / `ION_IOC_ALLOC error`),
+码流对了也起不来.
+
+注意分层 (实验验证过): **触发 reset 的是 pt 和 answer 不符, 不是编码
+内容** — 把 PCMU 故意映射成 PCMA 编码发 pt 0 的包, 画面照样出, 只是
+声音失真 (μ 律解 A 律). pt 决定对端会话稳不稳, 编码内容只决定声音
+对不对.
 
 **解法**: offer 同时列 PCMU/PCMA, `rtp_send` 按 answer 协商结果选
-`alawenc/rtppcmapay` 或 `mulawenc/rtppcmupay` (commit `4652edd`).
+`alawenc/rtppcmapay` 或 `mulawenc/rtppcmupay`, 发送 pt 也用 answer 里的
+值 (commit `4652edd`).
+**教训: 调嵌入式对端的黑屏, 别只盯视频链 — 对端媒体是会话级状态机,
+任何一路媒体的协商错配都可能阻塞其他路.**
 
 ### 联调优先级: 先证明数据离开我们
 

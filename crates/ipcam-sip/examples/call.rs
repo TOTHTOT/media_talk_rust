@@ -167,7 +167,7 @@ async fn call_until_hangup(
         ipcam_gst::AudioCodec::from_codec_name(&p.codec)
             .map(|codec| ipcam_gst::AudioDest {
                 addr: p.addr,
-                payload_type: p.payload_type,
+                payload_type: p.payload_type + 1,
                 codec,
             })
             .or_else(|| {
