@@ -69,7 +69,7 @@ fn video_media_description(port: u16) -> MediaDescription {
                 encoding_params: None,
             }),
             // profile-level-id=42e01f: Baseline profile level 3.1.
-            // 不写 packetization-mode = mode 0 (单 NAL 模式): 某嵌入式厂商门口机/
+            // 不写 packetization-mode = mode 0 (单 NAL 模式): 门口机/
             // 室内机的 RTP 接收器不认 FU-A 分片, 实测 Linphone (mode 0)
             // 能出画面而我们 mode 1 黑屏. 代价是片源必须切成小于 MTU 的
             // slice (rtp_send 的测试片源已按 slice-max-size=1300 重编码).
@@ -108,8 +108,6 @@ pub fn build_audio_offer(local_ip: IpAddr, port: u16, payload_types: &[u8]) -> S
         IpAddr::V4(_) => Addrtype::Ip4,
         IpAddr::V6(_) => Addrtype::Ip6,
     };
-    // fmt 列表 = 我们支持的所有音频编码, 对端 answer 从中挑一个.
-    // 多给几个是为了兼容只认 PCMU 的老设备 (某嵌入式厂商门口机/室内机原生 PCMU)
     let fmt = payload_types
         .iter()
         .map(|p| p.to_string())

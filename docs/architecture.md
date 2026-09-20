@@ -1,6 +1,6 @@
 # 整体架构
 
-`media_talk_rust` 是跑在某嵌入式厂商 Linux 设备（目标板 `radxa-cm3-rpi-cm4-io`，SoC rk356x，
+`media_talk_rust` 是跑在 Linux 设备（目标板 `radxa-cm3-rpi-cm4-io`，SoC rk356x，
 aarch64）上的网络摄像头媒体服务：局域网内 ONVIF 发现摄像头、GStreamer 拉 RTSP 流、
 通过 WebRTC（webrtcsink）转发给浏览器播放，同时支持板端扬声器出声和原生 GUI 取帧。
 

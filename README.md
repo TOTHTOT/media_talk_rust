@@ -2,7 +2,7 @@
 
 [![Rust CI](https://github.com/TOTHTOT/media_talk_rust/actions/workflows/rust.yml/badge.svg)](https://github.com/TOTHTOT/media_talk_rust/actions/workflows/rust.yml)
 
-`media_talk_rust` 是某嵌入式厂商 (mediatalk) Linux 设备上跑的网络摄像头媒体服务。它在局域网内
+`media_talk_rust` 是 Linux 设备上跑的网络摄像头媒体服务。它在局域网内
 通过 ONVIF 发现 IP 摄像头、拉 RTSP 流、做 (可选) 硬件解码、把 H.264 重新打成
 fMP4 通过 WebSocket 推到浏览器里用 `MediaSource` 播放。
 

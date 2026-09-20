@@ -11,7 +11,7 @@
 //! 设计约束:
 //! - 视频不重编码: 源文件必须已经是 H264 (rtph264pay 只吃 H264 流)
 //! - avc(avcC) 直接喂 payloader, 不转 byte-stream: 转 annexb 时
-//!   h264parse 会插 AUD NAL, 部分嵌入式设备 (某嵌入式厂商门口机) 不认
+//!   h264parse 会插 AUD NAL, 部分嵌入式设备 (门口机) 不认
 //! - udpsink sync=true: 按 buffer 时间戳限速, 否则文件会以最快速度泼出去,
 //!   对端 jitter buffer 直接炸
 //! - rtph264pay config-interval=1: SPS/PPS 按秒级周期随 RTP 重发. SIP 不像
@@ -44,7 +44,7 @@ pub struct RtpDest {
 pub enum AudioCodec {
     /// PCMA (A-law), 静态 pt 8
     Pcma,
-    /// PCMU (u-law), 静态 pt 0, 某嵌入式厂商设备的原生偏好
+    /// PCMU (u-law), 静态 pt 0, 设备的原生偏好
     Pcmu,
 }
 
@@ -257,7 +257,7 @@ fn link_video_chain(
     let parse = make("h264parse")?;
     parse.set_property("config-interval", 1i32);
     // 不强制 byte-stream: avcC(avc) 直接交给 rtph264pay. 转 annexb 时
-    // h264parse 会给每个 AU 插 AUD NAL, 某嵌入式厂商设备的 RTP 接收器不认
+    // h264parse 会给每个 AU 插 AUD NAL, 设备的 RTP 接收器不认
     // (实测 Linphone 的无 AUD 流能出画面). avc 路径不插 AUD
     let pay = make("rtph264pay")?;
     pay.set_property("pt", dest.payload_type as u32);

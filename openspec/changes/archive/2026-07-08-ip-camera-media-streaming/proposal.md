@@ -1,6 +1,6 @@
 ## Why
 
-某嵌入式厂商 Linux 设备需要在其所在局域网内发现并接入网络摄像头（IP Camera），取得音视频流，并把这些流通过硬件解码后在 Web 端实时呈现给住户。当前 `media_talk_rust` 工程仅有空的 `src/main.rs`，本 change 在此 Rust 工程上端到端打通「**设备发现 → RTSP/ONVIF 拉流 → 硬件解码 → Web 实时显示**」的第一条纵向链路。
+ Linux 设备需要在其所在局域网内发现并接入网络摄像头（IP Camera），取得音视频流，并把这些流通过硬件解码后在 Web 端实时呈现给住户。当前 `media_talk_rust` 工程仅有空的 `src/main.rs`，本 change 在此 Rust 工程上端到端打通「**设备发现 → RTSP/ONVIF 拉流 → 硬件解码 → Web 实时显示**」的第一条纵向链路。
 
 ## What Changes
 

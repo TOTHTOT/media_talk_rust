@@ -98,8 +98,6 @@ async fn main() -> Result<()> {
         IpAddr::V4(local),
         audio_port,
         video_port,
-        // PCMU 放前面: 某嵌入式厂商设备原生偏好 PCMU, 多给一个 PCMA 兜底,
-        // answer 挑哪个我们发哪个 (见 rtp_send AudioDest)
         &[PT_PCMU, PT_PCMA],
     );
     info!(%callee, audio_port, video_port, "calling, SDP offer:\n{}", offer.to_string());

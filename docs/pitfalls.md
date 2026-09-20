@@ -155,14 +155,14 @@ IDR 的片源救不了场.
 
 **根因**: 对照 Linphone 成功通话的设备日志, 关键差异是我们的 offer 写了
 `packetization-mode=1` 且实际发 FU-A 分片包, Linphone 不写 (mode 0,
-单 NAL). 某嵌入式厂商设备的 RTP 接收器不认 FU-A, 大 NAL 全丢.
+单 NAL). 设备的 RTP 接收器不认 FU-A, 大 NAL 全丢.
 
 **解法** (commit `ac06371`):
 
 - offer 的 fmtp 不写 `packetization-mode` (回落 mode 0)
 - 片源重编码 `-x264-params slice-max-size=1300`, 每个 NAL 小于 MTU,
   从源上消除分片需求
-- 顺带把测试片源从 960x400 降到 352x288 (CIF): 设备 answer 里有某嵌入式厂商
+- 顺带把测试片源从 960x400 降到 352x288 (CIF): 设备 answer 里有
   私有扩展 `a=ex_fmtp:96 2CIF=1`, 超出 2CIF 的分辨率解不动
 
 ### h264parse 转 annexb 会偷偷插 AUD
@@ -175,31 +175,43 @@ IDR 的片源救不了场.
 **解法**: 去掉强制 byte-stream 的 capsfilter, avc 直接喂 rtph264pay
 (它本来就支持 avc 输入), 不转换就不插 AUD (commit `ac06371`).
 
-### answer 收窄编码后, 必须按 answer 发 — 音频错配会拖死视频
+### offer 必须包含对端偏好的编码 — 协商一致性才是黑屏的根
 
 **现象**: 视频码流形状全部修对之后 (分支 3, commit `ac06371`), 设备
-依然黑屏; 只改音频协商的分支 4 (commit `4652edd`) 反而出画面. A/B
-实测确认: 视频的最后一个拦路虎是音频.
+依然必黑屏; 只改音频协商的分支 4 (commit `4652edd`) 必出画面; 手机
+Linphone 拨打每次都成. 分支 3 和分支 4 线上差异只有音频.
 
-**根因**: 设备 answer 把音频收窄成 PCMU (pt 0), 我们发送链写死 PCMA
-(pt 8) — 发的包 pt 和 answer 对不上 (违反 RFC 3264). 某嵌入式厂商这套嵌入式
-栈 (全志 awplayer + ortp) 的媒体处理是会话级的: ortp 检测到 RTP 包的
-payload type 和会话不符就重置 jitter buffer (日志里
-`Jitter buffer stays unconverged... reset it`), 音频线程反复 reset
-(`AudioModule::reset` 刷屏, alsa 反复重开), 整个媒体会话被拖住, 视频
-解码器抢不到运行时间 (`decoder slice timeout` / `ION_IOC_ALLOC error`),
-码流对了也起不来.
+**排除实验**: 在分支 4 基础上故意发错包 — 发送 pt 写成 answer+1
+(pt 1), PCMU 映射成 PCMA 编码 — 画面照出. 证明设备**不校验收到的
+音频包**, "发错包打爆对端音频线程"的方向整体排除.
 
-注意分层 (实验验证过): **触发 reset 的是 pt 和 answer 不符, 不是编码
-内容** — 把 PCMU 故意映射成 PCMA 编码发 pt 0 的包, 画面照样出, 只是
-声音失真 (μ 律解 A 律). pt 决定对端会话稳不稳, 编码内容只决定声音
-对不对.
+**根因** (双向实验确认): 这台设备是非标实现 — 无论 offer 给
+什么, answer 永远选 PCMU (pt 0). answer 里出现 offer 没有的 pt 本身就
+违反 RFC 3264, 设备不在乎. 真正的影响在设备内部:
 
-**解法**: offer 同时列 PCMU/PCMA, `rtp_send` 按 answer 协商结果选
-`alawenc/rtppcmapay` 或 `mulawenc/rtppcmupay`, 发送 pt 也用 answer 里的
-值 (commit `4652edd`).
-**教训: 调嵌入式对端的黑屏, 别只盯视频链 — 对端媒体是会话级状态机,
-任何一路媒体的协商错配都可能阻塞其他路.**
+- offer 含 PCMU: answer(0) 与 offer 一致, 设备音频通路一次初始化成功,
+  媒体会话稳定, 视频解码器正常启动
+- offer 不含 PCMU (分支 3; 反向验证: 把 offer 改回全 PCMA 必黑, 加回
+  PCMU 必亮): answer(0) 与 offer(8) 自相矛盾, 设备音频初始化陷入
+  reset 循环 (设备日志 `AudioModule::reset` / `alsa open err` 刷屏),
+  全志这套栈的媒体处理是会话级的, 音频线程卡死连带视频解码器起不来
+  — 码流形状完全正确也黑屏
+
+即: **让设备活下来的是 offer 的协商一致性, 不是发送内容的正确性.**
+分支 4 真正修对的是 offer 加了 PCMU; 按 answer 选编码/pt 是顺手做对的
+合规部分 (它决定音质, 不决定视频亮不亮).
+
+**解法**: offer 音频 fmt 列 `0 8` (PCMU 在前, 对齐设备原生
+偏好), 发送端按 answer 协商结果选 `alawenc/rtppcmapay` 或
+`mulawenc/rtppcmupay`, pt 用 answer 里的值 (commit `4652edd`).
+
+**教训**:
+
+- 调嵌入式对端的黑屏, 别只盯视频链 — 对端媒体是会话级状态机, 一路
+  媒体的协商错配能阻塞所有路
+- 定位靠"每次只改一个变量"的 A/B 实验, 不靠日志猜测 — 本轮排查中
+  两个看似合理的理论 (SPS/PPS 位置不足论, 发送 pt 触发 ortp reset 论)
+  都先被写进文档又被实验推翻, 本节是第三个版本
 
 ### 联调优先级: 先证明数据离开我们
 
