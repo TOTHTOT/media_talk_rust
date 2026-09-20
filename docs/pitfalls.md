@@ -117,6 +117,79 @@ rsipstack 内部处理过，走到这还是 401 就是凭据错。其余（超�
 `Vec1`（非空 Vec）——SDP 强制至少一条 `t=` 行，构造时漏了序列化出来就是
 非法报文。防御手段是 round-trip 单测：构造 → 序列化 → 必须能解析回来。
 
+## SIP 视频通话媒体面 (rtp_send)
+
+这一节来自让门口机出画面的完整排查 (commits `e667aa4` → `4652edd`),
+症状演进: 黑屏无日志 → 有声音没画面 → 出画面. 排查方法本身就是收获:
+**本地 loopback 集成测试 + python 脚本抓 UDP 解析 RTP 包**, 不等设备就能
+验证码流形状.
+
+### bus.iter() 提前结束 ≠ 流结束
+
+**现象**: 发送管线启动后几十毫秒内被神秘拆掉, stats 永远 0 包, 时好时坏.
+
+**根因**: bus 线程写 `for msg in bus.iter()`, 指望只在 EOS/Error 时退出.
+但 `Iter::next` = `gst_bus_timed_pop`, **bus 进入 flushing 状态同样返回
+None** — 而管线启动做状态切换时 bus 会短暂 flushing. 线程误以为是流结束,
+反手 `set_state(Null)` 把刚起起来的管线杀了 (commit `e667aa4`).
+
+**解法**: bus 线程只看 EOS/Error 打日志, 不碰管线状态; 收尾统一由
+`RtpSender::stop()`/Drop 负责. **教训: GStreamer 里任何 "读到结束" 的
+循环, 退出条件都要区分 "消息说结束" 和 "迭代器本身结束".**
+
+### SPS/PPS 必须按秒级周期重发
+
+**现象**: 信令全通, 设备端连视频解码器都不初始化 (日志里没有
+`VideoDecoder::open2`).
+
+**根因**: 设备回完 200 OK 才开收包 socket, 而我们接通瞬间就开始发, 开头
+那串 SPS/PPS 基本必丢. 嵌入式解码器收不到参数集永远起不来. 抓包确认
+SPS/PPS 全程只发了一次.
+
+**解法**: `rtph264pay config-interval=1` — payloader 缓存见过的参数集按
+秒级随 RTP 重发, 与 IDR 位置无关 (commit `988553f`). 注意是设在
+**payloader** 上, h264parse 的 config-interval 只在 IDR 边界插入, 稀疏
+IDR 的片源救不了场.
+
+### 嵌入式设备不认 FU-A 分片
+
+**根因**: 对照 Linphone 成功通话的设备日志, 关键差异是我们的 offer 写了
+`packetization-mode=1` 且实际发 FU-A 分片包, Linphone 不写 (mode 0,
+单 NAL). 某嵌入式厂商设备的 RTP 接收器不认 FU-A, 大 NAL 全丢.
+
+**解法** (commit `ac06371`):
+
+- offer 的 fmtp 不写 `packetization-mode` (回落 mode 0)
+- 片源重编码 `-x264-params slice-max-size=1300`, 每个 NAL 小于 MTU,
+  从源上消除分片需求
+- 顺带把测试片源从 960x400 降到 352x288 (CIF): 设备 answer 里有某嵌入式厂商
+  私有扩展 `a=ex_fmtp:96 2CIF=1`, 超出 2CIF 的分辨率解不动
+
+### h264parse 转 annexb 会偷偷插 AUD
+
+**现象**: 抓包发现线上每帧多一个 AUD (NAL type 9), 而源文件里根本没有.
+
+**根因**: mp4 (avcC) → byte-stream 转换时 h264parse 给每个 AU 插 AUD.
+部分嵌入式设备的解析器不认 AUD.
+
+**解法**: 去掉强制 byte-stream 的 capsfilter, avc 直接喂 rtph264pay
+(它本来就支持 avc 输入), 不转换就不插 AUD (commit `ac06371`).
+
+### answer 收窄编码后, 必须按 answer 发
+
+**根因**: 设备 answer 把音频收窄成 PCMU (pt 0), 我们发送链写死 PCMA
+(pt 8) — 标签和内容都对不上的错包 (违反 RFC 3264).
+
+**解法**: offer 同时列 PCMU/PCMA, `rtp_send` 按 answer 协商结果选
+`alawenc/rtppcmapay` 或 `mulawenc/rtppcmupay` (commit `4652edd`).
+
+### 联调优先级: 先证明数据离开我们
+
+`rtp_send` 在 payloader src pad 挂 probe 计数, 每 2s 打
+`rtp sender stats video_pkts=xx audio_pkts=xx`. 联调先确认数字在涨
+(数据离开本端), 再去怀疑 PBX 转发和对端解码 — 顺序反了会在错误的
+环节浪费一天.
+
 ## 优雅关停
 
 全进程共享一棵 `CancellationToken` 树（commit `d0b67c9`）：Ctrl+C/SIGTERM
