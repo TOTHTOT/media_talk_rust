@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(
             peer,
             PeerMedia {
-                addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 11, 17)), 18000),
+                addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 17)), 18000),
                 payload_type: 8,
                 codec: "PCMA".into(),
             }
