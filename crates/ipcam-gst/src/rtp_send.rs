@@ -230,7 +230,14 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
                     break;
                 }
                 gst::MessageView::Error(e) => {
-                    warn!(error = %e.error(), debug = ?e.debug(), "rtp sender error");
+                    // gst 元素错误文本会带原始 uri (含明文 rtsp://user:pass@...),
+                    // 两个字符串各过一遍脱敏再打
+                    let error_text = redact_uri_credentials(&e.error().to_string());
+                    let debug_text = e
+                        .debug()
+                        .map(|d| redact_uri_credentials(&d))
+                        .unwrap_or_default();
+                    warn!(error = %error_text, debug = %debug_text, "rtp sender error");
                     reason = "error";
                     break;
                 }
@@ -445,6 +452,16 @@ fn link_video_send_chain(
 ) -> Result<(), GstStreamError> {
     let queue = make("queue")?;
     let convert = make("videoconvert")?;
+    // 限宽 640: 1080p 相机直发超出门口机解码上限会黑屏.
+    // caps 用范围而不是定值: videoscale 只在源超宽时降采样, 且保持宽高比
+    let scale = make("videoscale")?;
+    let caps = make("capsfilter")?;
+    caps.set_property(
+        "caps",
+        gst::Caps::builder("video/x-raw")
+            .field("width", gst::IntRange::new(1i32, 640i32))
+            .build(),
+    );
     let enc = make("x264enc")?;
     enc.set_property_from_str("tune", "zerolatency");
     enc.set_property_from_str("speed-preset", "veryfast");
@@ -462,7 +479,7 @@ fn link_video_send_chain(
     add_link_and_plug(
         pipeline,
         raw_pad,
-        &[&queue, &convert, &enc, &pay, &sink],
+        &[&queue, &convert, &scale, &caps, &enc, &pay, &sink],
         "video",
     )
 }
