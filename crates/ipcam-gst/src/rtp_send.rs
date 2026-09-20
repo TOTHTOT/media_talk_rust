@@ -50,7 +50,7 @@ impl AudioCodec {
     pub fn from_codec_name(name: &str) -> Option<Self> {
         match name.to_ascii_uppercase().as_str() {
             "PCMA" => Some(Self::Pcma),
-            "PCMU" => Some(Self::Pcma),
+            "PCMU" => Some(Self::Pcmu),
             _ => None,
         }
     }
@@ -428,6 +428,17 @@ fn add_link_and_plug(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SDP rtpmap 编码名解析: 大小写不敏感, 未知编码返回 None
+    #[test]
+    fn audio_codec_from_codec_name() {
+        assert_eq!(AudioCodec::from_codec_name("PCMU"), Some(AudioCodec::Pcmu));
+        assert_eq!(AudioCodec::from_codec_name("pcmu"), Some(AudioCodec::Pcmu));
+        assert_eq!(AudioCodec::from_codec_name("PcMu"), Some(AudioCodec::Pcmu));
+        assert_eq!(AudioCodec::from_codec_name("PCMA"), Some(AudioCodec::Pcma));
+        assert_eq!(AudioCodec::from_codec_name("pcma"), Some(AudioCodec::Pcma));
+        assert_eq!(AudioCodec::from_codec_name("opus"), None);
+    }
 
     /// 文件源视频轨: 解码重编码后 3 秒内必须出 RTP 包
     #[test]
