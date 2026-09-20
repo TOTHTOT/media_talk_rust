@@ -228,6 +228,10 @@ fn link_video_chain(
     );
     let pay = make("rtph264pay")?;
     pay.set_property("pt", dest.payload_type as u32);
+    // SPS/PPS 按秒级周期随 RTP 重发: payloader 缓存见过的参数集,
+    // 与 IDR 位置无关. 对端设备在 200 OK 后才开收包 socket, 开头那串
+    // SPS/PPS 很可能丢掉, 不周期重发对端解码器永远起不来 (黑屏)
+    pay.set_property("config-interval", 1i32);
     install_pkt_probe(&pay, stats.clone(), false)?;
     let sink = make_udpsink(dest)?;
     add_link_and_plug(
