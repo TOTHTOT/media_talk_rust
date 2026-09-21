@@ -20,6 +20,7 @@ pub mod config;
 pub mod stats;
 pub mod tap;
 
+mod gstutil;
 mod ingest;
 mod rtp_send;
 

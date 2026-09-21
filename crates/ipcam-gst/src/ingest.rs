@@ -37,6 +37,7 @@ use ipcam_core::{AudioCodec, VideoCodec};
 use parking_lot::Mutex;
 use tracing::{debug, error, info, warn};
 
+use crate::gstutil::{add_and_sync, leaky_queue, link_chain, make, static_pad};
 use crate::stats::{GstStreamHandle, StopSignal, StreamState, wait_or_stop};
 use crate::tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};
 use crate::{AudioOutput, GstStreamConfig, GstStreamError};
@@ -84,15 +85,6 @@ pub(crate) fn start(
     });
 
     Ok(handle)
-}
-
-/// Create an element, mapping a missing factory/plugin to `Init` with
-/// the element name in the message (a missing `rtspsrc` usually means
-/// `gstreamer1.0-plugins-good` is not installed on the target).
-pub(crate) fn make(name: &str) -> Result<gst::Element, GstStreamError> {
-    gst::ElementFactory::make(name)
-        .build()
-        .map_err(|e| GstStreamError::Init(format!("missing element `{name}`: {e}")))
 }
 
 /// Build a fresh pipeline (rtspsrc + webrtcsink + pad-added dispatch).
@@ -253,34 +245,6 @@ fn claim_track(
     Ok(())
 }
 
-/// Link `elems` into a chain (a ! b ! c ! ...).
-fn link_chain(elems: &[&gst::Element], what: &str) -> Result<(), GstStreamError> {
-    gst::Element::link_many(elems.iter().copied())
-        .map_err(|e| GstStreamError::Link(format!("failed to link {what}: {e}")))?;
-    Ok(())
-}
-
-/// Add `elems` to the pipeline and sync each with the parent state.
-fn add_and_sync(pipeline: &gst::Pipeline, elems: &[&gst::Element]) -> Result<(), GstStreamError> {
-    pipeline
-        .add_many(elems.iter().copied())
-        .map_err(|e| GstStreamError::Link(format!("failed to add branch to pipeline: {e}")))?;
-    for elem in elems {
-        if let Err(e) = elem.sync_state_with_parent() {
-            warn!(element = %elem.name(), %e, "sync state with parent failed");
-        }
-    }
-    Ok(())
-}
-
-/// Static pad lookup with the element name in the error.
-fn static_pad(elem: &gst::Element, name: &str) -> Result<gst::Pad, GstStreamError> {
-    elem.static_pad(name).ok_or(GstStreamError::Link(format!(
-        "element `{}` has no {name} pad",
-        elem.name()
-    )))
-}
-
 /// Request a sink pad from webrtcsink (`video_%u` / `audio_%u`) —
 /// 用到时才申请，这是 webrtcsink 接收音视频的唯一入口.
 fn request_ws_pad(ws: &gst::Element, template: &str) -> Result<gst::Pad, GstStreamError> {
@@ -388,15 +352,6 @@ fn build_video_tap_branch(
         tee,
         gui_chain: vec![gui_queue, decoder, conv, appsink],
     })
-}
-
-/// Queue that drops the oldest buffers when full, so a stalled tap
-/// branch can never back-pressure the WebRTC branch through the tee.
-fn leaky_queue() -> Result<gst::Element, GstStreamError> {
-    let q = make("queue")?;
-    q.set_property_from_str("leaky", "downstream");
-    q.set_property("max-size-buffers", 5u32);
-    Ok(q)
 }
 
 /// appsink delivering decoded RGBA frames into the tap callback.
