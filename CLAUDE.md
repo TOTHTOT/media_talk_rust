@@ -77,7 +77,8 @@ media_talk_rust.service      # systemd unit (生产部署)
 
 gst 拉流引擎 (ipcam-gst) 是**无条件依赖** (无 feature 门控), 要求构建机装有
 GStreamer + pkg-config; 所有 gstreamer API 调用只允许出现在
-`crates/ipcam-gst/src/pipeline.rs`, 纯逻辑 (config/packet/stats) 保持独立可测。
+`crates/ipcam-gst/src/` 的管线模块里 (`ingest.rs` 拉流进, `rtp_send.rs` 发出),
+纯逻辑 (config/packet/stats) 保持独立可测。
 
 交叉编译:
 ```bash

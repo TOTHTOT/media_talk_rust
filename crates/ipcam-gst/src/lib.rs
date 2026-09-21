@@ -20,7 +20,7 @@ pub mod config;
 pub mod stats;
 pub mod tap;
 
-mod pipeline;
+mod ingest;
 mod rtp_send;
 
 pub use config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
@@ -109,5 +109,5 @@ pub fn start_with_taps(
     taps: RawTaps,
 ) -> Result<GstStreamHandle, GstStreamError> {
     validate(&cfg)?;
-    pipeline::start(cfg, taps)
+    ingest::start(cfg, taps)
 }

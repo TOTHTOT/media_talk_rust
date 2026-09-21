@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 
 use crate::GstStreamError;
 use crate::ensure_init_internal;
-use crate::pipeline::make;
+use crate::ingest::make;
 
 /// 一路媒体的发送目标: 对端收包地址 + 对端 answer 里协商出的 pt
 #[derive(Debug, Clone, Copy)]
