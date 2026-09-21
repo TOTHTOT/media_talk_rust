@@ -242,9 +242,6 @@ async fn process_dialog(
 /// 一路通话: 解析 offer → ringing + accept (带 answer SDP) → 起 RTP
 /// 接收器存盘 → 等对端 BYE (dialog cancel_token) 或本地 Ctrl+C (发 BYE).
 async fn process_call(dialog: InviteDialog, local_ip: IpAddr, output_dir: PathBuf) -> Result<()> {
-    // 注意: answer 的 m= 行数和顺序必须和 offer 一一对应 (RFC 3264).
-    // 冒烟工具按我们 call example 的 av 双路 offer 假设, 单路 offer 会
-    // 回出多一路 m=, 真做单路得在这里裁剪
     let offer = parse_offer_all(dialog.initial_request().body())?;
     info!(?offer, "incoming offer");
 
@@ -271,7 +268,7 @@ async fn process_call(dialog: InviteDialog, local_ip: IpAddr, output_dir: PathBu
         None => None,
     };
 
-    // answer 的 pt 取 offer 里的值 (不能自己另起, 对端按它打标签)
+    // answer 的 pt 取 offer 里的值
     let answer = build_av_answer(
         local_ip,
         AUDIO_RTP_PORT,
@@ -289,8 +286,8 @@ async fn process_call(dialog: InviteDialog, local_ip: IpAddr, output_dir: PathBu
         warn!("no supported media in offer, call kept up without recording");
     }
     let receiver = match start_rtp_receiver(RtpRecvConfig {
-        video_path: video.map(|_| output_dir.join("video.h264")),
-        audio_path: audio_pt.map(|_| output_dir.join("audio.g711")),
+        video_path: video.map(|_| output_dir.join("video.ts")),
+        audio_path: audio_pt.map(|_| output_dir.join("audio.wav")),
         video_port: VIDEO_RTP_PORT,
         audio_port: AUDIO_RTP_PORT,
         video_codec: video.map(|(_, c)| c).unwrap_or(VideoCodec::H264),
