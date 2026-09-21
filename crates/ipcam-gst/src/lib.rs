@@ -24,9 +24,10 @@ mod ingest;
 mod rtp_send;
 
 pub use config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
+pub use ipcam_core::AudioCodec;
 pub use rtp_send::{
-    AudioCodec, AudioDest, RtpDest, RtpSendConfig, RtpSender, TrackSource, parse_track_source,
-    start_rtp_sender,
+    AudioDest, RtpDest, RtpSendConfig, RtpSender, TrackSource, parse_track_source,
+    sendable_audio_codec, start_rtp_sender,
 };
 pub use stats::{GstStreamHandle, StreamState, StreamStats};
 pub use tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};

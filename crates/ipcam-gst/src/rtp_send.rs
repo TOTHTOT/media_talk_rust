@@ -29,6 +29,7 @@ use tracing::{debug, info, warn};
 use crate::GstStreamError;
 use crate::ensure_init_internal;
 use crate::ingest::make;
+use ipcam_core::AudioCodec;
 
 /// 一路媒体的发送目标: 对端收包地址 + 对端 answer 里协商出的 pt
 #[derive(Debug, Clone, Copy)]
@@ -37,31 +38,21 @@ pub struct RtpDest {
     pub payload_type: u8,
 }
 
-/// 音频编码 (G.711 两兄弟, SIP 对讲场景基本只遇到这两个)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioCodec {
-    /// PCMA (A-law), 静态 pt 8
-    Pcma,
-    /// PCMU (u-law), 静态 pt 0, 设备的原生偏好
-    Pcmu,
+/// 从 SDP rtpmap 的编码名解析出我们支持发送的编码.
+/// None = 不支持发这种 (SIP 对讲场景只发 G.711 两兄弟)
+pub fn sendable_audio_codec(name: &str) -> Option<AudioCodec> {
+    match AudioCodec::from_name(name) {
+        c @ (AudioCodec::G711A | AudioCodec::G711U) => Some(c),
+        _ => None,
+    }
 }
 
-impl AudioCodec {
-    /// 从 SDP rtpmap 的编码名解析; None = 我们不支持发这种编码
-    pub fn from_codec_name(name: &str) -> Option<Self> {
-        match name.to_ascii_uppercase().as_str() {
-            "PCMA" => Some(Self::Pcma),
-            "PCMU" => Some(Self::Pcmu),
-            _ => None,
-        }
-    }
-
-    /// (encoder, payloader) 元件名
-    fn elements(self) -> (&'static str, &'static str) {
-        match self {
-            Self::Pcma => ("alawenc", "rtppcmapay"),
-            Self::Pcmu => ("mulawenc", "rtppcmupay"),
-        }
+/// 音频编码对应的 (encoder, payloader) 元件名; None = 不支持发
+fn audio_encode_elements(codec: AudioCodec) -> Option<(&'static str, &'static str)> {
+    match codec {
+        AudioCodec::G711A => Some(("alawenc", "rtppcmapay")),
+        AudioCodec::G711U => Some(("mulawenc", "rtppcmupay")),
+        _ => None,
     }
 }
 
@@ -506,7 +497,12 @@ fn link_audio_send_chain(
     );
     // 编码器/payloader 按 answer 协商结果选: PCMA→alawenc/rtppcmapay,
     // PCMU→mulawenc/rtppcmupay
-    let (enc_name, pay_name) = dest.codec.elements();
+    let Some((enc_name, pay_name)) = audio_encode_elements(dest.codec) else {
+        return Err(GstStreamError::InvalidConfig(format!(
+            "unsupported audio codec for send: {:?}",
+            dest.codec
+        )));
+    };
     let enc = make(enc_name)?;
     let pay = make(pay_name)?;
     pay.set_property("pt", dest.payload_type as u32);
@@ -588,12 +584,12 @@ mod tests {
     /// SDP rtpmap 编码名解析: 大小写不敏感, 未知编码返回 None
     #[test]
     fn audio_codec_from_codec_name() {
-        assert_eq!(AudioCodec::from_codec_name("PCMU"), Some(AudioCodec::Pcmu));
-        assert_eq!(AudioCodec::from_codec_name("pcmu"), Some(AudioCodec::Pcmu));
-        assert_eq!(AudioCodec::from_codec_name("PcMu"), Some(AudioCodec::Pcmu));
-        assert_eq!(AudioCodec::from_codec_name("PCMA"), Some(AudioCodec::Pcma));
-        assert_eq!(AudioCodec::from_codec_name("pcma"), Some(AudioCodec::Pcma));
-        assert_eq!(AudioCodec::from_codec_name("opus"), None);
+        assert_eq!(sendable_audio_codec("PCMU"), Some(AudioCodec::G711U));
+        assert_eq!(sendable_audio_codec("pcmu"), Some(AudioCodec::G711U));
+        assert_eq!(sendable_audio_codec("PcMu"), Some(AudioCodec::G711U));
+        assert_eq!(sendable_audio_codec("PCMA"), Some(AudioCodec::G711A));
+        assert_eq!(sendable_audio_codec("pcma"), Some(AudioCodec::G711A));
+        assert_eq!(sendable_audio_codec("opus"), None);
     }
 
     /// Rtsp 标签必须脱敏内嵌凭据: user:pass 不得出现在日志文本里
@@ -683,7 +679,7 @@ mod tests {
                 AudioDest {
                     addr: "127.0.0.1:40000".parse().unwrap(),
                     payload_type: 8,
-                    codec: AudioCodec::Pcma,
+                    codec: AudioCodec::G711A,
                 },
             )),
             video: Some((

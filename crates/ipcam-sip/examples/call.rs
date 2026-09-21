@@ -167,7 +167,7 @@ async fn call_until_hangup(
     // 发送 pt/编码必须用对端 answer 里的值 (动态 pt 分方向, 编码同理 --
     // answer 收窄成什么就发什么, 见 sdp 模块注释)
     let audio = peers.audio.and_then(|p| {
-        ipcam_gst::AudioCodec::from_codec_name(&p.codec)
+        ipcam_gst::sendable_audio_codec(&p.codec)
             .map(|codec| ipcam_gst::AudioDest {
                 addr: p.addr,
                 payload_type: p.payload_type + 1,
