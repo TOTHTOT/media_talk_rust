@@ -29,7 +29,7 @@ struct Args {
     /// 被叫：裸号码（自动补 @服务器）或完整 sip: URI
     callee: String,
     /// SIP 服务器地址
-    #[arg(long, default_value = "192.168.1.17:5062")]
+    #[arg(long, default_value = "192.168.11.17:5062")]
     server: SocketAddr,
     /// 主叫账号（同时作为用户名）
     #[arg(short, long, default_value = "9999")]
