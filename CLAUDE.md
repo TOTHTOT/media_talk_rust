@@ -116,6 +116,8 @@ cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 --release --features hw-d
 
 正文 ≤ 5 行,除非是破坏性改动才展开。**禁止** `git commit -m "wip"` / `"fix"` / `"update"` 这种无意义消息。
 
+**推送规则**: 用户说 "提交" 就只 commit, 不要顺手 `git push`; 只有用户明确说 "推送 / 直接推送 / push" 才推。
+
 ---
 
 ## 7. OpenSpec 流程
