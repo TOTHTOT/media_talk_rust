@@ -143,12 +143,13 @@ pub fn parse_track_source(s: &str) -> Result<TrackSource, String>
 ```
 src/
 ├── lib.rs           # 公开 API 入口、Error 类型、ensure_signalling_server
-├── config.rs        # GstStreamConfig / RtpSendConfig / ReconnectPolicy
 ├── stats.rs         # StreamState / StreamStats / GstStreamHandle
 ├── ingest.rs        # RTSP → WebRTC 管线实现（拉流进）
-├── rtp_send.rs      # 多源 → RTP 发送器（发出去）
+├── ingest/
+│   └── config.rs    # GstStreamConfig / AudioOutput / ReconnectPolicy（仅 ingest 用）
+├── rtp_send.rs      # 多源 → RTP 发送器（发出去），自带 RtpSendConfig
 ├── tap.rs           # 原始帧回调类型（VideoFrameSink / AudioChunkSink）
-└── gstutil.rs      # 建元件 / 链接 / 同步小工具（ingest 和 rtp_send 共用）
+└── gstutil.rs       # 建元件 / 链接 / 同步小工具（ingest 和 rtp_send 共用）
 ```
 
 ## 线程模型

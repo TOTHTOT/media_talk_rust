@@ -16,7 +16,6 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use thiserror::Error;
 
-pub mod config;
 pub mod stats;
 pub mod tap;
 
@@ -24,7 +23,7 @@ mod gstutil;
 mod ingest;
 mod rtp_send;
 
-pub use config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
+pub use ingest::config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
 pub use ipcam_core::AudioCodec;
 pub use rtp_send::{
     AudioDest, RtpDest, RtpSendConfig, RtpSender, TrackSource, parse_track_source,
@@ -61,7 +60,7 @@ pub enum GstStreamError {
 
 /// Validate a stream configuration without touching the network.
 pub fn validate(cfg: &GstStreamConfig) -> Result<(), GstStreamError> {
-    config::validate(cfg)
+    ingest::config::validate(cfg)
 }
 
 /// Anchor pipeline hosting the process-wide WebRTC signalling server.

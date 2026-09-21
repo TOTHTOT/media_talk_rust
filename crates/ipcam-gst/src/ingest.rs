@@ -37,10 +37,13 @@ use ipcam_core::{AudioCodec, VideoCodec};
 use parking_lot::Mutex;
 use tracing::{debug, error, info, warn};
 
+pub(crate) mod config;
+
+use crate::GstStreamError;
 use crate::gstutil::{add_and_sync, leaky_queue, link_chain, make, static_pad};
 use crate::stats::{GstStreamHandle, StopSignal, StreamState, wait_or_stop};
 use crate::tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};
-use crate::{AudioOutput, GstStreamConfig, GstStreamError};
+use config::{AudioOutput, GstStreamConfig};
 
 /// Per-pipeline pad-added bookkeeping (recreated on every rebuild).
 struct TrackState {
