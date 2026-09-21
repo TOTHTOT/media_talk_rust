@@ -6,45 +6,45 @@ use ipcam_core::{AudioCodec, VideoCodec};
 
 use crate::GstStreamError;
 
-/// RTP 接收器配置.
+/// RTP 接收器配置: 音视频合进同一个 mp4.
 #[derive(Debug, Clone)]
 pub struct RtpRecvConfig {
-    /// 视频保存路径, None = 不保存视频.
-    pub video_path: Option<PathBuf>,
-    /// 音频保存路径, None = 不保存音频.
-    pub audio_path: Option<PathBuf>,
-    /// 监听视频 RTP 的端口.
-    pub video_port: u16,
-    /// 监听音频 RTP 的端口.
-    pub audio_port: u16,
-    /// 视频 codec, 与 offer/answer 协商结果一致.
-    pub video_codec: VideoCodec,
-    /// 音频 codec, 与 offer/answer 协商结果一致.
-    pub audio_codec: AudioCodec,
+    /// 输出 mp4 路径. mp4 的 moov 索引只在 EOS 时写入, 必须走
+    /// `RtpReceiver::stop()` 收尾, 强杀进程得到的文件播不了
+    pub path: PathBuf,
+    /// (监听端口, 协商出的 codec); None = 不收视频
+    pub video: Option<(u16, VideoCodec)>,
+    /// (监听端口, 协商出的 codec); None = 不收音频.
+    /// G.711 会解码后转 opus 进 mp4 (mp4 容器不认 G.711 载荷)
+    pub audio: Option<(u16, AudioCodec)>,
 }
 
 impl RtpRecvConfig {
     /// 验证配置合法性.
     pub fn validate(&self) -> Result<(), GstStreamError> {
-        if self.video_port == 0 {
+        if self.video.is_none() && self.audio.is_none() {
             return Err(GstStreamError::InvalidConfig(
-                "video_port must not be zero".into(),
+                "at least one of video or audio must be set".into(),
             ));
         }
-        if self.audio_port == 0 {
-            return Err(GstStreamError::InvalidConfig(
-                "audio_port must not be zero".into(),
-            ));
+        let ports = self
+            .video
+            .map(|(p, _)| ("video", p))
+            .into_iter()
+            .chain(self.audio.map(|(p, _)| ("audio", p)));
+        for (kind, port) in ports {
+            if port == 0 {
+                return Err(GstStreamError::InvalidConfig(format!(
+                    "{kind} port must not be zero"
+                )));
+            }
         }
-        if self.video_port == self.audio_port {
-            return Err(GstStreamError::InvalidConfig(
-                "video_port and audio_port must be different".into(),
-            ));
-        }
-        if self.video_path.is_none() && self.audio_path.is_none() {
-            return Err(GstStreamError::InvalidConfig(
-                "at least one of video_path or audio_path must be set".into(),
-            ));
+        if let (Some((vp, _)), Some((ap, _))) = (self.video, self.audio) {
+            if vp == ap {
+                return Err(GstStreamError::InvalidConfig(
+                    "video and audio ports must be different".into(),
+                ));
+            }
         }
         Ok(())
     }

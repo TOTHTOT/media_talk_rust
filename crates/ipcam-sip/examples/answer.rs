@@ -285,13 +285,11 @@ async fn process_call(dialog: InviteDialog, local_ip: IpAddr, output_dir: PathBu
     if audio_pt.is_none() && video.is_none() {
         warn!("no supported media in offer, call kept up without recording");
     }
+    // 音视频合进同一个 mp4; G.711 音频会被转码成 opus (mp4 不认 G.711)
     let receiver = match start_rtp_receiver(RtpRecvConfig {
-        video_path: video.map(|_| output_dir.join("video.ts")),
-        audio_path: audio_pt.map(|_| output_dir.join("audio.wav")),
-        video_port: VIDEO_RTP_PORT,
-        audio_port: AUDIO_RTP_PORT,
-        video_codec: video.map(|(_, c)| c).unwrap_or(VideoCodec::H264),
-        audio_codec: audio_pt.map(|(_, c)| c).unwrap_or(AudioCodec::G711A),
+        path: output_dir.join("call.mp4"),
+        video: video.map(|(_, c)| (VIDEO_RTP_PORT, c)),
+        audio: audio_pt.map(|(_, c)| (AUDIO_RTP_PORT, c)),
     }) {
         Ok(r) => Some(r),
         Err(e) => {
