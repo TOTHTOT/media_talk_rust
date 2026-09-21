@@ -38,12 +38,14 @@ use parking_lot::Mutex;
 use tracing::{debug, error, info, warn};
 
 pub(crate) mod config;
+pub(crate) mod stats;
+pub(crate) mod tap;
 
 use crate::GstStreamError;
 use crate::gstutil::{add_and_sync, leaky_queue, link_chain, make, static_pad};
-use crate::stats::{GstStreamHandle, StopSignal, StreamState, wait_or_stop};
-use crate::tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};
 use config::{AudioOutput, GstStreamConfig};
+use stats::{GstStreamHandle, StopSignal, StreamState, wait_or_stop};
+use tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};
 
 /// Per-pipeline pad-added bookkeeping (recreated on every rebuild).
 struct TrackState {

@@ -16,21 +16,18 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use thiserror::Error;
 
-pub mod stats;
-pub mod tap;
-
 mod gstutil;
 mod ingest;
 mod rtp_send;
 
 pub use ingest::config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
+pub use ingest::stats::{GstStreamHandle, StreamState, StreamStats};
+pub use ingest::tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};
 pub use ipcam_core::AudioCodec;
 pub use rtp_send::{
     AudioDest, RtpDest, RtpSendConfig, RtpSender, TrackSource, parse_track_source,
     sendable_audio_codec, start_rtp_sender,
 };
-pub use stats::{GstStreamHandle, StreamState, StreamStats};
-pub use tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};
 
 fn ensure_init_internal() -> Result<(), GstStreamError> {
     static DONE: OnceLock<Result<(), GstStreamError>> = OnceLock::new();
