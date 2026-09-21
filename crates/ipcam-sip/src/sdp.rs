@@ -6,6 +6,7 @@
 //! round-trip 测试.
 
 use anyhow::{Result, anyhow};
+use ipcam_core::AudioCodec;
 use sdp_rs::lines::attribute::Rtpmap;
 use sdp_rs::lines::common::{Addrtype, Nettype};
 use sdp_rs::lines::connection::ConnectionAddress;
@@ -16,7 +17,8 @@ use std::net::{IpAddr, SocketAddr};
 use tracing::info;
 use vec1::vec1;
 
-/// RFC 3551 静态 payload type
+/// RFC 3551 静态 payload type; 取值和 `AudioCodec::static_pt` 的一致性
+/// 由 tests::pt_constants_match_static_pt 守住
 pub const PT_PCMU: u8 = 0;
 pub const PT_PCMA: u8 = 8;
 /// H264 视频没有静态 pt, 走动态段 (96-127), 必须配 a=rtpmap + a=fmtp
@@ -217,6 +219,22 @@ pub struct PeerMedia {
     pub codec: String,
 }
 
+/// 从 offer 里解析出的本端媒体信息（用于构造 answer）.
+#[derive(Debug, Clone)]
+pub struct OfferMedia {
+    pub addr: IpAddr,
+    pub port: u16,
+    pub payload_type: u8,
+    pub codec: String,
+}
+
+/// offer 解析结果.
+#[derive(Debug, Clone, Default)]
+pub struct OfferMedias {
+    pub audio: Option<OfferMedia>,
+    pub video: Option<OfferMedia>,
+}
+
 /// 解析对端 (200 OK 或 18x) 带回的 SDP answer, 只取第一路媒体.
 ///
 /// 音视频双路的场景用 `parse_answer_all`. m= 行没带 c= 时回落到
@@ -258,6 +276,169 @@ pub fn parse_answer_all(body: &[u8]) -> Result<PeerMedias> {
         anyhow::bail!("answer has no audio/video media");
     }
     Ok(out)
+}
+
+/// 解析 offer SDP, 按媒体类型提取 audio/video 两路的信息（用于构造 answer）.
+pub fn parse_offer_all(body: &[u8]) -> Result<OfferMedias> {
+    let text = std::str::from_utf8(body)?;
+    let sdp = SessionDescription::try_from(text).map_err(|e| anyhow!("invalid SDP: {e}"))?;
+    info!("calling offer sdp:\n{}", sdp.to_string());
+    let mut out = OfferMedias::default();
+    for media in &sdp.media_descriptions {
+        let offer_media = offer_from_media(sdp.connection.as_ref(), media)?;
+        if media.media.media == MediaType::Audio {
+            out.audio = Some(offer_media);
+        } else if media.media.media == MediaType::Video {
+            out.video = Some(offer_media);
+        }
+    }
+    if out.audio.is_none() && out.video.is_none() {
+        anyhow::bail!("offer has no audio/video media");
+    }
+    Ok(out)
+}
+
+fn offer_from_media(
+    session_conn: Option<&Connection>,
+    media: &MediaDescription,
+) -> Result<OfferMedia> {
+    let payload_type: u8 = media
+        .media
+        .fmt
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow!("m= line has no payload type"))?
+        .parse()
+        .map_err(|_| anyhow!("unsupported fmt list: {}", media.media.fmt))?;
+
+    let ip = media
+        .connections
+        .first()
+        .or(session_conn)
+        .ok_or_else(|| anyhow!("offer has no connection address"))?
+        .connection_address
+        .base;
+
+    let codec = media
+        .attributes
+        .iter()
+        .find_map(|a| match a {
+            Attribute::Rtpmap(r) if r.payload_type == payload_type as u32 => {
+                Some(r.encoding_name.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| codec_name(payload_type).into());
+
+    Ok(OfferMedia {
+        addr: ip,
+        port: media.media.port,
+        payload_type,
+        codec,
+    })
+}
+
+/// 构造音视频通话的 SDP answer.
+pub fn build_av_answer(
+    local_ip: IpAddr,
+    audio_port: u16,
+    video_port: u16,
+    selected_audio_pt: u8,
+    selected_video_pt: u8,
+) -> SessionDescription {
+    let mut sdp = build_audio_answer(local_ip, audio_port, selected_audio_pt);
+    sdp.media_descriptions
+        .push(video_answer_description(video_port, selected_video_pt));
+    sdp
+}
+
+fn video_answer_description(port: u16, pt: u8) -> MediaDescription {
+    MediaDescription {
+        media: Media {
+            media: MediaType::Video,
+            port,
+            num_of_ports: None,
+            proto: ProtoType::RtpAvp,
+            fmt: pt.to_string(),
+        },
+        info: None,
+        connections: vec![],
+        bandwidths: vec![],
+        key: None,
+        attributes: vec![
+            Attribute::Rtpmap(Rtpmap {
+                payload_type: pt as u32,
+                encoding_name: "H264".into(),
+                clock_rate: 90000,
+                encoding_params: None,
+            }),
+            Attribute::Other("fmtp".into(), Some(format!("{pt} profile-level-id=42e01f"))),
+            Attribute::Sendrecv,
+        ],
+    }
+}
+
+fn build_audio_answer(local_ip: IpAddr, port: u16, selected_pt: u8) -> SessionDescription {
+    let addrtype = match local_ip {
+        IpAddr::V4(_) => Addrtype::Ip4,
+        IpAddr::V6(_) => Addrtype::Ip6,
+    };
+    SessionDescription {
+        version: Version::V0,
+        origin: Origin {
+            username: "-".into(),
+            sess_id: "1".into(),
+            sess_version: "2".into(), // answer 版本要大于 offer
+            nettype: Nettype::In,
+            addrtype: addrtype.clone(),
+            unicast_address: local_ip,
+        },
+        session_name: SessionName::new("ipcam-sip".into()),
+        session_info: None,
+        uri: None,
+        emails: vec![],
+        phones: vec![],
+        connection: Some(Connection {
+            nettype: Nettype::In,
+            addrtype,
+            connection_address: ConnectionAddress {
+                base: local_ip,
+                ttl: None,
+                numaddr: None,
+            },
+        }),
+        bandwidths: vec![],
+        times: vec1![Time {
+            active: sdp_rs::lines::Active { start: 0, stop: 0 },
+            repeat: vec![],
+            zone: None,
+        }],
+        key: None,
+        attributes: vec![],
+        media_descriptions: vec![MediaDescription {
+            media: Media {
+                media: MediaType::Audio,
+                port,
+                num_of_ports: None,
+                proto: ProtoType::RtpAvp,
+                fmt: selected_pt.to_string(),
+            },
+            info: None,
+            connections: vec![],
+            bandwidths: vec![],
+            key: None,
+            attributes: vec![
+                Attribute::Rtpmap(Rtpmap {
+                    payload_type: selected_pt as u32,
+                    encoding_name: codec_name(selected_pt).into(),
+                    clock_rate: 8000,
+                    encoding_params: None,
+                }),
+                Attribute::Ptime(20.0),
+                Attribute::Sendrecv,
+            ],
+        }],
+    }
 }
 
 /// 从一路 MediaDescription 提取对端地址/编码. session_conn 是会话级
@@ -303,16 +484,17 @@ fn peer_from_media(
     })
 }
 
-/// RFC 3551 静态 payload type 表 (只列音频里常见的), 未知动态 pt
-/// 原样返回数字串
+/// RFC 3551 静态 payload type 表: PCMA/PCMU 走 `AudioCodec` 的映射,
+/// 其余只列音频里常见的; 未知动态 pt 原样返回 "unknown"
 fn codec_name(payload_type: u8) -> &'static str {
-    match payload_type {
-        PT_PCMU => "PCMU",
-        3 => "GSM",
-        PT_PCMA => "PCMA",
-        9 => "G722",
-        18 => "G729",
-        _ => "unknown",
+    match AudioCodec::from_static_pt(payload_type) {
+        AudioCodec::Unknown => match payload_type {
+            3 => "GSM",
+            9 => "G722",
+            18 => "G729",
+            _ => "unknown",
+        },
+        c => c.rtpmap_name(),
     }
 }
 
@@ -320,6 +502,16 @@ fn codec_name(payload_type: u8) -> &'static str {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    /// PT_* 常量必须和 AudioCodec::static_pt 一致 (两处都是 RFC 3551
+    /// 的取值, 只许对, 不许漂)
+    #[test]
+    fn pt_constants_match_static_pt() {
+        assert_eq!(AudioCodec::G711U.static_pt(), Some(PT_PCMU));
+        assert_eq!(AudioCodec::G711A.static_pt(), Some(PT_PCMA));
+        assert_eq!(AudioCodec::from_static_pt(PT_PCMU), AudioCodec::G711U);
+        assert_eq!(AudioCodec::from_static_pt(PT_PCMA), AudioCodec::G711A);
+    }
 
     #[test]
     fn offer_roundtrip() {

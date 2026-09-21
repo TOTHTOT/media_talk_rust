@@ -49,10 +49,40 @@ pub enum AudioCodec {
 impl AudioCodec {
     pub fn from_name(name: &str) -> Self {
         match name.to_ascii_uppercase().as_str() {
-            "AAC" | "MPEG4-GENERIC" => Self::Aac,
+            "AAC" | "MPEG4-GENERIC" | "MP4A-LATM" => Self::Aac,
             "OPUS" => Self::Opus,
             "PCMA" => Self::G711A,
             "PCMU" => Self::G711U,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// SDP a=rtpmap 的编码名 (RFC 3551/4855)
+    pub const fn rtpmap_name(self) -> &'static str {
+        match self {
+            Self::Aac => "MP4A-LATM",
+            Self::Opus => "opus",
+            Self::G711A => "PCMA",
+            Self::G711U => "PCMU",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// RFC 3551 静态 payload type; 走动态段 (96-127) 的编码返回 None
+    pub const fn static_pt(self) -> Option<u8> {
+        match self {
+            Self::G711U => Some(0),
+            Self::G711A => Some(8),
+            _ => None,
+        }
+    }
+
+    /// 静态 pt 反查编码: 对端省略 rtpmap 时的兜底 (RFC 3551 允许
+    /// 静态 pt 不带 rtpmap 行)
+    pub const fn from_static_pt(pt: u8) -> Self {
+        match pt {
+            0 => Self::G711U,
+            8 => Self::G711A,
             _ => Self::Unknown,
         }
     }

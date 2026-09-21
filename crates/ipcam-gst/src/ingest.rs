@@ -441,19 +441,24 @@ fn decode_chain_names(codec: AudioCodec) -> &'static [&'static str] {
     }
 }
 
-/// Map an audio caps `encoding-name` (+ static-payload fallback for
-/// cameras that omit rtpmap) to (depay element name, codec).
+/// Map an audio caps `encoding-name` to (depay element name, codec).
+/// 相机省略 rtpmap 时用静态 pt 兜底 (RFC 3551 允许); 编码名/pt 映射
+/// 在 ipcam-core, 这里只补 gst 的 depay 元件名
 fn audio_codec(encoding: &str, payload: Option<i32>) -> Option<(&'static str, AudioCodec)> {
-    match encoding.to_ascii_uppercase().as_str() {
-        "PCMA" => Some(("rtppcmadepay", AudioCodec::G711A)),
-        "PCMU" => Some(("rtppcmudepay", AudioCodec::G711U)),
-        "MP4A-LATM" => Some(("rtpmp4adepay", AudioCodec::Aac)),
-        _ => match payload {
-            Some(8) => Some(("rtppcmadepay", AudioCodec::G711A)),
-            Some(0) => Some(("rtppcmudepay", AudioCodec::G711U)),
-            _ => None,
-        },
+    let mut codec = AudioCodec::from_name(encoding);
+    if matches!(codec, AudioCodec::Unknown) {
+        codec = payload
+            .and_then(|p| u8::try_from(p).ok())
+            .map(AudioCodec::from_static_pt)
+            .unwrap_or(AudioCodec::Unknown);
     }
+    let depay = match codec {
+        AudioCodec::G711A => "rtppcmadepay",
+        AudioCodec::G711U => "rtppcmudepay",
+        AudioCodec::Aac => "rtpmp4adepay",
+        _ => return None,
+    };
+    Some((depay, codec))
 }
 
 /// Create the shared decode segment `depay → decode… → tee`
