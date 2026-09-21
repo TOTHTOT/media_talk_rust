@@ -20,7 +20,6 @@
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -28,8 +27,17 @@ use tracing::{debug, info, warn};
 
 use crate::GstStreamError;
 use crate::ensure_init_internal;
-use crate::gstutil::make;
+use chain::{link_audio_send_chain, link_video_send_chain};
 use ipcam_core::AudioCodec;
+use source::{
+    TrackKind, camera_src_name, file_uri, mic_src_name, plug_device_source, plug_uri_source,
+    redact_uri_credentials,
+};
+
+mod chain;
+mod source;
+
+pub use source::{TrackSource, parse_track_source};
 
 /// 一路媒体的发送目标: 对端收包地址 + 对端 answer 里协商出的 pt
 #[derive(Debug, Clone, Copy)]
@@ -51,15 +59,6 @@ pub fn sendable_audio_codec(name: &str) -> Option<AudioCodec> {
     }
 }
 
-/// 音频编码对应的 (encoder, payloader) 元件名; None = 不支持发
-fn audio_encode_elements(codec: AudioCodec) -> Option<(&'static str, &'static str)> {
-    match codec {
-        AudioCodec::G711A => Some(("alawenc", "rtppcmapay")),
-        AudioCodec::G711U => Some(("mulawenc", "rtppcmupay")),
-        _ => None,
-    }
-}
-
 /// 音频路的发送目标: 地址 + pt + answer 协商出的编码.
 /// 编码必须取 answer 里的值 -- 对端收窄到 PCMU 我们还发 PCMA,
 /// 就是标签和内容都对不上的错包 (RFC 3264)
@@ -68,83 +67,6 @@ pub struct AudioDest {
     pub addr: SocketAddr,
     pub payload_type: u8,
     pub codec: AudioCodec,
-}
-
-/// 一路媒体的来源
-#[derive(Debug, Clone)]
-pub enum TrackSource {
-    /// 文件 (mp4/wav/mp3 均可, 只取当前需要的轨)
-    File(PathBuf),
-    /// RTSP 网络相机 (凭据内嵌在 uri 里, H264/H265 均可)
-    Rtsp { uri: String },
-    /// 本机相机: Linux v4l2src (USB 和 MIPI/CSI 同元件), Windows ksvideosrc
-    LocalCamera { device: Option<String> },
-    /// 本机麦克风: Windows wasapisrc, Linux alsasrc
-    Mic,
-}
-
-impl TrackSource {
-    /// 日志用标签: Rtsp uri 可能内嵌凭据 (rtsp://user:pass@...),
-    /// 必须先脱敏再进日志
-    fn label(&self) -> String {
-        match self {
-            Self::File(path) => format!("file:{}", path.display()),
-            Self::Rtsp { uri } => format!("rtsp:{}", redact_uri_credentials(uri)),
-            Self::LocalCamera { device } => {
-                format!("camera:{}", device.as_deref().unwrap_or("default"))
-            }
-            Self::Mic => "mic".to_string(),
-        }
-    }
-}
-
-/// CLI 源描述解析: file:<路径> | rtsp://<uri> | camera[:<设备>] | mic
-pub fn parse_track_source(s: &str) -> Result<TrackSource, String> {
-    if let Some(path) = s.strip_prefix("file:") {
-        return Ok(TrackSource::File(PathBuf::from(path)));
-    }
-    if s.starts_with("rtsp://") {
-        return Ok(TrackSource::Rtsp { uri: s.to_string() });
-    }
-    if s == "camera" {
-        return Ok(TrackSource::LocalCamera { device: None });
-    }
-    if let Some(dev) = s.strip_prefix("camera:") {
-        return Ok(TrackSource::LocalCamera {
-            device: Some(dev.to_string()),
-        });
-    }
-    if s == "mic" {
-        return Ok(TrackSource::Mic);
-    }
-    Err(format!(
-        "unknown track source: {s} (file:/rtsp://camera/mic)"
-    ))
-}
-
-/// 把 uri authority 里的 user:pass@ 换成 ***:***@; 无凭据原样返回
-fn redact_uri_credentials(uri: &str) -> String {
-    let Some(scheme_end) = uri.find("://") else {
-        return uri.to_string();
-    };
-    let after_scheme = &uri[scheme_end + 3..];
-    let authority_end = after_scheme.find('/').unwrap_or(after_scheme.len());
-    let authority = &after_scheme[..authority_end];
-    let Some(at) = authority.rfind('@') else {
-        return uri.to_string();
-    };
-    format!(
-        "{}://***:***@{}",
-        &uri[..scheme_end],
-        &after_scheme[at + 1..]
-    )
-}
-
-/// 要建的是哪一路 (源段按它匹配 uridecodebin 的裸流 pad)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrackKind {
-    Audio,
-    Video,
 }
 
 #[derive(Debug, Clone)]
@@ -273,96 +195,6 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
     })
 }
 
-/// 文件/RTSP 源: uridecodebin 解码出裸流, pad-added 里按 TrackKind 匹配,
-/// 命中的 pad 交给 on_raw_pad 接发送链. 源里没有请求的轨 = pad 永远不来,
-/// 不阻塞另一路 (靠 stats 0 包发现)
-fn plug_uri_source(
-    pipeline: &gst::Pipeline,
-    uri: &str,
-    kind: TrackKind,
-    on_raw_pad: impl Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static,
-) -> Result<(), GstStreamError> {
-    let dec = make("uridecodebin")?;
-    dec.set_property("uri", uri);
-    pipeline
-        .add(&dec)
-        .map_err(|e| GstStreamError::Init(format!("add uridecodebin: {e}")))?;
-    dec.connect_pad_added(move |_dec, pad| {
-        let Some(caps) = pad.current_caps() else {
-            return;
-        };
-        let Some(s) = caps.structure(0) else { return };
-        let hit = matches!(
-            (kind, s.name().as_str()),
-            (TrackKind::Video, "video/x-raw") | (TrackKind::Audio, "audio/x-raw")
-        );
-        if hit {
-            if let Err(e) = on_raw_pad(pad.clone()) {
-                warn!(error = %e, "rtp sender: failed to link send chain");
-            }
-        }
-    });
-    dec.sync_state_with_parent()
-        .map_err(|e| GstStreamError::Init(format!("sync uridecodebin: {e}")))?;
-    Ok(())
-}
-
-/// 平台分发集中在这两个函数, 不用 #[cfg] 散布.
-/// 未知平台编译能过, 运行时 make() 报元件不存在 (与缺插件行为一致)
-fn camera_src_name() -> &'static str {
-    if cfg!(windows) {
-        "ksvideosrc"
-    } else {
-        "v4l2src"
-    }
-}
-
-fn mic_src_name() -> &'static str {
-    if cfg!(windows) {
-        "wasapisrc"
-    } else {
-        "alsasrc"
-    }
-}
-
-/// 设备源出来直接是裸流 (或可被下游 negotiate 成裸流), src pad 静态存在
-fn plug_device_source(
-    pipeline: &gst::Pipeline,
-    element_name: &str,
-    device: Option<&str>,
-    on_raw_pad: impl FnOnce(gst::Pad) -> Result<(), GstStreamError>,
-) -> Result<(), GstStreamError> {
-    let src = make(element_name)?;
-    if let Some(dev) = device {
-        // v4l2src 用 device=/dev/videoX; ksvideosrc 用 device-path.
-        // MIPI 相机在 Linux 上同为 v4l2src, 只是节点不同
-        let prop = if element_name == "ksvideosrc" {
-            "device-path"
-        } else {
-            "device"
-        };
-        src.set_property(prop, dev);
-    }
-    pipeline
-        .add(&src)
-        .map_err(|e| GstStreamError::Init(format!("add {element_name}: {e}")))?;
-    src.sync_state_with_parent()
-        .map_err(|e| GstStreamError::Init(format!("sync {element_name}: {e}")))?;
-    let pad = src
-        .static_pad("src")
-        .ok_or_else(|| GstStreamError::Link(format!("{element_name} has no src pad")))?;
-    on_raw_pad(pad)
-}
-
-fn file_uri(path: &std::path::Path) -> Result<String, GstStreamError> {
-    let abs = path.canonicalize().map_err(|e| {
-        GstStreamError::InvalidConfig(format!("media file not found: {}: {e}", path.display()))
-    })?;
-    let uri = gst::glib::filename_to_uri(&abs, None)
-        .map_err(|e| GstStreamError::InvalidConfig(format!("to file uri: {e}")))?;
-    Ok(uri.to_string())
-}
-
 fn build_video_track(
     pipeline: &gst::Pipeline,
     source: &TrackSource,
@@ -441,149 +273,10 @@ fn build_audio_track(
     }
 }
 
-/// 视频发送链 (所有源共用): 裸流重编码, 参数集周期重发.
-/// dest.max_width 有值时中间插 videoscale + capsfilter 限宽
-fn link_video_send_chain(
-    pipeline: &gst::Pipeline,
-    raw_pad: &gst::Pad,
-    dest: RtpDest,
-    stats: Arc<SendStats>,
-) -> Result<(), GstStreamError> {
-    // convert 编码格式转换
-    let mut chain = vec![make("queue")?, make("videoconvert")?];
-    if let Some(max_w) = dest.max_width {
-        // 限宽: 1080p 相机直发超出门口机解码上限会黑屏.
-        // caps 用范围而不是定值: videoscale 只在源超宽时降采样, 且保持宽高比
-        let scale = make("videoscale")?;
-        let caps = make("capsfilter")?;
-        caps.set_property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field("width", gst::IntRange::new(1i32, max_w as i32))
-                .build(),
-        );
-        chain.push(scale);
-        chain.push(caps);
-    }
-    let enc = make("x264enc")?;
-    enc.set_property_from_str("tune", "zerolatency");
-    enc.set_property_from_str("speed-preset", "veryfast");
-    enc.set_property("bitrate", 400u32); // kbps, CIF 档足够
-    enc.set_property("key-int-max", 30u32); // 秒级 IDR, 对端中途收也能起
-    // 不插 AUD NAL (设备解析器不认); 每个 NAL 切到 MTU 以下,
-    // 从源头消除 FU-A 分片需求 (mode 0)
-    enc.set_property("aud", false);
-    enc.set_property("option-string", "slice-max-size=1300");
-    let pay = make("rtph264pay")?;
-    pay.set_property("pt", dest.payload_type as u32);
-    pay.set_property("config-interval", 1i32);
-    install_pkt_probe(&pay, stats.clone(), false)?;
-    chain.extend([enc, pay, make_udpsink(dest.addr)?]);
-    let refs: Vec<&gst::Element> = chain.iter().collect();
-    add_link_and_plug(pipeline, raw_pad, &refs, "video")
-}
-
-/// 音频发送链 (所有源共用): 裸流重采样成 answer 协商出的 G.711 (8kHz 单声道)
-fn link_audio_send_chain(
-    pipeline: &gst::Pipeline,
-    raw_pad: &gst::Pad,
-    dest: AudioDest,
-    stats: Arc<SendStats>,
-) -> Result<(), GstStreamError> {
-    let queue = make("queue")?;
-    let convert = make("audioconvert")?;
-    let resample = make("audioresample")?;
-    // G.711 定死 8kHz; capsfilter 强制输出格式, 不依赖源采样率
-    let caps = make("capsfilter")?;
-    caps.set_property(
-        "caps",
-        gst::Caps::builder("audio/x-raw")
-            .field("rate", 8000i32)
-            .field("channels", 1i32)
-            .build(),
-    );
-    // 编码器/payloader 按 answer 协商结果选: PCMA→alawenc/rtppcmapay,
-    // PCMU→mulawenc/rtppcmupay
-    let Some((enc_name, pay_name)) = audio_encode_elements(dest.codec) else {
-        return Err(GstStreamError::InvalidConfig(format!(
-            "unsupported audio codec for send: {:?}",
-            dest.codec
-        )));
-    };
-    let enc = make(enc_name)?;
-    let pay = make(pay_name)?;
-    pay.set_property("pt", dest.payload_type as u32);
-    install_pkt_probe(&pay, stats.clone(), true)?;
-    let sink = make_udpsink(dest.addr)?;
-    add_link_and_plug(
-        pipeline,
-        raw_pad,
-        &[&queue, &convert, &resample, &caps, &enc, &pay, &sink],
-        "audio",
-    )
-}
-
-fn make_udpsink(addr: SocketAddr) -> Result<gst::Element, GstStreamError> {
-    let sink = make("udpsink")?;
-    sink.set_property("host", addr.ip().to_string());
-    sink.set_property("port", addr.port() as i32);
-    // sync=true: 按码流时间戳限速发送; async=false: 不等 clock 对齐 preroll
-    sink.set_property("sync", true);
-    sink.set_property("async", false);
-    Ok(sink)
-}
-
-/// 在 payloader 的 src pad 上数包: 每个 buffer = 一个 RTP 包, 这是个探测器
-fn install_pkt_probe(
-    pay: &gst::Element,
-    stats: Arc<SendStats>,
-    is_audio: bool,
-) -> Result<(), GstStreamError> {
-    let src_pad = pay
-        .static_pad("src")
-        .ok_or_else(|| GstStreamError::Link("payloader has no src pad".into()))?;
-    src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
-        let counter = if is_audio {
-            &stats.audio_pkts
-        } else {
-            &stats.video_pkts
-        };
-        counter.fetch_add(1, Ordering::Relaxed);
-        gst::PadProbeReturn::Ok
-    });
-    Ok(())
-}
-
-/// 公共尾巴: 元件入管线 → 依次互链 → 源动态 pad 插到链头 →
-/// 同步状态 (链条是在管线已 Playing 后才接上的, 必须手动 sync)
-fn add_link_and_plug(
-    pipeline: &gst::Pipeline,
-    src_pad: &gst::Pad,
-    chain: &[&gst::Element],
-    what: &str,
-) -> Result<(), GstStreamError> {
-    pipeline
-        .add_many(chain)
-        .map_err(|e| GstStreamError::Init(format!("add {what} chain: {e}")))?;
-    gst::Element::link_many(chain)
-        .map_err(|e| GstStreamError::Link(format!("link {what} chain: {e}")))?;
-    let head_sink = chain[0]
-        .static_pad("sink")
-        .ok_or_else(|| GstStreamError::Link(format!("{what} chain head has no sink pad")))?;
-    src_pad
-        .link(&head_sink)
-        .map_err(|e| GstStreamError::Link(format!("plug src pad to {what} chain: {e}")))?;
-    for elem in chain {
-        elem.sync_state_with_parent()
-            .map_err(|e| GstStreamError::Link(format!("sync {what} chain state: {e}")))?;
-    }
-    info!(what, "rtp sender: chain linked");
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// SDP rtpmap 编码名解析: 大小写不敏感, 未知编码返回 None
     #[test]
@@ -594,61 +287,6 @@ mod tests {
         assert_eq!(sendable_audio_codec("PCMA"), Some(AudioCodec::G711A));
         assert_eq!(sendable_audio_codec("pcma"), Some(AudioCodec::G711A));
         assert_eq!(sendable_audio_codec("opus"), None);
-    }
-
-    /// Rtsp 标签必须脱敏内嵌凭据: user:pass 不得出现在日志文本里
-    #[test]
-    fn rtsp_label_redacts_credentials() {
-        let source = TrackSource::Rtsp {
-            uri: "rtsp://admin:secret@192.168.1.10:8554/ch01".to_string(),
-        };
-        let label = source.label();
-        assert!(!label.contains("secret"), "credential leaked: {label}");
-        assert!(!label.contains("admin"), "username leaked: {label}");
-        assert!(
-            label.contains("192.168.1.10:8554/ch01"),
-            "host lost: {label}"
-        );
-
-        // 无凭据的 uri 原样保留
-        let plain = TrackSource::Rtsp {
-            uri: "rtsp://192.168.1.10:8554/ch01".to_string(),
-        };
-        assert_eq!(plain.label(), "rtsp:rtsp://192.168.1.10:8554/ch01");
-    }
-
-    #[test]
-    fn parse_track_source_variants() {
-        assert!(matches!(
-            parse_track_source("file:a/b.mp4"),
-            Ok(TrackSource::File(p)) if p == std::path::Path::new("a/b.mp4")
-        ));
-        assert!(matches!(
-            parse_track_source("rtsp://cam/1"),
-            Ok(TrackSource::Rtsp { uri }) if uri == "rtsp://cam/1"
-        ));
-        assert!(matches!(
-            parse_track_source("camera"),
-            Ok(TrackSource::LocalCamera { device: None })
-        ));
-        assert!(matches!(
-            parse_track_source("camera:/dev/video1"),
-            Ok(TrackSource::LocalCamera { device: Some(d) }) if d == "/dev/video1"
-        ));
-        assert!(matches!(parse_track_source("mic"), Ok(TrackSource::Mic)));
-        assert!(parse_track_source("bogus").is_err());
-    }
-
-    /// 平台分发: windows 用 ksvideosrc/wasapisrc, 其余平台 v4l2src/alsasrc
-    #[test]
-    fn device_src_names_match_platform() {
-        if cfg!(windows) {
-            assert_eq!(camera_src_name(), "ksvideosrc");
-            assert_eq!(mic_src_name(), "wasapisrc");
-        } else {
-            assert_eq!(camera_src_name(), "v4l2src");
-            assert_eq!(mic_src_name(), "alsasrc");
-        }
     }
 
     /// 文件源视频轨: 解码重编码后 3 秒内必须出 RTP 包

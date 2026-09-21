@@ -147,7 +147,10 @@ src/
 ├── ingest.rs        # RTSP → WebRTC 管线实现（拉流进）
 ├── ingest/
 │   └── config.rs    # GstStreamConfig / AudioOutput / ReconnectPolicy（仅 ingest 用）
-├── rtp_send.rs      # 多源 → RTP 发送器（发出去），自带 RtpSendConfig
+├── rtp_send.rs      # 多源 → RTP 发送器根模块: 公开类型、track 组装
+├── rtp_send/
+│   ├── source.rs    # TrackSource（文件/RTSP/相机/麦克风）与源接入
+│   └── chain.rs     # 裸流重编码发送链（限宽/编码/pay/udpsink）
 ├── tap.rs           # 原始帧回调类型（VideoFrameSink / AudioChunkSink）
 └── gstutil.rs       # 建元件 / 链接 / 同步小工具（ingest 和 rtp_send 共用）
 ```
