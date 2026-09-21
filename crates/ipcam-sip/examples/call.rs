@@ -46,6 +46,9 @@ struct Args {
     /// 音频源: file:<路径> | mic
     #[arg(long, default_value = "file:assets/oceans.mp4")]
     audio_src: String,
+    /// 视频限宽 (对端解码能力, 超宽源会降采样, 保持宽高比); 0 = 不限
+    #[arg(long, default_value_t = 640)]
+    max_width: u32,
 }
 
 #[tokio::main]
@@ -125,7 +128,7 @@ async fn main() -> Result<()> {
         r = &mut reg => {
             warn!(result = ?r, "register loop exited unexpectedly");
         }
-        r = call_until_hangup(dialog_layer, invite_option, state_sender, video_src, audio_src) => {
+        r = call_until_hangup(dialog_layer, invite_option, state_sender, video_src, audio_src, args.max_width) => {
             if let Err(e) = r {
                 warn!(error = ?e, "call failed");
             }
@@ -148,6 +151,7 @@ async fn call_until_hangup(
     state_sender: rsipstack::dialog::dialog::DialogStateSender,
     video_src: TrackSource,
     audio_src: TrackSource,
+    max_width: u32,
 ) -> Result<()> {
     let (dialog, resp) = dialog_layer.do_invite(invite_option, state_sender).await?;
     let resp = resp.ok_or_else(|| anyhow!("INVITE got no final response"))?;
@@ -186,6 +190,8 @@ async fn call_until_hangup(
                 ipcam_gst::RtpDest {
                     addr: p.addr,
                     payload_type: p.payload_type,
+                    // 0 = 对端不限宽; 门口机按 640 保守发
+                    max_width: (max_width > 0).then_some(max_width),
                 },
             )
         }),

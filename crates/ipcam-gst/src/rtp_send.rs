@@ -2,9 +2,9 @@
 //! 本机相机/麦克风), 解码后统一重编码发出.
 //!
 //! 链形 (每轨独立):
-//!   视频: 源 → [解码] → queue → videoconvert → videoscale
-//!         → capsfilter(width≤640, 保持宽高比) → x264enc
-//!         → rtph264pay(config-interval=1) → udpsink
+//!   视频: 源 → [解码] → queue → videoconvert
+//!         → [videoscale → capsfilter(width≤max_width, 保持宽高比)]
+//!         → x264enc → rtph264pay(config-interval=1) → udpsink
 //!   音频: 源 → [解码] → queue → audioconvert → audioresample
 //!         → capsfilter(8kHz/mono) → alawenc|mulawenc
 //!         → rtppcmapay|rtppcmupay → udpsink
@@ -36,6 +36,10 @@ use ipcam_core::AudioCodec;
 pub struct RtpDest {
     pub addr: SocketAddr,
     pub payload_type: u8,
+    /// 对端解码能力的限宽: Some(w) 时源超宽会降采样到 w 以内
+    /// (保持宽高比), None = 不限制 (不插 videoscale/capsfilter).
+    /// 门口机给 Some(640), 能力未知的对端先按 640 保守发
+    pub max_width: Option<u32>,
 }
 
 /// 从 SDP rtpmap 的编码名解析出我们支持发送的编码.
@@ -365,6 +369,7 @@ fn build_video_track(
     dest: RtpDest,
     stats: Arc<SendStats>,
 ) -> Result<(), GstStreamError> {
+    info!(?source, "building video track");
     match source {
         TrackSource::File(path) => {
             let uri = file_uri(path)?;
@@ -405,6 +410,7 @@ fn build_audio_track(
     dest: AudioDest,
     stats: Arc<SendStats>,
 ) -> Result<(), GstStreamError> {
+    info!(?source, "building audio track");
     match source {
         TrackSource::File(path) => {
             let uri = file_uri(path)?;
@@ -435,25 +441,30 @@ fn build_audio_track(
     }
 }
 
-/// 视频发送链 (所有源共用): 裸流重编码, 参数集周期重发
+/// 视频发送链 (所有源共用): 裸流重编码, 参数集周期重发.
+/// dest.max_width 有值时中间插 videoscale + capsfilter 限宽
 fn link_video_send_chain(
     pipeline: &gst::Pipeline,
     raw_pad: &gst::Pad,
     dest: RtpDest,
     stats: Arc<SendStats>,
 ) -> Result<(), GstStreamError> {
-    let queue = make("queue")?;
-    let convert = make("videoconvert")?;
-    // 限宽 640: 1080p 相机直发超出门口机解码上限会黑屏.
-    // caps 用范围而不是定值: videoscale 只在源超宽时降采样, 且保持宽高比
-    let scale = make("videoscale")?;
-    let caps = make("capsfilter")?;
-    caps.set_property(
-        "caps",
-        gst::Caps::builder("video/x-raw")
-            .field("width", gst::IntRange::new(1i32, 640i32))
-            .build(),
-    );
+    // convert 编码格式转换
+    let mut chain = vec![make("queue")?, make("videoconvert")?];
+    if let Some(max_w) = dest.max_width {
+        // 限宽: 1080p 相机直发超出门口机解码上限会黑屏.
+        // caps 用范围而不是定值: videoscale 只在源超宽时降采样, 且保持宽高比
+        let scale = make("videoscale")?;
+        let caps = make("capsfilter")?;
+        caps.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("width", gst::IntRange::new(1i32, max_w as i32))
+                .build(),
+        );
+        chain.push(scale);
+        chain.push(caps);
+    }
     let enc = make("x264enc")?;
     enc.set_property_from_str("tune", "zerolatency");
     enc.set_property_from_str("speed-preset", "veryfast");
@@ -467,13 +478,9 @@ fn link_video_send_chain(
     pay.set_property("pt", dest.payload_type as u32);
     pay.set_property("config-interval", 1i32);
     install_pkt_probe(&pay, stats.clone(), false)?;
-    let sink = make_udpsink(dest)?;
-    add_link_and_plug(
-        pipeline,
-        raw_pad,
-        &[&queue, &convert, &scale, &caps, &enc, &pay, &sink],
-        "video",
-    )
+    chain.extend([enc, pay, make_udpsink(dest.addr)?]);
+    let refs: Vec<&gst::Element> = chain.iter().collect();
+    add_link_and_plug(pipeline, raw_pad, &refs, "video")
 }
 
 /// 音频发送链 (所有源共用): 裸流重采样成 answer 协商出的 G.711 (8kHz 单声道)
@@ -507,10 +514,7 @@ fn link_audio_send_chain(
     let pay = make(pay_name)?;
     pay.set_property("pt", dest.payload_type as u32);
     install_pkt_probe(&pay, stats.clone(), true)?;
-    let sink = make_udpsink(RtpDest {
-        addr: dest.addr,
-        payload_type: dest.payload_type,
-    })?;
+    let sink = make_udpsink(dest.addr)?;
     add_link_and_plug(
         pipeline,
         raw_pad,
@@ -519,10 +523,10 @@ fn link_audio_send_chain(
     )
 }
 
-fn make_udpsink(dest: RtpDest) -> Result<gst::Element, GstStreamError> {
+fn make_udpsink(addr: SocketAddr) -> Result<gst::Element, GstStreamError> {
     let sink = make("udpsink")?;
-    sink.set_property("host", dest.addr.ip().to_string());
-    sink.set_property("port", dest.addr.port() as i32);
+    sink.set_property("host", addr.ip().to_string());
+    sink.set_property("port", addr.port() as i32);
     // sync=true: 按码流时间戳限速发送; async=false: 不等 clock 对齐 preroll
     sink.set_property("sync", true);
     sink.set_property("async", false);
@@ -658,6 +662,7 @@ mod tests {
                 RtpDest {
                     addr: "127.0.0.1:40002".parse().unwrap(),
                     payload_type: 96,
+                    max_width: Some(640),
                 },
             )),
         })
@@ -687,6 +692,7 @@ mod tests {
                 RtpDest {
                     addr: "127.0.0.1:40002".parse().unwrap(),
                     payload_type: 96,
+                    max_width: Some(640),
                 },
             )),
         })
