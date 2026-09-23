@@ -9,7 +9,7 @@
 use anyhow::Result;
 use clap::Parser;
 use ipcam_sip::{SipClient, SipClientConfig};
-use std::net::{IpAddr, SocketAddr, SocketAddrV4};
+use std::net::{SocketAddr, SocketAddrV4};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -43,10 +43,7 @@ async fn main() -> Result<()> {
 
     // Contact 用本机 LAN IP（不能是 127.0.0.1，服务器要按它回送 INVITE），
     // 端口 0 交给系统分配
-    let IpAddr::V4(local) = local_ip_address::local_ip()? else {
-        anyhow::bail!("仅支持 IPv4");
-    };
-    let client_addr = SocketAddr::V4(SocketAddrV4::new(local, 0));
+    let client_addr = SocketAddr::V4(SocketAddrV4::new(ipcam_sip::local_ipv4()?, 0));
 
     let config = SipClientConfig::new(
         args.username.clone(),
@@ -57,25 +54,22 @@ async fn main() -> Result<()> {
         Some(args.expires),
     );
     let client = SipClient::new(config, CancellationToken::new()).await?;
+    let mut endpoint = client.spawn_endpoint();
     info!(server = %args.server, "registering, ctrl+c to stop");
 
     // Box::pin：select! 分支里用 &mut 复用同一个 future，
-    // ctrl+c 后还能继续等它把注销流程跑完
+    // ctrl+c 后 shutdown 还能等它把注销流程跑完
     let mut reg = Box::pin(client.process_register());
     select! {
-        _ = client.endpoint.serve() => {
-            warn!("SIP endpoint exited");
+        r = &mut endpoint => {
+            warn!(result = ?r, "SIP endpoint exited");
         }
         r = &mut reg => {
-            info!(result = ?r, "register loop exited");
+            warn!(result = ?r, "register loop exited unexpectedly");
         }
         _ = tokio::signal::ctrl_c() => {
             info!("ctrl+c received, stopping (unregister)");
-            client.stop();
-            // 等注册循环收尾：best-effort 注销 + 退出
-            let r = reg.await;
-            info!(result = ?r, "register loop exited");
         }
     }
-    Ok(())
+    client.shutdown(reg).await
 }

@@ -11,12 +11,10 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use ipcam_gst::TrackSource;
 use ipcam_sip::sdp::{PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all};
-use ipcam_sip::{SipClient, SipClientConfig};
-use rsipstack::dialog::dialog::DialogState;
+use ipcam_sip::{SipClient, SipClientConfig, run_dialog_state_loop};
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::dialog::invitation::InviteOption;
 use rsipstack::sip as rsip;
-use rsipstack::transaction::Endpoint;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::select;
@@ -63,10 +61,8 @@ async fn main() -> Result<()> {
     let video_src = ipcam_gst::parse_track_source(&args.video_src).map_err(anyhow::Error::msg)?;
     let audio_src = ipcam_gst::parse_track_source(&args.audio_src).map_err(anyhow::Error::msg)?;
 
-    // 与 register example 相同：Contact/SDP 都要用对端可达的 LAN 地址
-    let IpAddr::V4(local) = local_ip_address::local_ip()? else {
-        anyhow::bail!("仅支持 IPv4");
-    };
+    // Contact/SDP 都要用对端可达的 LAN 地址 (不能是 127.0.0.1)
+    let local = ipcam_sip::local_ipv4()?;
     let client_addr = SocketAddr::V4(SocketAddrV4::new(local, 0));
 
     let config = SipClientConfig::new(
@@ -79,20 +75,10 @@ async fn main() -> Result<()> {
     );
     let credential = config.to_credential();
     let client = SipClient::new(config, CancellationToken::new()).await?;
-
-    // endpoint 收包循环甩后台（从 inner 重建 owned Endpoint, 同 lib 测试的做法）
-    let ep = Endpoint {
-        inner: client.endpoint.inner.clone(),
-    };
-    tokio::spawn(async move { ep.serve().await });
+    let _endpoint = client.spawn_endpoint();
 
     // 裸号码补全成完整 URI
-    let callee_text = if args.callee.starts_with("sip:") || args.callee.starts_with("sips:") {
-        args.callee.clone()
-    } else {
-        format!("sip:{}@{}", args.callee, args.server)
-    };
-    let callee = rsip::Uri::try_from(callee_text.as_str())?;
+    let callee = client.callee_uri(&args.callee)?;
 
     // offer 里写真实绑定的 UDP 端口, 而不是随口编一个——对端会按
     // 它回送 RTP. 骨架阶段不收包, socket 保持存活避免 ICMP unreachable.
@@ -111,7 +97,12 @@ async fn main() -> Result<()> {
 
     let dialog_layer = client.dialog_layer.clone();
     let (state_sender, state_receiver) = dialog_layer.new_dialog_state_channel();
-    spawn_state_printer(dialog_layer.clone(), state_receiver);
+    // 状态日志 + Terminated 清理 (防泄漏) 甩后台; 主叫没有来电, 回调用不上
+    tokio::spawn(run_dialog_state_loop(
+        dialog_layer.clone(),
+        state_receiver,
+        |_| {},
+    ));
 
     let invite_option = InviteOption {
         callee,
@@ -137,10 +128,7 @@ async fn main() -> Result<()> {
 
     // 通话结束（或出错）后走标准退出：注销 + 收尾
     info!("stopping (unregister)");
-    client.stop();
-    let r = reg.await;
-    info!(result = ?r, "register loop exited");
-    Ok(())
+    client.shutdown(reg).await
 }
 
 /// INVITE → 等最终响应 → 打印协商结果 → 起 RTP 发送器往对端灌媒体文件 →
@@ -203,20 +191,4 @@ async fn call_until_hangup(
     dialog.bye_with_headers(None).await?;
     info!("BYE sent");
     Ok(())
-}
-
-/// 打印对话状态事件；Terminated 时按 rsipstack 文档要求 remove_dialog,
-/// 否则 confirmed dialog 永远挂在 registry 里（内存泄漏）
-fn spawn_state_printer(
-    dialog_layer: Arc<DialogLayer>,
-    mut state_receiver: rsipstack::dialog::dialog::DialogStateReceiver,
-) {
-    tokio::spawn(async move {
-        while let Some(state) = state_receiver.recv().await {
-            info!(%state, "dialog state");
-            if let DialogState::Terminated(id, _) = state {
-                dialog_layer.remove_dialog(&id);
-            }
-        }
-    });
 }

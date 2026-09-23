@@ -2,12 +2,9 @@
 //! ringing + accept → 起 RTP 接收器保存音视频. 对端 BYE 或本地 Ctrl+C
 //! 结束通话.
 //!
-//! 结构参考 rsipstack examples/client/main.rs, 分三层:
-//! - process_incoming_request: 事务层分发 (in-dialog → match_dialog 交给
-//!   已有 dialog; 新 INVITE → 建 server dialog 并 spawn handle)
-//! - process_dialog: dialog 状态循环, Calling(server 角色) → 起通话任务,
-//!   Terminated → 从 dialog_layer 移除
-//! - process_call: 每通电话一个独立任务, 不阻塞后续来电
+//! 结构参考 rsipstack examples/client/main.rs, 事务分发和状态循环已下沉
+//! 到 ipcam_sip (run_incoming_loop / run_dialog_state_loop), 这里只剩
+//! 媒体相关的 process_call.
 //!
 //! ```bash
 //! cargo run -p ipcam-sip --example answer
@@ -15,21 +12,14 @@
 
 use anyhow::Result;
 use clap::Parser;
-use ipcam_core::{AudioCodec, VideoCodec};
+use ipcam_core::VideoCodec;
 use ipcam_gst::{RtpRecvConfig, start_rtp_receiver};
 use ipcam_sip::sdp::{PT_PCMA, build_av_answer, parse_offer_all};
-use ipcam_sip::{SipClient, SipClientConfig};
-use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, DialogStateSender};
-use rsipstack::dialog::dialog_layer::DialogLayer;
+use ipcam_sip::{SipClient, SipClientConfig, run_dialog_state_loop};
 use rsipstack::dialog::invite_dialog::InviteDialog;
-use rsipstack::sip as rsip;
-use rsipstack::sip::HeadersExt;
 use rsipstack::sip::headers::Header;
-use rsipstack::transaction::TransactionReceiver;
-use rsipstack::transaction::key::TransactionRole;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -70,9 +60,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     std::fs::create_dir_all(&args.output_dir)?;
 
-    let IpAddr::V4(local) = local_ip_address::local_ip()? else {
-        anyhow::bail!("仅支持 IPv4");
-    };
+    // Contact/SDP 都要用对端可达的 LAN 地址 (不能是 127.0.0.1)
+    let local = ipcam_sip::local_ipv4()?;
     let client_addr = SocketAddr::V4(SocketAddrV4::new(local, 0));
 
     let config = SipClientConfig::new(
@@ -84,16 +73,21 @@ async fn main() -> Result<()> {
         Some(args.expires),
     );
     let client = SipClient::new(config, CancellationToken::new()).await?;
+    let _endpoint = client.spawn_endpoint();
 
-    // endpoint 收包循环甩后台 (从 inner 重建 owned Endpoint, 同 call example)
-    let ep = rsipstack::transaction::Endpoint {
-        inner: client.endpoint.inner.clone(),
+    let (state_sender, state_receiver) = client.dialog_layer.new_dialog_state_channel();
+    // 每通来电 spawn 独立任务处理, 不阻塞状态循环和后续来电
+    let on_incoming_call = {
+        let output_dir = args.output_dir.clone();
+        move |dialog: InviteDialog| {
+            let dir = output_dir.clone();
+            tokio::spawn(async move {
+                if let Err(e) = process_call(dialog, IpAddr::V4(local), dir).await {
+                    warn!(error = %e, "call handling failed");
+                }
+            });
+        }
     };
-    tokio::spawn(async move { ep.serve().await });
-
-    let dialog_layer = Arc::new(DialogLayer::new(client.endpoint.inner.clone()));
-    let (state_sender, state_receiver) = dialog_layer.new_dialog_state_channel();
-    let incoming = client.endpoint.incoming_transactions()?;
 
     info!(
         username = %args.username,
@@ -107,16 +101,12 @@ async fn main() -> Result<()> {
         r = &mut reg => {
             warn!(result = ?r, "register loop exited unexpectedly");
         }
-        r = process_incoming_request(
-            dialog_layer.clone(), incoming, state_sender, client.contact.clone(),
-        ) => {
+        r = client.run_incoming_loop(&state_sender) => {
             if let Err(e) = r {
                 warn!(error = %e, "incoming request loop error");
             }
         }
-        r = process_dialog(
-            dialog_layer.clone(), state_receiver, IpAddr::V4(local), args.output_dir.clone(),
-        ) => {
+        r = run_dialog_state_loop(client.dialog_layer.clone(), state_receiver, on_incoming_call) => {
             if let Err(e) = r {
                 warn!(error = %e, "dialog state loop error");
             }
@@ -128,115 +118,7 @@ async fn main() -> Result<()> {
 
     // 标准退出: 停注册循环 (best-effort 注销) + 收尾
     info!("stopping (unregister)");
-    client.stop();
-    let r = reg.await;
-    info!(result = ?r, "register loop exited");
-    Ok(())
-}
-
-/// 事务层分发: 只做路由, 不碰 SDP/媒体. in-dialog 请求 (To 带 tag) 交给
-/// 已跟踪的 dialog; 新 INVITE 建 server dialog, handle 甩进独立任务 --
-/// dialog 生命周期事件走状态通道, 由 process_dialog 接管.
-async fn process_incoming_request(
-    dialog_layer: Arc<DialogLayer>,
-    mut incoming: TransactionReceiver,
-    state_sender: DialogStateSender,
-    contact: rsip::Uri,
-) -> Result<()> {
-    while let Some(mut tx) = incoming.recv().await {
-        info!(key = ?tx.key, method = %tx.original.method, "received transaction");
-
-        // to_header().and_then(h.tag()) 返回 Some(None) 时 flatten 后是 None
-        let has_to_tag = tx
-            .original
-            .to_header()
-            .ok()
-            .and_then(|h| h.tag().ok())
-            .flatten()
-            .is_some();
-
-        if has_to_tag {
-            match dialog_layer.match_dialog(&tx) {
-                Some(mut dialog) => {
-                    tokio::spawn(async move {
-                        if let Err(e) = dialog.handle(&mut tx).await {
-                            warn!(error = %e, "dialog handle failed");
-                        }
-                    });
-                }
-                None => {
-                    info!("dialog not found for in-dialog request");
-                    let _ = tx
-                        .reply(rsip::StatusCode::CallTransactionDoesNotExist)
-                        .await;
-                }
-            }
-            continue;
-        }
-
-        match tx.original.method {
-            rsip::Method::Invite => {
-                let mut dialog = match dialog_layer.get_or_create_server_invite(
-                    &tx,
-                    state_sender.clone(),
-                    None,
-                    Some(contact.clone()),
-                ) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        warn!(error = %e, "failed to create server invite dialog");
-                        let _ = tx.reply(rsip::StatusCode::BusyHere).await;
-                        continue;
-                    }
-                };
-                tokio::spawn(async move {
-                    if let Err(e) = dialog.handle(&mut tx).await {
-                        warn!(error = %e, "dialog handle failed");
-                    }
-                });
-            }
-            // 非 INVITE 新请求 (OPTIONS 保活之类), 回 OK 完事
-            _ => {
-                let _ = tx.reply(rsip::StatusCode::OK).await;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// dialog 状态循环: 来电 (Calling + server 角色) 起独立通话任务,
-/// Terminated 从 dialog_layer 移除 (BYE 由 dialog.handle 处理完会走到这).
-async fn process_dialog(
-    dialog_layer: Arc<DialogLayer>,
-    mut state_receiver: DialogStateReceiver,
-    local_ip: IpAddr,
-    output_dir: PathBuf,
-) -> Result<()> {
-    while let Some(state) = state_receiver.recv().await {
-        info!(%state, "dialog state");
-        match state {
-            DialogState::Calling(id) => {
-                let Some(Dialog::Invite(d)) = dialog_layer.get_dialog(&id) else {
-                    continue;
-                };
-                if d.role() != TransactionRole::Server {
-                    continue;
-                }
-                let dir = output_dir.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = process_call(d, local_ip, dir).await {
-                        warn!(error = %e, "call handling failed");
-                    }
-                });
-            }
-            DialogState::Terminated(id, reason) => {
-                info!(dialog = %id, ?reason, "dialog terminated");
-                dialog_layer.remove_dialog(&id);
-            }
-            _ => {}
-        }
-    }
-    Ok(())
+    client.shutdown(reg).await
 }
 
 /// 一路通话: 解析 offer → ringing + accept (带 answer SDP) → 起 RTP
@@ -248,10 +130,10 @@ async fn process_call(dialog: InviteDialog, local_ip: IpAddr, output_dir: PathBu
     // 只接 G.711 音频和 H264/H265 视频; 不支持的编码那一路不存盘
     // (answer 里仍带着, 对端发了也收, 只是不落盘)
     let audio_pt = match offer.audio.as_ref() {
-        Some(a) => match AudioCodec::from_name(&a.codec) {
-            c @ (AudioCodec::G711A | AudioCodec::G711U) => Some((a.payload_type, c)),
-            other => {
-                warn!(codec = %a.codec, ?other, "unsupported audio codec, skip saving audio");
+        Some(a) => match ipcam_gst::sendable_audio_codec(&a.codec) {
+            Some(c) => Some((a.payload_type, c)),
+            None => {
+                warn!(codec = %a.codec, "unsupported audio codec, skip saving audio");
                 None
             }
         },
