@@ -1,6 +1,6 @@
 //! SIP 被叫 (接听) 冒烟工具: 注册 → 等来电 INVITE → 解析 offer SDP →
-//! ringing + accept → 起 RTP 接收器保存音视频. 对端 BYE 或本地 Ctrl+C
-//! 结束通话.
+//! ringing + accept → 起 RTP 接收器 (存 mp4 + 本地播放) + 麦克风回传.
+//! 对端 BYE 或本地 Ctrl+C 结束通话.
 //!
 //! 结构参考 rsipstack examples/client/main.rs, 事务分发和状态循环已下沉
 //! 到 ipcam_sip (run_incoming_loop / run_dialog_state_loop), 这里只剩
@@ -29,7 +29,7 @@ const AUDIO_RTP_PORT: u16 = 40000;
 const VIDEO_RTP_PORT: u16 = 40002;
 
 #[derive(Parser)]
-#[command(about = "SIP 被叫冒烟: 注册 → 等来电 → 保存音视频到 output-dir")]
+#[command(about = "SIP 被叫冒烟: 注册 → 等来电 → 播放 + 存盘 + 麦克风回传")]
 struct Args {
     /// SIP 账号 (同时作为用户名)
     #[arg(short, long, default_value = "9998")]
@@ -46,6 +46,10 @@ struct Args {
     /// 保存音视频的目录
     #[arg(long, default_value = "temp")]
     output_dir: PathBuf,
+    /// 不回传麦克风给对方 (默认回传; 没接 AEC, 同机外放+麦克风会回声,
+    /// 测试建议插耳机)
+    #[arg(long)]
+    no_mic: bool,
 }
 
 #[tokio::main]
@@ -79,10 +83,11 @@ async fn main() -> Result<()> {
     // 每通来电 spawn 独立任务处理, 不阻塞状态循环和后续来电
     let on_incoming_call = {
         let output_dir = args.output_dir.clone();
+        let mic = !args.no_mic;
         move |dialog: InviteDialog| {
             let dir = output_dir.clone();
             tokio::spawn(async move {
-                if let Err(e) = process_call(dialog, IpAddr::V4(local), dir).await {
+                if let Err(e) = process_call(dialog, IpAddr::V4(local), dir, mic).await {
                     warn!(error = %e, "call handling failed");
                 }
             });
@@ -122,8 +127,14 @@ async fn main() -> Result<()> {
 }
 
 /// 一路通话: 解析 offer → ringing + accept (带 answer SDP) → 起 RTP
-/// 接收器存盘 → 等对端 BYE (dialog cancel_token) 或本地 Ctrl+C (发 BYE).
-async fn process_call(dialog: InviteDialog, local_ip: IpAddr, output_dir: PathBuf) -> Result<()> {
+/// 接收器 (存盘 + 本地播放) + 麦克风回传 → 等对端 BYE (dialog
+/// cancel_token) 或本地 Ctrl+C (发 BYE).
+async fn process_call(
+    dialog: InviteDialog,
+    local_ip: IpAddr,
+    output_dir: PathBuf,
+    mic: bool,
+) -> Result<()> {
     let offer = parse_offer_all(dialog.initial_request().body())?;
     info!(?offer, "incoming offer");
 
@@ -167,9 +178,11 @@ async fn process_call(dialog: InviteDialog, local_ip: IpAddr, output_dir: PathBu
     if audio_pt.is_none() && video.is_none() {
         warn!("no supported media in offer, call kept up without recording");
     }
-    // 音视频合进同一个 mp4; G.711 音频会被转码成 opus (mp4 不认 G.711)
+    // 收端: 音视频合进同一个 mp4 (G.711 转码 opus, mp4 不认 G.711),
+    // 同时 tee 出播放链送本机扬声器/屏幕
     let receiver = match start_rtp_receiver(RtpRecvConfig {
-        path: output_dir.join("call.mp4"),
+        path: Some(output_dir.join("call.mp4")),
+        playback: true,
         video: video.map(|(_, c)| (VIDEO_RTP_PORT, c)),
         audio: audio_pt.map(|(_, c)| (AUDIO_RTP_PORT, c)),
     }) {
@@ -178,6 +191,43 @@ async fn process_call(dialog: InviteDialog, local_ip: IpAddr, output_dir: PathBu
             warn!(error = %e, "failed to start RTP receiver");
             None
         }
+    };
+
+    // 发端: 麦克风回传给对端, pt/编码用对端 offer 里的值 (RFC 3264,
+    // 同 call 侧规则); 没有麦克风设备就只收不发, 通话继续
+    let sender = if mic {
+        offer
+            .audio
+            .as_ref()
+            .and_then(|a| match ipcam_gst::sendable_audio_codec(&a.codec) {
+                Some(codec) => match ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
+                    audio: Some((
+                        ipcam_gst::TrackSource::Mic,
+                        ipcam_gst::AudioDest {
+                            addr: SocketAddr::new(a.addr, a.port),
+                            payload_type: a.payload_type,
+                            codec,
+                        },
+                    )),
+                    video: None,
+                }) {
+                    Ok(s) => {
+                        info!(addr = %a.addr, port = a.port, "mic sender started");
+                        Some(s)
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to start mic sender, receive only");
+                        None
+                    }
+                },
+                None => {
+                    warn!(codec = %a.codec, "peer's audio codec not sendable, mic muted");
+                    None
+                }
+            })
+    } else {
+        info!("mic disabled (--no-mic)");
+        None
     };
 
     // 对端 BYE → dialog.handle 处理完 cancel_token 关闭; 本地 Ctrl+C →
@@ -190,6 +240,9 @@ async fn process_call(dialog: InviteDialog, local_ip: IpAddr, output_dir: PathBu
             info!("ctrl+c, sending BYE");
             dialog.bye_with_headers(None).await?;
         }
+    }
+    if let Some(s) = sender {
+        s.stop();
     }
     if let Some(r) = receiver {
         r.stop();

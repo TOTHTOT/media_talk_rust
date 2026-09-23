@@ -1,6 +1,7 @@
 //! 实机呼叫冒烟工具：注册 → INVITE（带音视频 SDP offer）→ 解析 200 OK
-//! 里的 answer → 起 RTP 发送器把媒体文件 (默认 assets/oceans.mp4) 灌给
-//! 对端. Ctrl+C 停流发 BYE 挂断, 然后走和 register example 相同的
+//! 里的 answer → 起 RTP 发送器把源 (默认 assets/oceans.mp4, 可
+//! --audio-src mic) 灌给对端, 同时起接收器本地播放对端音视频.
+//! Ctrl+C 停流发 BYE 挂断, 然后走和 register example 相同的
 //! best-effort 注销退出.
 //!
 //! ```bash
@@ -9,6 +10,7 @@
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
+use ipcam_core::VideoCodec;
 use ipcam_gst::TrackSource;
 use ipcam_sip::sdp::{PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all};
 use ipcam_sip::{SipClient, SipClientConfig, run_dialog_state_loop};
@@ -80,9 +82,9 @@ async fn main() -> Result<()> {
     // 裸号码补全成完整 URI
     let callee = client.callee_uri(&args.callee)?;
 
-    // offer 里写真实绑定的 UDP 端口, 而不是随口编一个——对端会按
-    // 它回送 RTP. 骨架阶段不收包, socket 保持存活避免 ICMP unreachable.
-    // 音频和视频各绑一个
+    // offer 里写真实绑定的 UDP 端口, 而不是随口编一个——对端会按它回送
+    // RTP. 先用占位 socket 占住端口 (INVITE 完成前收到包也不会 ICMP
+    // unreachable), 通话建立后释放给接收器. 音频和视频各绑一个
     let audio_rtp_sock = std::net::UdpSocket::bind((local, 0))?;
     let video_rtp_sock = std::net::UdpSocket::bind((local, 0))?;
     let audio_port = audio_rtp_sock.local_addr()?.port();
@@ -119,7 +121,10 @@ async fn main() -> Result<()> {
         r = &mut reg => {
             warn!(result = ?r, "register loop exited unexpectedly");
         }
-        r = call_until_hangup(dialog_layer, invite_option, state_sender, video_src, audio_src, args.max_width) => {
+        r = call_until_hangup(
+            dialog_layer, invite_option, state_sender, video_src, audio_src,
+            args.max_width, (audio_port, video_port), (audio_rtp_sock, video_rtp_sock),
+        ) => {
             if let Err(e) = r {
                 warn!(error = ?e, "call failed");
             }
@@ -131,8 +136,9 @@ async fn main() -> Result<()> {
     client.shutdown(reg).await
 }
 
-/// INVITE → 等最终响应 → 打印协商结果 → 起 RTP 发送器往对端灌媒体文件 →
-/// 挂着等 Ctrl+C → 停流 → BYE
+/// INVITE → 等最终响应 → 解析协商结果 → 起接收器播放对端音视频 + 起
+/// RTP 发送器往对端灌源 → 挂着等 Ctrl+C → 停收发 → BYE
+#[allow(clippy::too_many_arguments)]
 async fn call_until_hangup(
     dialog_layer: Arc<DialogLayer>,
     invite_option: InviteOption,
@@ -140,6 +146,9 @@ async fn call_until_hangup(
     video_src: TrackSource,
     audio_src: TrackSource,
     max_width: u32,
+    rtp_ports: (u16, u16),
+    // 占位 socket: 保 offer 端口到 INVITE 完成, 进这里后释放给接收器
+    rtp_sockets: (std::net::UdpSocket, std::net::UdpSocket),
 ) -> Result<()> {
     let (dialog, resp) = dialog_layer.do_invite(invite_option, state_sender).await?;
     let resp = resp.ok_or_else(|| anyhow!("INVITE got no final response"))?;
@@ -156,13 +165,39 @@ async fn call_until_hangup(
         info!(?video, "SDP consult result");
     }
 
+    // 收端: 播放对端音视频 (双向对讲的听路). 占位 socket 任务完成,
+    // 释放端口给接收器绑
+    drop(rtp_sockets);
+    let (audio_port, video_port) = rtp_ports;
+    let receiver = match ipcam_gst::start_rtp_receiver(ipcam_gst::RtpRecvConfig {
+        path: None,
+        playback: true,
+        audio: peers
+            .audio
+            .as_ref()
+            .and_then(|p| ipcam_gst::sendable_audio_codec(&p.codec).map(|c| (audio_port, c))),
+        video: peers
+            .video
+            .as_ref()
+            .and_then(|p| match VideoCodec::from_name(&p.codec) {
+                c @ (VideoCodec::H264 | VideoCodec::H265) => Some((video_port, c)),
+                _ => None,
+            }),
+    }) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            warn!(error = %e, "failed to start RTP receiver (playback)");
+            None
+        }
+    };
+
     // 发送 pt/编码必须用对端 answer 里的值 (动态 pt 分方向, 编码同理 --
     // answer 收窄成什么就发什么, 见 sdp 模块注释)
     let audio = peers.audio.and_then(|p| {
         ipcam_gst::sendable_audio_codec(&p.codec)
             .map(|codec| ipcam_gst::AudioDest {
                 addr: p.addr,
-                payload_type: p.payload_type + 1,
+                payload_type: p.payload_type,
                 codec,
             })
             .or_else(|| {
@@ -184,10 +219,13 @@ async fn call_until_hangup(
             )
         }),
     })?;
-    info!("call established, streaming media file, ctrl+c to hang up");
+    info!("call established, streaming to peer + playing peer media, ctrl+c to hang up");
 
     tokio::signal::ctrl_c().await.ok();
     sender.stop();
+    if let Some(r) = receiver {
+        r.stop();
+    }
     dialog.bye_with_headers(None).await?;
     info!("BYE sent");
     Ok(())
