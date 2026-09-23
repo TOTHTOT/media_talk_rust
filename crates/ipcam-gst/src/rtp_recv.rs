@@ -14,8 +14,8 @@
 //! - `udpsrc` 绑定 `0.0.0.0` 接受任意来源的 RTP 包
 //! - mp4 的 moov 索引只在 EOS 时写入, 必须走 `RtpReceiver::stop()` 收尾
 
-pub mod config;
-pub mod receiver;
+mod config;
+mod receiver;
 
 pub use config::RtpRecvConfig;
 pub use receiver::{RtpReceiver, start_rtp_receiver};

@@ -1,5 +1,5 @@
 //! 发送链: 裸流 pad → 重编码 → payloader → udpsink. 所有源共用,
-//! 由根模块的 track 组装在源 pad 出现时回调进来.
+//! 由 sender 的 track 组装在源 pad 出现时回调进来.
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tracing::info;
 
-use super::{AudioDest, RtpDest, SendStats};
+use super::config::{AudioDest, RtpDest};
+use super::sender::SendStats;
 use crate::GstStreamError;
 use crate::gstutil::make;
 use ipcam_core::AudioCodec;
