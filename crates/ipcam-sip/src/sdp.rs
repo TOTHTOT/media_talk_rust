@@ -46,21 +46,25 @@ pub fn build_av_offer(
 ) -> SessionDescription {
     let mut sdp = build_audio_offer(local_ip, audio_port, audio_pts);
     sdp.media_descriptions
-        .push(video_media_description(video_port, PT_H264));
+        .push(video_media_description(video_port, PT_H264, None));
     sdp
 }
 
 /// H264 视频媒体描述. offer/answer 结构完全相同, 只是 pt 取值不同
 /// (offer 用我们自己的 PT_H264, answer 用对端 offer 里声明的 pt).
 ///
-/// fmtp 的 profile-level-id=42e01f: Baseline profile level 3.1.
+/// `fmtp`: answer 传对端 offer 里选中编码的 fmtp 参数, 原样回显
+/// (packetization-mode 等对端按 answer 理解收发模式, 不回显容易
+/// 协商错位); offer 或对端没带 fmtp 时传 None, 用默认值
+/// profile-level-id=42e01f: Baseline profile level 3.1.
 /// 不写 packetization-mode = mode 0 (单 NAL 模式): 门口机/
 /// 室内机的 RTP 接收器不认 FU-A 分片, 实测 Linphone (mode 0)
 /// 能出画面而我们 mode 1 黑屏. 代价是片源必须切成小于 MTU 的
 /// slice (rtp_send 的测试片源已按 slice-max-size=1300 重编码).
 /// sdp-rs 0.2.1 的 Attribute 枚举没有 Fmtp 变体, 走 Other,
 /// Display 出来就是标准 a=fmtp:... 行
-fn video_media_description(port: u16, pt: u8) -> MediaDescription {
+fn video_media_description(port: u16, pt: u8, fmtp: Option<&str>) -> MediaDescription {
+    let fmtp_params = fmtp.unwrap_or("profile-level-id=42e01f");
     MediaDescription {
         media: Media {
             media: MediaType::Video,
@@ -80,7 +84,7 @@ fn video_media_description(port: u16, pt: u8) -> MediaDescription {
                 clock_rate: 90000,
                 encoding_params: None,
             }),
-            Attribute::Other("fmtp".into(), Some(format!("{pt} profile-level-id=42e01f"))),
+            Attribute::Other("fmtp".into(), Some(format!("{pt} {fmtp_params}"))),
             Attribute::Sendrecv,
         ],
     }
@@ -236,6 +240,12 @@ pub struct PeerMedia {
 pub struct OfferCodec {
     pub payload_type: u8,
     pub codec: String,
+    /// a=fmtp 里该 pt 的编码参数 (不含 pt 前缀), 如 H264 的
+    /// "profile-level-id=42e01f;packetization-mode=1", G729 的
+    /// "annexb=yes". 该 pt 没有 fmtp 行为 None (G.711 本来就没有).
+    /// answer 应回显选中编码的 fmtp, 尤其是 H264 的
+    /// packetization-mode -- 不回显有些对端按默认值理解, 协商错位
+    pub fmtp: Option<String>,
 }
 
 /// 从 offer 里解析出的本端媒体信息（用于构造 answer）.
@@ -357,6 +367,7 @@ fn parse_fmt_codecs(media: &MediaDescription) -> Result<Vec<OfferCodec>> {
             Ok(OfferCodec {
                 payload_type,
                 codec: resolve_codec(media, payload_type),
+                fmtp: resolve_fmtp(media, pt).map(str::to_string),
             })
         })
         .collect::<Result<_>>()?;
@@ -381,17 +392,36 @@ fn resolve_codec(media: &MediaDescription, payload_type: u8) -> String {
         .unwrap_or_else(|| codec_name(payload_type).into())
 }
 
+/// pt -> a=fmtp 参数: a=fmtp:<pt> <参数...>, 取匹配 pt 的那条,
+/// 返回去掉 pt 前缀后的参数部分; 该 pt 没有 fmtp 行返回 None
+fn resolve_fmtp<'a>(media: &'a MediaDescription, pt: &str) -> Option<&'a str> {
+    media.attributes.iter().find_map(|a| match a {
+        Attribute::Other(name, Some(value)) if name == "fmtp" => {
+            let (prefix, params) = value.split_once(char::is_whitespace)?;
+            (prefix == pt).then_some(params)
+        }
+        _ => None,
+    })
+}
+
 /// 构造音视频通话的 SDP answer.
+///
+/// `selected_video_fmtp` 传对端 offer 里选中视频编码的 fmtp 参数
+/// (回显, 见 `video_media_description`); 对端没带 fmtp 传 None.
 pub fn build_av_answer(
     local_ip: IpAddr,
     audio_port: u16,
     video_port: u16,
     selected_audio_pt: u8,
     selected_video_pt: u8,
+    selected_video_fmtp: Option<&str>,
 ) -> SessionDescription {
     let mut sdp = build_audio_answer(local_ip, audio_port, selected_audio_pt);
-    sdp.media_descriptions
-        .push(video_media_description(video_port, selected_video_pt));
+    sdp.media_descriptions.push(video_media_description(
+        video_port,
+        selected_video_pt,
+        selected_video_fmtp,
+    ));
     sdp
 }
 
@@ -620,6 +650,19 @@ mod tests {
                 "telephone-event"
             ]
         );
+        // fmtp 按 pt 各自归属: opus 的 useinbandfec, G729 的 annexb,
+        // 没有 fmtp 行的 pt (PCMU/PCMA/G722/telephone-event) 是 None
+        let fmtp_of = |pt: u8| {
+            audio
+                .codecs
+                .iter()
+                .find(|c| c.payload_type == pt)
+                .and_then(|c| c.fmtp.as_deref())
+        };
+        assert_eq!(fmtp_of(96), Some("useinbandfec=1"));
+        assert_eq!(fmtp_of(18), Some("annexb=yes"));
+        assert_eq!(fmtp_of(8), None);
+        assert_eq!(fmtp_of(9), None);
         // 顺序即对端偏好, 调用方从前到后挑自己支持的 -> 8/PCMA 应可挑中
         let picked = audio
             .codecs

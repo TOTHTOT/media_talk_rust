@@ -157,13 +157,14 @@ async fn process_call(
         None => None,
     };
     let video = match offer.video.as_ref() {
-        Some(v) => match v.codecs.iter().find_map(|c| {
-            match VideoCodec::from_name(&c.codec) {
+        Some(v) => match v
+            .codecs
+            .iter()
+            .find_map(|c| match VideoCodec::from_name(&c.codec) {
                 vc @ (VideoCodec::H264 | VideoCodec::H265) => Some((c, vc)),
                 _ => None,
-            }
-        }) {
-            Some((c, vc)) => Some((c.payload_type, vc)),
+            }) {
+            Some((c, vc)) => Some((c.payload_type, vc, c.fmtp.as_deref())),
             None => {
                 warn!(codecs = ?v.codecs, "no supported video codec in offer, skip saving video");
                 None
@@ -172,13 +173,14 @@ async fn process_call(
         None => None,
     };
 
-    // answer 的 pt 取 offer 里的值
+    // answer 的 pt/fmtp 取 offer 里选中的那个编码 (回显, RFC 3264)
     let answer = build_av_answer(
         local_ip,
         AUDIO_RTP_PORT,
         VIDEO_RTP_PORT,
         audio_pt.map(|(pt, _)| pt).unwrap_or(PT_PCMA),
-        video.map(|(pt, _)| pt).unwrap_or(96),
+        video.map(|(pt, _, _)| pt).unwrap_or(96),
+        video.and_then(|(_, _, fmtp)| fmtp),
     );
     let headers = vec![Header::ContentType("application/sdp".into())];
     let answer_body = answer.to_string().into_bytes();
@@ -194,7 +196,7 @@ async fn process_call(
     let receiver = match start_rtp_receiver(RtpRecvConfig {
         path: Some(output_dir.join("call.mp4")),
         playback: true,
-        video: video.map(|(_, c)| (VIDEO_RTP_PORT, c)),
+        video: video.map(|(_, c, _)| (VIDEO_RTP_PORT, c)),
         audio: audio_pt.map(|(_, c)| (AUDIO_RTP_PORT, c)),
     }) {
         Ok(r) => Some(r),
@@ -207,42 +209,39 @@ async fn process_call(
     // 发端: 麦克风回传给对端, pt/编码用对端 offer 里的值 (RFC 3264,
     // 同 call 侧规则); 没有麦克风设备就只收不发, 通话继续
     let sender = if mic {
-        offer
-            .audio
-            .as_ref()
-            .and_then(|a| {
-                // pt/编码用对端 offer 里我们选中的那个 (RFC 3264, 同 call 侧规则)
-                let picked = a
-                    .codecs
-                    .iter()
-                    .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (c, ac)));
-                match picked {
-                    Some((c, codec)) => match ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
-                        audio: Some((
-                            ipcam_gst::TrackSource::Mic,
-                            ipcam_gst::AudioDest {
-                                addr: SocketAddr::new(a.addr, a.port),
-                                payload_type: c.payload_type,
-                                codec,
-                            },
-                        )),
-                        video: None,
-                    }) {
-                        Ok(s) => {
-                            info!(addr = %a.addr, port = a.port, "mic sender started");
-                            Some(s)
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "failed to start mic sender, receive only");
-                            None
-                        }
-                    },
-                    None => {
-                        warn!(codecs = ?a.codecs, "no sendable audio codec in offer, mic muted");
+        offer.audio.as_ref().and_then(|a| {
+            // pt/编码用对端 offer 里我们选中的那个 (RFC 3264, 同 call 侧规则)
+            let picked = a
+                .codecs
+                .iter()
+                .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (c, ac)));
+            match picked {
+                Some((c, codec)) => match ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
+                    audio: Some((
+                        ipcam_gst::TrackSource::Mic,
+                        ipcam_gst::AudioDest {
+                            addr: SocketAddr::new(a.addr, a.port),
+                            payload_type: c.payload_type,
+                            codec,
+                        },
+                    )),
+                    video: None,
+                }) {
+                    Ok(s) => {
+                        info!(addr = %a.addr, port = a.port, "mic sender started");
+                        Some(s)
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to start mic sender, receive only");
                         None
                     }
+                },
+                None => {
+                    warn!(codecs = ?a.codecs, "no sendable audio codec in offer, mic muted");
+                    None
                 }
-            })
+            }
+        })
     } else {
         info!("mic disabled (--no-mic)");
         None
