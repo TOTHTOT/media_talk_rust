@@ -139,22 +139,33 @@ async fn process_call(
     info!(?offer, "incoming offer");
 
     // 只接 G.711 音频和 H264/H265 视频; 不支持的编码那一路不存盘
-    // (answer 里仍带着, 对端发了也收, 只是不落盘)
+    // (answer 里仍带着, 对端发了也收, 只是不落盘).
+    // offer 的 fmt 列表按对端偏好排序, 从前到后挑第一个我们支持的
+    // (典型 offer 是 opus 打头, PCMU/PCMA 跟在后面)
     let audio_pt = match offer.audio.as_ref() {
-        Some(a) => match ipcam_gst::sendable_audio_codec(&a.codec) {
-            Some(c) => Some((a.payload_type, c)),
+        Some(a) => match a
+            .codecs
+            .iter()
+            .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (c, ac)))
+        {
+            Some((c, ac)) => Some((c.payload_type, ac)),
             None => {
-                warn!(codec = %a.codec, "unsupported audio codec, skip saving audio");
+                warn!(codecs = ?a.codecs, "no supported audio codec in offer, skip saving audio");
                 None
             }
         },
         None => None,
     };
     let video = match offer.video.as_ref() {
-        Some(v) => match VideoCodec::from_name(&v.codec) {
-            c @ (VideoCodec::H264 | VideoCodec::H265) => Some((v.payload_type, c)),
-            other => {
-                warn!(codec = %v.codec, ?other, "unsupported video codec, skip saving video");
+        Some(v) => match v.codecs.iter().find_map(|c| {
+            match VideoCodec::from_name(&c.codec) {
+                vc @ (VideoCodec::H264 | VideoCodec::H265) => Some((c, vc)),
+                _ => None,
+            }
+        }) {
+            Some((c, vc)) => Some((c.payload_type, vc)),
+            None => {
+                warn!(codecs = ?v.codecs, "no supported video codec in offer, skip saving video");
                 None
             }
         },
@@ -199,30 +210,37 @@ async fn process_call(
         offer
             .audio
             .as_ref()
-            .and_then(|a| match ipcam_gst::sendable_audio_codec(&a.codec) {
-                Some(codec) => match ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
-                    audio: Some((
-                        ipcam_gst::TrackSource::Mic,
-                        ipcam_gst::AudioDest {
-                            addr: SocketAddr::new(a.addr, a.port),
-                            payload_type: a.payload_type,
-                            codec,
-                        },
-                    )),
-                    video: None,
-                }) {
-                    Ok(s) => {
-                        info!(addr = %a.addr, port = a.port, "mic sender started");
-                        Some(s)
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "failed to start mic sender, receive only");
+            .and_then(|a| {
+                // pt/编码用对端 offer 里我们选中的那个 (RFC 3264, 同 call 侧规则)
+                let picked = a
+                    .codecs
+                    .iter()
+                    .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (c, ac)));
+                match picked {
+                    Some((c, codec)) => match ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
+                        audio: Some((
+                            ipcam_gst::TrackSource::Mic,
+                            ipcam_gst::AudioDest {
+                                addr: SocketAddr::new(a.addr, a.port),
+                                payload_type: c.payload_type,
+                                codec,
+                            },
+                        )),
+                        video: None,
+                    }) {
+                        Ok(s) => {
+                            info!(addr = %a.addr, port = a.port, "mic sender started");
+                            Some(s)
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "failed to start mic sender, receive only");
+                            None
+                        }
+                    },
+                    None => {
+                        warn!(codecs = ?a.codecs, "no sendable audio codec in offer, mic muted");
                         None
                     }
-                },
-                None => {
-                    warn!(codec = %a.codec, "peer's audio codec not sendable, mic muted");
-                    None
                 }
             })
     } else {

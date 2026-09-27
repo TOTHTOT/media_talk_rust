@@ -219,13 +219,25 @@ pub struct PeerMedia {
     pub codec: String,
 }
 
+/// offer 里声明的一个候选编码 (pt + 编码名). 顺序即对端偏好:
+/// m= 行的 fmt 列表按偏好降序排列 (RFC 3264), 排前面的优先选
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfferCodec {
+    pub payload_type: u8,
+    pub codec: String,
+}
+
 /// 从 offer 里解析出的本端媒体信息（用于构造 answer）.
+///
+/// `codecs` 是对端声明的全部候选编码 (按对端偏好排序), 不是只有
+/// 第一个 -- PBX 的典型 offer 是 "96 0 8 18 ..." (opus 打头, 后面
+/// 跟着 PCMU/PCMA), 只看第一个就会把本来能谈的 G.711 误判成
+/// "不支持的编码" 而拒掉整路音频. 调用方从中挑第一个自己支持的.
 #[derive(Debug, Clone)]
 pub struct OfferMedia {
     pub addr: IpAddr,
     pub port: u16,
-    pub payload_type: u8,
-    pub codec: String,
+    pub codecs: Vec<OfferCodec>,
 }
 
 /// offer 解析结果.
@@ -302,14 +314,31 @@ fn offer_from_media(
     session_conn: Option<&Connection>,
     media: &MediaDescription,
 ) -> Result<OfferMedia> {
-    let payload_type: u8 = media
+    let codecs: Vec<OfferCodec> = media
         .media
         .fmt
         .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow!("m= line has no payload type"))?
-        .parse()
-        .map_err(|_| anyhow!("unsupported fmt list: {}", media.media.fmt))?;
+        .map(|pt| {
+            let payload_type: u8 = pt
+                .parse()
+                .map_err(|_| anyhow!("unsupported fmt list: {}", media.media.fmt))?;
+            // 动态 pt (>=96) 从 rtpmap 拿编码名; 静态 pt 查 RFC 3551 表
+            let codec = media
+                .attributes
+                .iter()
+                .find_map(|a| match a {
+                    Attribute::Rtpmap(r) if r.payload_type == payload_type as u32 => {
+                        Some(r.encoding_name.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| codec_name(payload_type).into());
+            Ok(OfferCodec { payload_type, codec })
+        })
+        .collect::<Result<_>>()?;
+    if codecs.is_empty() {
+        anyhow::bail!("m= line has no payload type");
+    }
 
     let ip = media
         .connections
@@ -319,22 +348,10 @@ fn offer_from_media(
         .connection_address
         .base;
 
-    let codec = media
-        .attributes
-        .iter()
-        .find_map(|a| match a {
-            Attribute::Rtpmap(r) if r.payload_type == payload_type as u32 => {
-                Some(r.encoding_name.clone())
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| codec_name(payload_type).into());
-
     Ok(OfferMedia {
         addr: ip,
         port: media.media.port,
-        payload_type,
-        codec,
+        codecs,
     })
 }
 
@@ -646,6 +663,45 @@ mod tests {
         );
         // 静态 pt 无 rtpmap 时查表
         assert_eq!(peer.codec, "PCMU");
+    }
+
+    #[test]
+    fn parse_offer_multi_pt_audio_keeps_all_candidates() {
+        // 真实 PBX 的 offer: opus 打头, PCMU/PCMA 跟在后面, 尾部还有
+        // telephone-event. 只取第一个 pt 会把整路音频误判成 "不支持"
+        let offer = concat!(
+            "v=0\r\n",
+            "o=- 1790495688 1790495689 IN IP4 192.168.2.113\r\n",
+            "s=-\r\n",
+            "c=IN IP4 192.168.2.113\r\n",
+            "t=0 0\r\n",
+            "m=audio 13782 RTP/AVP 96 0 8 18 9 101 100\r\n",
+            "a=sendrecv\r\n",
+            "a=rtpmap:96 opus/48000/2\r\n",
+            "a=fmtp:96 useinbandfec=1\r\n",
+            "a=rtpmap:0 PCMU/8000\r\n",
+            "a=rtpmap:8 PCMA/8000\r\n",
+            "a=rtpmap:18 G729/8000\r\n",
+            "a=fmtp:18 annexb=yes\r\n",
+            "a=rtpmap:9 G722/8000\r\n",
+            "a=rtpmap:101 telephone-event/48000\r\n",
+            "a=rtpmap:100 telephone-event/8000\r\n",
+        );
+        let medias = parse_offer_all(offer.as_bytes()).unwrap();
+        let audio = medias.audio.expect("audio offered");
+        assert_eq!(audio.port, 13782);
+        let names: Vec<&str> = audio.codecs.iter().map(|c| c.codec.as_str()).collect();
+        assert_eq!(
+            names,
+            ["opus", "PCMU", "PCMA", "G729", "G722", "telephone-event", "telephone-event"]
+        );
+        // 顺序即对端偏好, 调用方从前到后挑自己支持的 -> 8/PCMA 应可挑中
+        let picked = audio
+            .codecs
+            .iter()
+            .find(|c| c.codec == "PCMA" || c.codec == "PCMU")
+            .expect("G.711 candidate must be selectable");
+        assert_eq!(picked.payload_type, 0); // PCMU 排在 PCMA 前面
     }
 
     #[test]
