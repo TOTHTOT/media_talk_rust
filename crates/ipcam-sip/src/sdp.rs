@@ -46,18 +46,28 @@ pub fn build_av_offer(
 ) -> SessionDescription {
     let mut sdp = build_audio_offer(local_ip, audio_port, audio_pts);
     sdp.media_descriptions
-        .push(video_media_description(video_port));
+        .push(video_media_description(video_port, PT_H264));
     sdp
 }
 
-fn video_media_description(port: u16) -> MediaDescription {
+/// H264 视频媒体描述. offer/answer 结构完全相同, 只是 pt 取值不同
+/// (offer 用我们自己的 PT_H264, answer 用对端 offer 里声明的 pt).
+///
+/// fmtp 的 profile-level-id=42e01f: Baseline profile level 3.1.
+/// 不写 packetization-mode = mode 0 (单 NAL 模式): 门口机/
+/// 室内机的 RTP 接收器不认 FU-A 分片, 实测 Linphone (mode 0)
+/// 能出画面而我们 mode 1 黑屏. 代价是片源必须切成小于 MTU 的
+/// slice (rtp_send 的测试片源已按 slice-max-size=1300 重编码).
+/// sdp-rs 0.2.1 的 Attribute 枚举没有 Fmtp 变体, 走 Other,
+/// Display 出来就是标准 a=fmtp:... 行
+fn video_media_description(port: u16, pt: u8) -> MediaDescription {
     MediaDescription {
         media: Media {
             media: MediaType::Video,
             port,
             num_of_ports: None,
             proto: ProtoType::RtpAvp,
-            fmt: PT_H264.to_string(),
+            fmt: pt.to_string(),
         },
         info: None,
         connections: vec![],
@@ -65,22 +75,12 @@ fn video_media_description(port: u16) -> MediaDescription {
         key: None,
         attributes: vec![
             Attribute::Rtpmap(Rtpmap {
-                payload_type: PT_H264 as u32,
+                payload_type: pt as u32,
                 encoding_name: "H264".into(),
                 clock_rate: 90000,
                 encoding_params: None,
             }),
-            // profile-level-id=42e01f: Baseline profile level 3.1.
-            // 不写 packetization-mode = mode 0 (单 NAL 模式): 门口机/
-            // 室内机的 RTP 接收器不认 FU-A 分片, 实测 Linphone (mode 0)
-            // 能出画面而我们 mode 1 黑屏. 代价是片源必须切成小于 MTU 的
-            // slice (rtp_send 的测试片源已按 slice-max-size=1300 重编码).
-            // sdp-rs 0.2.1 的 Attribute 枚举没有 Fmtp 变体, 走 Other,
-            // Display 出来就是标准 a=fmtp:... 行
-            Attribute::Other(
-                "fmtp".into(),
-                Some(format!("{PT_H264} profile-level-id=42e01f")),
-            ),
+            Attribute::Other("fmtp".into(), Some(format!("{pt} profile-level-id=42e01f"))),
             Attribute::Sendrecv,
         ],
     }
@@ -91,8 +91,7 @@ fn video_media_description(port: u16) -> MediaDescription {
 /// `local_ip`/`port` 是本端 RTP 收包地址 -- 必须是对端路由可达的
 /// LAN 地址 (同 SipClient 的 Contact), 不能是 127.0.0.1.
 ///
-/// 这个结构体 `to_string()` 出来的就是下面这段 SDP (以 PCMA 为例),
-/// 逐行对应结构体字段:
+/// `to_string()` 出来的就是这段 SDP (以 PCMA 为例), 逐行对应结构体字段:
 ///
 /// ```text
 /// v=0                                  <- version: 协议版本, 恒为 0
@@ -106,10 +105,89 @@ fn video_media_description(port: u16) -> MediaDescription {
 /// a=sendrecv                           <- attribute: 双向收发
 /// ```
 pub fn build_audio_offer(local_ip: IpAddr, port: u16, payload_types: &[u8]) -> SessionDescription {
+    let mut sdp = session_skeleton(local_ip, "1");
+    sdp.media_descriptions
+        .push(audio_media_description(port, payload_types));
+    sdp
+}
+
+/// 会话级骨架 (v/o/s/c/t 等), offer/answer 完全一致, 唯一差别是
+/// origin 的 sess_version (answer 的要大于 offer 的).
+///
+/// 各字段说明:
+/// - v=0: SDP 版本号, RFC 4566 定死就是 0, 没有 1
+/// - o=: 发起方身份标识. 对端基本不看内容, 只看格式合法性.
+///   sess_id/sess_version 本应每次会话唯一 (常用 NTP 时间戳), 重新
+///   INVITE 改参数时 sess_version 要 +1. 骨架阶段固定值够用 --
+///   对讲场景不做会话内 re-INVITE 改参数
+/// - s=: 会话名, 必填行. 内容无所谓, 很多设备直接写 "-",
+///   这里写项目名纯粹是抓包时好认
+/// - i=/u=/e=/p=: 纯展示用元信息, 设备间通话全都不填
+/// - c=: 最重要的一行: 告诉对端 "把 RTP 发到这个 IP". 写错 (比如
+///   127.0.0.1) 的典型症状: 信令全通, 呼叫建立, 但单向或双向无声.
+///   ttl/numaddr 只有组播才用, 单播留空
+/// - b=: 带宽建议, 对讲场景不声明, 让对方按编码默认来
+/// - t=0 0: 会话永久有效. SDP 规范强制至少一条 t= 行, sdp-rs 用
+///   Vec1 (非空 Vec) 从类型上杜绝漏写
+/// - k=: 媒体加密密钥 (明文传输, 早已废弃), SRTP 走别的机制
+/// - 会话级 a=: 我们的属性都是媒体级的, 故为空
+fn session_skeleton(local_ip: IpAddr, sess_version: &str) -> SessionDescription {
     let addrtype = match local_ip {
         IpAddr::V4(_) => Addrtype::Ip4,
         IpAddr::V6(_) => Addrtype::Ip6,
     };
+    SessionDescription {
+        version: Version::V0,
+        origin: Origin {
+            username: "-".into(),
+            sess_id: "1".into(),
+            sess_version: sess_version.into(),
+            nettype: Nettype::In,       // IN = Internet, 目前只有这一个合法值
+            addrtype: addrtype.clone(), // IP4 / IP6
+            unicast_address: local_ip,
+        },
+        session_name: SessionName::new("ipcam-sip".into()),
+        session_info: None,
+        uri: None,
+        emails: vec![],
+        phones: vec![],
+        connection: Some(Connection {
+            nettype: Nettype::In,
+            addrtype,
+            connection_address: ConnectionAddress {
+                base: local_ip,
+                ttl: None,
+                numaddr: None,
+            },
+        }),
+        bandwidths: vec![],
+        times: vec1![Time {
+            active: sdp_rs::lines::Active { start: 0, stop: 0 },
+            repeat: vec![],
+            zone: None,
+        }],
+        key: None,
+        attributes: vec![],
+        media_descriptions: vec![],
+    }
+}
+
+/// 音频媒体描述: fmt 列出全部候选 pt + 每个 pt 一条 rtpmap +
+/// ptime + sendrecv. offer 传全部支持的 pt (对端从中挑一个 --
+/// 只给一个就是 "没得挑, 不行就拒"), answer 只传选中的那个.
+///
+/// - num_of_ports: 组播端口组才用, 单播留空
+/// - RTP/AVP = 裸 RTP/UDP; SAVP 才是 SRTP
+/// - 媒体级 c= 为空 -> 继承会话级 c= (RFC 4566 的继承规则)
+/// - a=rtpmap: 把数字 pt 映射到具体编码. PCMA(8)/PCMU(0) 是 RFC 3551
+///   静态分配的, 这行其实可省, 写上是为了显式可读; 动态 pt 这行
+///   是强制的, 少了对端直接不认. G.711 家族固定 8kHz 采样, 单声道
+///   留空 encoding_params
+/// - a=ptime:20: 每个 RTP 包承载 20ms 音频 (G.711 即 160 字节载荷).
+///   对端按这个节奏发包, 收端 jitter buffer 按它估算
+/// - a=sendrecv: 方向协商, 对讲通话必须双向; sendonly/recvonly
+///   用于单向广播/监听场景
+fn audio_media_description(port: u16, payload_types: &[u8]) -> MediaDescription {
     let fmt = payload_types
         .iter()
         .map(|p| p.to_string())
@@ -121,93 +199,26 @@ pub fn build_audio_offer(local_ip: IpAddr, port: u16, payload_types: &[u8]) -> S
             Attribute::Rtpmap(Rtpmap {
                 payload_type: pt as u32,
                 encoding_name: codec_name(pt).into(),
-                clock_rate: 8000,      // G.711 家族固定 8kHz 采样
-                encoding_params: None, // 声道数等附加参数, 单声道留空
+                clock_rate: 8000,
+                encoding_params: None,
             })
         })
         .collect();
     attributes.push(Attribute::Ptime(20.0));
     attributes.push(Attribute::Sendrecv);
-    SessionDescription {
-        // v=0 -- SDP 版本号, RFC 4566 定死就是 0, 没有 1
-        version: Version::V0,
-        // o=<用户名> <会话ID> <会话版本> <网络类型> <地址类型> <地址>
-        // 发起方身份标识. 对端基本不看内容, 只看格式合法性
-        origin: Origin {
-            username: "-".into(),
-            // sess_id/sess_version 本应每次会话唯一 (常用 NTP 时间戳),
-            // 重新 INVITE 改参数时 sess_version 要 +1 表示 "新版本的描述".
-            // 骨架阶段固定 "1" 够用 -- 对讲场景不做会话内 re-INVITE 改参数
-            sess_id: "1".into(),
-            sess_version: "1".into(),
-            nettype: Nettype::In,       // IN = Internet, 目前只有这一个合法值
-            addrtype: addrtype.clone(), // IP4 / IP6
-            unicast_address: local_ip,
+    MediaDescription {
+        media: Media {
+            media: MediaType::Audio,
+            port,
+            num_of_ports: None,
+            proto: ProtoType::RtpAvp,
+            fmt,
         },
-        // s= 会话名, 必填行. 内容无所谓, 很多设备直接写 "-",
-        // 这里写项目名纯粹是抓包时好认
-        session_name: SessionName::new("ipcam-sip".into()),
-        // i=/u=/e=/p=: 会话描述, 链接, 邮箱, 电话 -- 纯展示用元信息,
-        // 设备间通话全都不填
-        session_info: None,
-        uri: None,
-        emails: vec![],
-        phones: vec![],
-        // c=IN IP4 <地址> -- 最重要的一行: 告诉对端 "把 RTP 发到这个 IP".
-        // 写错 (比如 127.0.0.1) 的典型症状: 信令全通, 呼叫建立, 但单向或
-        // 双向无声. ttl/numaddr 只有组播才用, 单播留空
-        connection: Some(Connection {
-            nettype: Nettype::In,
-            addrtype,
-            connection_address: ConnectionAddress {
-                base: local_ip,
-                ttl: None,
-                numaddr: None,
-            },
-        }),
-        // b= 带宽建议, 对讲场景不声明, 让对方按编码默认来
+        info: None,
+        connections: vec![],
         bandwidths: vec![],
-        // t=<开始> <结束> -- 会话有效时间 (NTP 秒). 0 0 = 永久有效.
-        // SDP 规范强制至少一条 t= 行, 所以 sdp-rs 用 Vec1 (非空 Vec)
-        // 从类型上杜绝漏写 -- 这是类型化构造相对手拼的第一个好处
-        times: vec1![Time {
-            active: sdp_rs::lines::Active { start: 0, stop: 0 },
-            // r=/z=: 周期性会话的时间表和时区修正, SIP 通话用不到
-            repeat: vec![],
-            zone: None,
-        }],
-        // k= 媒体加密密钥 (明文传输, 早已废弃), SRTP 走别的机制
         key: None,
-        // 会话级 a= 属性放这里, 我们的属性都是媒体级的, 故为空
-        attributes: vec![],
-        media_descriptions: vec![MediaDescription {
-            // m=<类型> <端口> <协议> <载荷类型列表>
-            // audio + RTP/AVP (裸 RTP/UDP; SAVP 才是 SRTP).
-            // fmt 里列出所有支持的编码, 对端 answer 从中挑一个
-            // 它支持的 -- 只给一个就是 "没得挑, 不行就拒"
-            media: Media {
-                media: MediaType::Audio,
-                port,
-                num_of_ports: None, // 组播端口组才用, 单播留空
-                proto: ProtoType::RtpAvp,
-                fmt,
-            },
-            info: None,
-            // 媒体级 c= 为空 -> 继承上面的会话级 c= (RFC 4566 的继承规则).
-            // 多路媒体各发各的地址时才需要在这里单独写
-            connections: vec![],
-            bandwidths: vec![],
-            key: None,
-            // a=rtpmap:<pt> <编码名>/<时钟> -- 把数字 pt 映射到具体编码.
-            // PCMA(8)/PCMU(0) 是 RFC 3551 静态分配的, 这行其实可省,
-            // 写上是为了显式可读; 动态 pt (96-127, 比如 H264 视频)
-            // 这行就是强制的, 少了对端直接不认.
-            // a=ptime:20 -- 每个 RTP 包承载 20ms 音频 (G.711 即 160 字节
-            // 载荷). 对端按这个节奏发包, 收端 jitter buffer 按它估算.
-            // a=sendrecv -- 方向协商: 双向收发. 对讲通话必须是它;
-            // sendonly/recvonly 用于单向广播/监听场景
-            attributes,
-        }],
+        attributes,
     }
 }
 
@@ -252,13 +263,43 @@ pub struct OfferMedias {
 /// 音视频双路的场景用 `parse_answer_all`. m= 行没带 c= 时回落到
 /// session 级 c= (RFC 4566 允许的继承).
 pub fn parse_answer(body: &[u8]) -> Result<PeerMedia> {
-    let text = std::str::from_utf8(body)?;
-    let sdp = SessionDescription::try_from(text).map_err(|e| anyhow!("invalid SDP: {e}"))?;
+    let sdp = parse_sdp(body)?;
     let media = sdp
         .media_descriptions
         .first()
         .ok_or_else(|| anyhow!("answer has no media description"))?;
     peer_from_media(sdp.connection.as_ref(), media)
+}
+
+fn parse_sdp(body: &[u8]) -> Result<SessionDescription> {
+    let text = std::str::from_utf8(body)?;
+    SessionDescription::try_from(text).map_err(|e| anyhow!("invalid SDP: {e}"))
+}
+
+/// 按媒体类型分别提取 audio/video 两路. 两路都没有才算失败;
+/// 只有一路是正常情况, 不算错. offer/answer 的差别只在 from_media
+/// (offer 要全部候选编码, answer 取协商出的第一个)
+fn parse_media_pair<T>(
+    body: &[u8],
+    what: &str,
+    from_media: impl Fn(Option<&Connection>, &MediaDescription) -> Result<T>,
+) -> Result<(Option<T>, Option<T>)> {
+    let sdp = parse_sdp(body)?;
+    info!("{what} sdp:\n{sdp}");
+    let mut audio = None;
+    let mut video = None;
+    for media in &sdp.media_descriptions {
+        let parsed = from_media(sdp.connection.as_ref(), media)?;
+        if media.media.media == MediaType::Audio {
+            audio = Some(parsed);
+        } else if media.media.media == MediaType::Video {
+            video = Some(parsed);
+        }
+    }
+    if audio.is_none() && video.is_none() {
+        anyhow::bail!("{what} has no audio/video media");
+    }
+    Ok((audio, video))
 }
 
 /// 双路协商结果: audio/video 各自独立, 对端可能只接了一路
@@ -270,50 +311,41 @@ pub struct PeerMedias {
 }
 
 /// 解析 answer, 按媒体类型分别提取 audio/video 两路的协商结果.
-/// 两路都没有才算失败; 只有一路是正常情况, 不算错.
 pub fn parse_answer_all(body: &[u8]) -> Result<PeerMedias> {
-    let text = std::str::from_utf8(body)?;
-    let sdp = SessionDescription::try_from(text).map_err(|e| anyhow!("invalid SDP: {e}"))?;
-    info!("calling, answer sdp = {}", sdp.to_string());
-    let mut out = PeerMedias::default();
-    for media in &sdp.media_descriptions {
-        let peer = peer_from_media(sdp.connection.as_ref(), media)?;
-        if media.media.media == MediaType::Audio {
-            out.audio = Some(peer);
-        } else if media.media.media == MediaType::Video {
-            out.video = Some(peer);
-        }
-    }
-    if out.audio.is_none() && out.video.is_none() {
-        anyhow::bail!("answer has no audio/video media");
-    }
-    Ok(out)
+    let (audio, video) = parse_media_pair(body, "answer", peer_from_media)?;
+    Ok(PeerMedias { audio, video })
 }
 
 /// 解析 offer SDP, 按媒体类型提取 audio/video 两路的信息（用于构造 answer）.
 pub fn parse_offer_all(body: &[u8]) -> Result<OfferMedias> {
-    let text = std::str::from_utf8(body)?;
-    let sdp = SessionDescription::try_from(text).map_err(|e| anyhow!("invalid SDP: {e}"))?;
-    info!("calling offer sdp:\n{}", sdp.to_string());
-    let mut out = OfferMedias::default();
-    for media in &sdp.media_descriptions {
-        let offer_media = offer_from_media(sdp.connection.as_ref(), media)?;
-        if media.media.media == MediaType::Audio {
-            out.audio = Some(offer_media);
-        } else if media.media.media == MediaType::Video {
-            out.video = Some(offer_media);
-        }
-    }
-    if out.audio.is_none() && out.video.is_none() {
-        anyhow::bail!("offer has no audio/video media");
-    }
-    Ok(out)
+    let (audio, video) = parse_media_pair(body, "offer", offer_from_media)?;
+    Ok(OfferMedias { audio, video })
 }
 
 fn offer_from_media(
     session_conn: Option<&Connection>,
     media: &MediaDescription,
 ) -> Result<OfferMedia> {
+    Ok(OfferMedia {
+        addr: media_ip(session_conn, media)?,
+        port: media.media.port,
+        codecs: parse_fmt_codecs(media)?,
+    })
+}
+
+/// 会话级/媒体级 c= 继承 (RFC 4566): 媒体级没带 c= 就用会话级的
+fn media_ip(session_conn: Option<&Connection>, media: &MediaDescription) -> Result<IpAddr> {
+    media
+        .connections
+        .first()
+        .or(session_conn)
+        .map(|c| c.connection_address.base)
+        .ok_or_else(|| anyhow!("SDP has no connection address"))
+}
+
+/// 解析 m= 行 fmt 列表为候选编码列表, 顺序保持对端的偏好降序.
+/// 空列表或非数字 pt 都报错 (m= 行至少得有一个能用的 pt)
+fn parse_fmt_codecs(media: &MediaDescription) -> Result<Vec<OfferCodec>> {
     let codecs: Vec<OfferCodec> = media
         .media
         .fmt
@@ -322,37 +354,31 @@ fn offer_from_media(
             let payload_type: u8 = pt
                 .parse()
                 .map_err(|_| anyhow!("unsupported fmt list: {}", media.media.fmt))?;
-            // 动态 pt (>=96) 从 rtpmap 拿编码名; 静态 pt 查 RFC 3551 表
-            let codec = media
-                .attributes
-                .iter()
-                .find_map(|a| match a {
-                    Attribute::Rtpmap(r) if r.payload_type == payload_type as u32 => {
-                        Some(r.encoding_name.clone())
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| codec_name(payload_type).into());
-            Ok(OfferCodec { payload_type, codec })
+            Ok(OfferCodec {
+                payload_type,
+                codec: resolve_codec(media, payload_type),
+            })
         })
         .collect::<Result<_>>()?;
     if codecs.is_empty() {
         anyhow::bail!("m= line has no payload type");
     }
+    Ok(codecs)
+}
 
-    let ip = media
-        .connections
-        .first()
-        .or(session_conn)
-        .ok_or_else(|| anyhow!("offer has no connection address"))?
-        .connection_address
-        .base;
-
-    Ok(OfferMedia {
-        addr: ip,
-        port: media.media.port,
-        codecs,
-    })
+/// pt -> 编码名: 先查 rtpmap (动态 pt >=96 必须有), 静态 pt 回退
+/// RFC 3551 表, 都没有就报 "unknown", 不猜
+fn resolve_codec(media: &MediaDescription, payload_type: u8) -> String {
+    media
+        .attributes
+        .iter()
+        .find_map(|a| match a {
+            Attribute::Rtpmap(r) if r.payload_type == payload_type as u32 => {
+                Some(r.encoding_name.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| codec_name(payload_type).into())
 }
 
 /// 构造音视频通话的 SDP answer.
@@ -365,139 +391,30 @@ pub fn build_av_answer(
 ) -> SessionDescription {
     let mut sdp = build_audio_answer(local_ip, audio_port, selected_audio_pt);
     sdp.media_descriptions
-        .push(video_answer_description(video_port, selected_video_pt));
+        .push(video_media_description(video_port, selected_video_pt));
     sdp
 }
 
-fn video_answer_description(port: u16, pt: u8) -> MediaDescription {
-    MediaDescription {
-        media: Media {
-            media: MediaType::Video,
-            port,
-            num_of_ports: None,
-            proto: ProtoType::RtpAvp,
-            fmt: pt.to_string(),
-        },
-        info: None,
-        connections: vec![],
-        bandwidths: vec![],
-        key: None,
-        attributes: vec![
-            Attribute::Rtpmap(Rtpmap {
-                payload_type: pt as u32,
-                encoding_name: "H264".into(),
-                clock_rate: 90000,
-                encoding_params: None,
-            }),
-            Attribute::Other("fmtp".into(), Some(format!("{pt} profile-level-id=42e01f"))),
-            Attribute::Sendrecv,
-        ],
-    }
-}
-
 fn build_audio_answer(local_ip: IpAddr, port: u16, selected_pt: u8) -> SessionDescription {
-    let addrtype = match local_ip {
-        IpAddr::V4(_) => Addrtype::Ip4,
-        IpAddr::V6(_) => Addrtype::Ip6,
-    };
-    SessionDescription {
-        version: Version::V0,
-        origin: Origin {
-            username: "-".into(),
-            sess_id: "1".into(),
-            sess_version: "2".into(), // answer 版本要大于 offer
-            nettype: Nettype::In,
-            addrtype: addrtype.clone(),
-            unicast_address: local_ip,
-        },
-        session_name: SessionName::new("ipcam-sip".into()),
-        session_info: None,
-        uri: None,
-        emails: vec![],
-        phones: vec![],
-        connection: Some(Connection {
-            nettype: Nettype::In,
-            addrtype,
-            connection_address: ConnectionAddress {
-                base: local_ip,
-                ttl: None,
-                numaddr: None,
-            },
-        }),
-        bandwidths: vec![],
-        times: vec1![Time {
-            active: sdp_rs::lines::Active { start: 0, stop: 0 },
-            repeat: vec![],
-            zone: None,
-        }],
-        key: None,
-        attributes: vec![],
-        media_descriptions: vec![MediaDescription {
-            media: Media {
-                media: MediaType::Audio,
-                port,
-                num_of_ports: None,
-                proto: ProtoType::RtpAvp,
-                fmt: selected_pt.to_string(),
-            },
-            info: None,
-            connections: vec![],
-            bandwidths: vec![],
-            key: None,
-            attributes: vec![
-                Attribute::Rtpmap(Rtpmap {
-                    payload_type: selected_pt as u32,
-                    encoding_name: codec_name(selected_pt).into(),
-                    clock_rate: 8000,
-                    encoding_params: None,
-                }),
-                Attribute::Ptime(20.0),
-                Attribute::Sendrecv,
-            ],
-        }],
-    }
+    // answer 的 sess_version 要大于 offer 的 ("1")
+    let mut sdp = session_skeleton(local_ip, "2");
+    sdp.media_descriptions
+        .push(audio_media_description(port, &[selected_pt]));
+    sdp
 }
 
 /// 从一路 MediaDescription 提取对端地址/编码. session_conn 是会话级
-/// c=, 媒体级没写 c= 时按 RFC 4566 继承它.
+/// c=, 媒体级没写 c= 时按 RFC 4566 继承它. answer 正常每路只收窄到
+/// 一个编码 (RFC 3264), 取 fmt 列表第一个
 fn peer_from_media(
     session_conn: Option<&Connection>,
     media: &MediaDescription,
 ) -> Result<PeerMedia> {
-    let payload_type: u8 = media
-        .media
-        .fmt
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow!("m= line has no payload type"))?
-        .parse()
-        .map_err(|_| anyhow!("unsupported fmt list: {}", media.media.fmt))?;
-
-    let ip = media
-        .connections
-        .first()
-        .or(session_conn)
-        .ok_or_else(|| anyhow!("answer has no connection address"))?
-        .connection_address
-        .base;
-
-    // 动态 pt (>=96) 从 rtpmap 拿编码名; 静态 pt 查 RFC 3551 表,
-    // 都没有就原样报数字, 不猜
-    let codec = media
-        .attributes
-        .iter()
-        .find_map(|a| match a {
-            Attribute::Rtpmap(r) if r.payload_type == payload_type as u32 => {
-                Some(r.encoding_name.clone())
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| codec_name(payload_type).into());
-
+    let first = parse_fmt_codecs(media)?.remove(0);
     Ok(PeerMedia {
-        addr: SocketAddr::new(ip, media.media.port),
-        payload_type,
-        codec,
+        addr: SocketAddr::new(media_ip(session_conn, media)?, media.media.port),
+        payload_type: first.payload_type,
+        codec: first.codec,
     })
 }
 
@@ -693,7 +610,15 @@ mod tests {
         let names: Vec<&str> = audio.codecs.iter().map(|c| c.codec.as_str()).collect();
         assert_eq!(
             names,
-            ["opus", "PCMU", "PCMA", "G729", "G722", "telephone-event", "telephone-event"]
+            [
+                "opus",
+                "PCMU",
+                "PCMA",
+                "G729",
+                "G722",
+                "telephone-event",
+                "telephone-event"
+            ]
         );
         // 顺序即对端偏好, 调用方从前到后挑自己支持的 -> 8/PCMA 应可挑中
         let picked = audio
