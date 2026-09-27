@@ -240,6 +240,14 @@ pub struct PeerMedia {
 pub struct OfferCodec {
     pub payload_type: u8,
     pub codec: String,
+    /// rtpmap 时钟 (Hz): 有 rtpmap 行取行内的必选值, 静态 pt 没写
+    /// rtpmap 行时查 RFC 3551 静态表; 0 = 未知 (未分配的静态 pt
+    /// 且没有 rtpmap 行, 规范外的 SDP). 注意同名编码不同时钟是两
+    /// 回事: telephone-event 常见 8000/48000 两种, opus 必须 48000
+    /// -- 只存编码名会把它们混为一谈
+    pub clock_rate: i32,
+    /// a=rtpmap 的编码参数 (通常是声道数, opus/48000/2 的 2)
+    pub encoding_params: Option<i32>,
     /// a=fmtp 里该 pt 的编码参数 (不含 pt 前缀), 如 H264 的
     /// "profile-level-id=42e01f;packetization-mode=1", G729 的
     /// "annexb=yes". 该 pt 没有 fmtp 行为 None (G.711 本来就没有).
@@ -364,9 +372,26 @@ fn parse_fmt_codecs(media: &MediaDescription) -> Result<Vec<OfferCodec>> {
             let payload_type: u8 = pt
                 .parse()
                 .map_err(|_| anyhow!("unsupported fmt list: {}", media.media.fmt))?;
+            // 每个 pt 找它的 rtpmap (动态 pt >=96 必须有): 编码名/时钟/
+            // 编码参数都从这来. 静态 pt 可以没有 rtpmap 行, 回退 RFC 3551
+            // 静态表
+            let rtpmap = media.attributes.iter().find_map(|a| match a {
+                Attribute::Rtpmap(r) if r.payload_type == payload_type as u32 => Some(r),
+                _ => None,
+            });
+            // 时钟: rtpmap 行里的必选值优先; 静态 pt 没写 rtpmap 行时
+            // 查 RFC 3551 静态表 (时钟是编码的固有属性, 不是猜的)
+            let (codec, clock_rate) = match rtpmap {
+                Some(r) => (r.encoding_name.clone(), r.clock_rate),
+                None => static_pt_info(payload_type)
+                    .map(|(name, clock)| (name.to_string(), clock))
+                    .unwrap_or_else(|| ("unknown".into(), 0)),
+            };
             Ok(OfferCodec {
                 payload_type,
-                codec: resolve_codec(media, payload_type),
+                codec,
+                clock_rate,
+                encoding_params: rtpmap.and_then(|r| r.encoding_params),
                 fmtp: resolve_fmtp(media, pt).map(str::to_string),
             })
         })
@@ -375,21 +400,6 @@ fn parse_fmt_codecs(media: &MediaDescription) -> Result<Vec<OfferCodec>> {
         anyhow::bail!("m= line has no payload type");
     }
     Ok(codecs)
-}
-
-/// pt -> 编码名: 先查 rtpmap (动态 pt >=96 必须有), 静态 pt 回退
-/// RFC 3551 表, 都没有就报 "unknown", 不猜
-fn resolve_codec(media: &MediaDescription, payload_type: u8) -> String {
-    media
-        .attributes
-        .iter()
-        .find_map(|a| match a {
-            Attribute::Rtpmap(r) if r.payload_type == payload_type as u32 => {
-                Some(r.encoding_name.clone())
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| codec_name(payload_type).into())
 }
 
 /// pt -> a=fmtp 参数: a=fmtp:<pt> <参数...>, 取匹配 pt 的那条,
@@ -448,18 +458,28 @@ fn peer_from_media(
     })
 }
 
-/// RFC 3551 静态 payload type 表: PCMA/PCMU 走 `AudioCodec` 的映射,
-/// 其余只列音频里常见的; 未知动态 pt 原样返回 "unknown"
-fn codec_name(payload_type: u8) -> &'static str {
+/// RFC 3551 静态 payload type 表: (编码名, 时钟 Hz). PCMA/PCMU 走
+/// `AudioCodec` 的映射, 其余只列音频里常见的; 未分配的静态 pt 返回
+/// None (没有 rtpmap 行时调用方报 "unknown"/0, 不猜).
+/// 注意 G722 的时钟: RFC 3551 定死写 8000 (实际采样 16kHz, 历史上
+/// 标错的值被标准化了), 这里返回的是写进 rtpmap 的那个值
+fn static_pt_info(payload_type: u8) -> Option<(&'static str, i32)> {
     match AudioCodec::from_static_pt(payload_type) {
         AudioCodec::Unknown => match payload_type {
-            3 => "GSM",
-            9 => "G722",
-            18 => "G729",
-            _ => "unknown",
+            3 => Some(("GSM", 8000)),
+            9 => Some(("G722", 8000)),
+            18 => Some(("G729", 8000)),
+            _ => None,
         },
-        c => c.rtpmap_name(),
+        c => Some((c.rtpmap_name(), 8000)),
     }
+}
+
+/// 静态 pt 的编码名 (构造本端 SDP 用); 未知 pt 返回 "unknown"
+fn codec_name(payload_type: u8) -> &'static str {
+    static_pt_info(payload_type)
+        .map(|(name, _)| name)
+        .unwrap_or("unknown")
 }
 
 #[cfg(test)]
@@ -663,6 +683,14 @@ mod tests {
         assert_eq!(fmtp_of(18), Some("annexb=yes"));
         assert_eq!(fmtp_of(8), None);
         assert_eq!(fmtp_of(9), None);
+        // rtpmap 的时钟/编码参数: opus 是 48000/2声道, 两个
+        // telephone-event 同名不同时钟 (48000 vs 8000) 必须区分开
+        let codec_of = |pt: u8| audio.codecs.iter().find(|c| c.payload_type == pt).unwrap();
+        assert_eq!(codec_of(96).clock_rate, 48000);
+        assert_eq!(codec_of(96).encoding_params, Some(2));
+        assert_eq!(codec_of(101).clock_rate, 48000);
+        assert_eq!(codec_of(100).clock_rate, 8000);
+        assert_eq!(codec_of(8).clock_rate, 8000);
         // 顺序即对端偏好, 调用方从前到后挑自己支持的 -> 8/PCMA 应可挑中
         let picked = audio
             .codecs
@@ -670,6 +698,26 @@ mod tests {
             .find(|c| c.codec == "PCMA" || c.codec == "PCMU")
             .expect("G.711 candidate must be selectable");
         assert_eq!(picked.payload_type, 0); // PCMU 排在 PCMA 前面
+    }
+
+    #[test]
+    fn parse_offer_static_pt_without_rtpmap_uses_table() {
+        // RFC 3551 静态 pt 可以整条不写 rtpmap: 编码名/时钟查静态表
+        let offer = concat!(
+            "v=0\r\n",
+            "o=- 1 1 IN IP4 10.0.0.1\r\n",
+            "s=-\r\n",
+            "c=IN IP4 10.0.0.1\r\n",
+            "t=0 0\r\n",
+            "m=audio 9000 RTP/AVP 0 18\r\n",
+        );
+        let medias = parse_offer_all(offer.as_bytes()).unwrap();
+        let audio = medias.audio.expect("audio offered");
+        assert_eq!(audio.codecs[0].codec, "PCMU");
+        assert_eq!(audio.codecs[0].clock_rate, 8000);
+        assert_eq!(audio.codecs[0].encoding_params, None);
+        assert_eq!(audio.codecs[1].codec, "G729");
+        assert_eq!(audio.codecs[1].clock_rate, 8000);
     }
 
     #[test]
