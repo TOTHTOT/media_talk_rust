@@ -188,8 +188,14 @@ async fn process_call(
         local_ip,
         AUDIO_RTP_PORT,
         VIDEO_RTP_PORT,
-        audio_pt.map(|(pt, _)| pt).unwrap_or(PT_PCMA),
-        video.map(|(pt, _, _)| pt).unwrap_or(96),
+        audio_pt.map(|(pt, _)| pt).unwrap_or_else(|| {
+            warn!("audio_pt unwarp failed, used: {}", PT_PCMA);
+            PT_PCMA
+        }),
+        video.map(|(pt, _, _)| pt).unwrap_or_else(|| {
+            warn!("video unwarp failed, used: {}", 96);
+            96
+        }),
         video.and_then(|(_, _, fmtp)| fmtp),
     );
     let headers = vec![Header::ContentType("application/sdp".into())];

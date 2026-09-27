@@ -71,6 +71,7 @@ impl Drop for RtpReceiver {
 
 /// 启动 RTP 接收器.
 pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamError> {
+    info!(?cfg, "recveiver start");
     cfg.validate()?;
     crate::ensure_init_internal()?;
 
@@ -137,14 +138,6 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
     pipeline
         .set_state(gst::State::Playing)
         .map_err(|e| GstStreamError::Init(format!("pipeline set Playing: {e}")))?;
-
-    info!(
-        path = ?cfg.path,
-        playback = cfg.playback,
-        video = ?cfg.video,
-        audio = ?cfg.audio,
-        "rtp receiver started",
-    );
 
     Ok(RtpReceiver {
         pipeline,
