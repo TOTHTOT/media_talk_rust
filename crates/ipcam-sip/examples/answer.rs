@@ -46,6 +46,12 @@ struct Args {
     /// 保存音视频的目录
     #[arg(long, default_value = "temp")]
     output_dir: PathBuf,
+    /// 强制 client socket 绑到指定 IPv4 网卡. 默认走
+    /// `ipcam_sip::local_ipv4()` (取本机第一个非 loopback IPv4),
+    /// 多网卡 / VPN / Tailscale 场景下可能选错 (例如选到 100.x Tailscale
+    /// 而对端物理网段不可达), 此时用这个选项显式指定 192.168.x.x 网卡
+    #[arg(long)]
+    local_ip: Option<IpAddr>,
     /// 不回传麦克风给对方 (默认回传; 没接 AEC, 同机外放+麦克风会回声,
     /// 测试建议插耳机)
     #[arg(long)]
@@ -64,8 +70,12 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     std::fs::create_dir_all(&args.output_dir)?;
 
-    // Contact/SDP 都要用对端可达的 LAN 地址 (不能是 127.0.0.1)
-    let local = ipcam_sip::local_ipv4()?;
+    // 多网卡机器使用 local_ip 参数绑定ip
+    let local = match args.local_ip {
+        Some(IpAddr::V4(v4)) => v4,
+        Some(_) => anyhow::bail!("only support IPv4 for now!"),
+        None => ipcam_sip::local_ipv4()?,
+    };
     let client_addr = SocketAddr::V4(SocketAddrV4::new(local, 0));
 
     let config = SipClientConfig::new(
