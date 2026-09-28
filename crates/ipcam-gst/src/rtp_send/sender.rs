@@ -4,7 +4,7 @@
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -18,18 +18,10 @@ use super::source::{
     plug_uri_source, redact_uri_credentials,
 };
 
-/// 发包计数 (payloader src 上的 probe 累加), 用来回答 "到底有没有数据
-/// 离开我们" 这个联调第一问
-#[derive(Default)]
-pub(super) struct SendStats {
-    pub(super) video_pkts: AtomicU64,
-    pub(super) audio_pkts: AtomicU64,
-}
-
 pub struct RtpSender {
     pipeline: gst::Pipeline,
     stop_flag: Arc<AtomicBool>,
-    stats: Arc<SendStats>,
+    stats: Arc<crate::PktStats>,
 }
 
 impl RtpSender {
@@ -63,7 +55,7 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
     }
 
     let pipeline = gst::Pipeline::new();
-    let stats = Arc::new(SendStats::default());
+    let stats = Arc::new(crate::PktStats::default());
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     if let Some((source, dest)) = &cfg.video {
@@ -141,7 +133,7 @@ fn build_video_track(
     pipeline: &gst::Pipeline,
     source: &TrackSource,
     dest: RtpDest,
-    stats: Arc<SendStats>,
+    stats: Arc<crate::PktStats>,
 ) -> Result<(), GstStreamError> {
     info!(?source, "building video track");
     match source {
@@ -182,7 +174,7 @@ fn build_audio_track(
     pipeline: &gst::Pipeline,
     source: &TrackSource,
     dest: AudioDest,
-    stats: Arc<SendStats>,
+    stats: Arc<crate::PktStats>,
 ) -> Result<(), GstStreamError> {
     info!(?source, "building audio track");
     match source {

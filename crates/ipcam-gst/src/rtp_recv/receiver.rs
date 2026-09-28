@@ -23,6 +23,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -41,9 +42,18 @@ pub struct RtpReceiver {
     stop_flag: Arc<AtomicBool>,
     /// 各轨 udpsrc 的 src pad, stop() 时从这里注入 EOS
     src_pads: Arc<Vec<gst::Pad>>,
+    stats: Arc<crate::PktStats>,
 }
 
 impl RtpReceiver {
+    /// (视频包数, 音频包数) -- depay src pad 上的 probe 实时累加
+    pub fn packet_counts(&self) -> (u64, u64) {
+        (
+            self.stats.video_pkts.load(Ordering::Relaxed),
+            self.stats.audio_pkts.load(Ordering::Relaxed),
+        )
+    }
+
     /// 停止接收: 先给下游发 EOS (muxer 写完 moov), 再拆管线.
     /// 可重复调用 (Drop 也会调).
     pub fn stop(&self) {
@@ -77,6 +87,7 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
 
     let pipeline = gst::Pipeline::new();
     let stop_flag = Arc::new(AtomicBool::new(false));
+    let stats = Arc::new(crate::PktStats::default());
 
     // 存盘出口: mp4mux → filesink; 纯播放 (path=None) 不建
     let mux = match &cfg.path {
@@ -99,6 +110,7 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
             cfg.playback,
             port,
             codec,
+            stats.clone(),
         )?);
     }
     if let Some((port, codec)) = cfg.audio {
@@ -108,6 +120,7 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
             cfg.playback,
             port,
             codec,
+            stats.clone(),
         )?);
     }
 
@@ -135,6 +148,20 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
         debug!("rtp receiver: bus thread exiting");
     });
 
+    // 每 2s 报一次收包数: 视频约 fps 个包, 音频 ptime=20ms 即 50 包/s,
+    // 看到数字涨就证明数据确实进来了, 问题在对端或网络
+    let stats_for_tick = stats.clone();
+    let stop_for_tick = stop_flag.clone();
+    std::thread::spawn(move || {
+        while !stop_for_tick.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_secs(2));
+            let vp = stats_for_tick.video_pkts.load(Ordering::Relaxed);
+            let ap = stats_for_tick.audio_pkts.load(Ordering::Relaxed);
+            info!("rtp receiver stats video_pkts={} audio_pkts={}", vp, ap);
+        }
+        debug!("rtp receiver stats task exiting");
+    });
+
     pipeline
         .set_state(gst::State::Playing)
         .map_err(|e| GstStreamError::Init(format!("pipeline set Playing: {e}")))?;
@@ -143,6 +170,7 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
         pipeline,
         stop_flag,
         src_pads: Arc::new(src_pads),
+        stats,
     })
 }
 
@@ -181,6 +209,7 @@ fn build_video_track(
     playback: bool,
     port: u16,
     codec: VideoCodec,
+    stats: Arc<crate::PktStats>,
 ) -> Result<gst::Pad, GstStreamError> {
     let (depay_name, parse_name, decode_name, encoding_name) = match codec {
         VideoCodec::H264 => ("rtph264depay", "h264parse", "avdec_h264", "H264"),
@@ -208,6 +237,15 @@ fn build_video_track(
 
     let depay = make(depay_name)?;
     let parse = make(parse_name)?;
+
+    // 在 depay src pad 上安装 probe 统计收包数
+    let stats_for_probe = stats.clone();
+    if let Some(src_pad) = depay.static_pad("src") {
+        src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
+            stats_for_probe.video_pkts.fetch_add(1, Ordering::Relaxed);
+            gst::PadProbeReturn::Ok
+        });
+    }
 
     match (mux, playback) {
         (Some(mux), false) => {
@@ -277,6 +315,7 @@ fn build_audio_track(
     playback: bool,
     port: u16,
     codec: AudioCodec,
+    stats: Arc<crate::PktStats>,
 ) -> Result<gst::Pad, GstStreamError> {
     let (depay_name, decode_name) = match codec {
         AudioCodec::G711A => ("rtppcmadepay", "alawdec"),
@@ -305,6 +344,15 @@ fn build_audio_track(
 
     let depay = make(depay_name)?;
     let decode = make(decode_name)?;
+
+    // 在 depay src pad 上安装 probe 统计收包数
+    let stats_for_probe = stats.clone();
+    if let Some(src_pad) = depay.static_pad("src") {
+        src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
+            stats_for_probe.audio_pkts.fetch_add(1, Ordering::Relaxed);
+            gst::PadProbeReturn::Ok
+        });
+    }
 
     match (mux, playback) {
         (Some(mux), false) => {

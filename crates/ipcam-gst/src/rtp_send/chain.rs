@@ -9,8 +9,8 @@ use std::sync::atomic::Ordering;
 use tracing::info;
 
 use super::config::{AudioDest, RtpDest};
-use super::sender::SendStats;
 use crate::GstStreamError;
+use crate::PktStats;
 use crate::gstutil::make;
 use ipcam_core::AudioCodec;
 
@@ -29,7 +29,7 @@ pub(super) fn link_video_send_chain(
     pipeline: &gst::Pipeline,
     raw_pad: &gst::Pad,
     dest: RtpDest,
-    stats: Arc<SendStats>,
+    stats: Arc<PktStats>,
 ) -> Result<(), GstStreamError> {
     // convert 编码格式转换
     let mut chain = vec![make("queue")?, make("videoconvert")?];
@@ -70,7 +70,7 @@ pub(super) fn link_audio_send_chain(
     pipeline: &gst::Pipeline,
     raw_pad: &gst::Pad,
     dest: AudioDest,
-    stats: Arc<SendStats>,
+    stats: Arc<PktStats>,
 ) -> Result<(), GstStreamError> {
     let queue = make("queue")?;
     let convert = make("audioconvert")?;
@@ -118,7 +118,7 @@ fn make_udpsink(addr: SocketAddr) -> Result<gst::Element, GstStreamError> {
 /// 在 payloader 的 src pad 上数包: 每个 buffer = 一个 RTP 包, 这是个探测器
 fn install_pkt_probe(
     pay: &gst::Element,
-    stats: Arc<SendStats>,
+    stats: Arc<PktStats>,
     is_audio: bool,
 ) -> Result<(), GstStreamError> {
     let src_pad = pay
