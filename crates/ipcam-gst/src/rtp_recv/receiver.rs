@@ -30,7 +30,7 @@ use gstreamer::prelude::*;
 use tracing::{debug, info, warn};
 
 use crate::GstStreamError;
-use crate::gstutil::{add_and_sync, link_chain, make, static_pad};
+use crate::gstutil::{add_and_sync, leaky_queue, link_chain, make, static_pad};
 use ipcam_core::{AudioCodec, VideoCodec};
 
 use super::config::RtpRecvConfig;
@@ -46,7 +46,7 @@ pub struct RtpReceiver {
 }
 
 impl RtpReceiver {
-    /// (视频包数, 音频包数) -- depay src pad 上的 probe 实时累加
+    /// (视频包数, 音频包数) -- udpsrc src pad 上的 probe 实时累加
     pub fn packet_counts(&self) -> (u64, u64) {
         (
             self.stats.video_pkts.load(Ordering::Relaxed),
@@ -238,9 +238,10 @@ fn build_video_track(
     let depay = make(depay_name)?;
     let parse = make(parse_name)?;
 
-    // 在 depay src pad 上安装 probe 统计收包数
+    // 在 udpsrc src pad 上装 probe 统计收包数. 不能装在 depay 后面:
+    // depay 会把多个连续 RTP 包合并成一个大 buffer 输出, 计数会缩水
     let stats_for_probe = stats.clone();
-    if let Some(src_pad) = depay.static_pad("src") {
+    if let Some(src_pad) = udpsrc.static_pad("src") {
         src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
             stats_for_probe.video_pkts.fetch_add(1, Ordering::Relaxed);
             gst::PadProbeReturn::Ok
@@ -267,9 +268,11 @@ fn build_video_track(
         }
         (Some(mux), true) => {
             let tee = make("tee")?;
-            // tee 分支各自独立调度, 每条分支自己的 queue
-            let rec_queue = make("queue")?;
-            let play_queue = make("queue")?;
+            // tee 分支必须用 leaky queue: 任一分支停滞 (比如 mp4mux 等
+            // 不到另一路媒体) 时普通 queue 会填满反压 tee, 把另一条分支
+            // 和整条管线一起拖死 (实测: 音频缺失时视频冻结在 ~27 帧)
+            let rec_queue = leaky_queue()?;
+            let play_queue = leaky_queue()?;
             let decode = make(decode_name)?;
             let convert = make("videoconvert")?;
             let sink = make("autovideosink")?;
@@ -345,9 +348,9 @@ fn build_audio_track(
     let depay = make(depay_name)?;
     let decode = make(decode_name)?;
 
-    // 在 depay src pad 上安装 probe 统计收包数
+    // 同视频路: probe 装在 udpsrc src pad, 避开 depay 的合包
     let stats_for_probe = stats.clone();
-    if let Some(src_pad) = depay.static_pad("src") {
+    if let Some(src_pad) = udpsrc.static_pad("src") {
         src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
             stats_for_probe.audio_pkts.fetch_add(1, Ordering::Relaxed);
             gst::PadProbeReturn::Ok
@@ -376,14 +379,15 @@ fn build_audio_track(
         }
         (Some(mux), true) => {
             let tee = make("tee")?;
-            let play_queue = make("queue")?;
+            // 同视频路: tee 分支必须 leaky queue, 一路停滞不拖垮另一路
+            let play_queue = leaky_queue()?;
             let play_convert = make("audioconvert")?;
             let play_resample = make("audioresample")?;
             let sink = make("autoaudiosink")?;
             let rec_convert = make("audioconvert")?;
             let rec_resample = make("audioresample")?;
             let enc = make("opusenc")?;
-            let rec_queue = make("queue")?;
+            let rec_queue = leaky_queue()?;
             let elems = [
                 &udpsrc,
                 &depay,
@@ -507,5 +511,44 @@ mod tests {
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(bytes > 1000, "mp4 not finalized or empty ({bytes} bytes)");
+    }
+
+    /// 回归: 一路媒体缺失时另一路不能冻结. 配了音视频双路但只发音频,
+    /// mp4mux 等不到视频会停滞, tee 分支必须是 leaky, 音频包数要持续
+    /// 增长 (修复前: 普通 queue 1s≈50 包填满 → tee 反压 → 全线冻结)
+    #[test]
+    fn missing_track_does_not_freeze_other() {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+        crate::ensure_init_internal().unwrap();
+
+        let dir = test_dir("freeze");
+        let path = dir.join("out.mp4");
+
+        let receiver = start_rtp_receiver(RtpRecvConfig {
+            path: Some(path.clone()),
+            playback: true,
+            video: Some((42120, VideoCodec::H264)),
+            audio: Some((42122, AudioCodec::G711U)),
+        })
+        .expect("receiver starts");
+
+        // 只发音频, 视频路永远静默 (复现门口机只出音频的通话场景).
+        // samplesperbuffer=160 = 20ms @ 8kHz, 让 rtppcmupay 按 50 pkt/s 发包
+        let sender = gst::parse::launch(
+            "audiotestsrc is-live=true samplesperbuffer=160 ! mulawenc ! rtppcmupay ! udpsink host=127.0.0.1 port=42122",
+        )
+        .expect("sender pipeline parses")
+        .downcast::<gst::Pipeline>()
+        .expect("sender is a pipeline");
+        sender.set_state(gst::State::Playing).unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+
+        let (_video, audio) = receiver.packet_counts();
+        receiver.stop();
+        sender.set_state(gst::State::Null).ok();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // ptime=20ms → ~50 包/s, 3s 应 ~150; 冻结时卡死在 ~50
+        assert!(audio > 100, "audio track froze at {audio} packets");
     }
 }
