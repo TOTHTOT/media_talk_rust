@@ -15,7 +15,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[derive(Debug)]
 pub struct SipClientConfig {
@@ -170,12 +170,18 @@ impl SipClient {
             .run_until_cancelled(self.register_cycle(&mut registration, backoff))
             .await
         {
-            match cycle? {
-                Cycle::Registered => {
+            match cycle {
+                Ok(Cycle::Registered) => {
                     registered = true;
                     backoff = INITIAL_BACKOFF;
                 }
-                Cycle::Retry => backoff = next_backoff(backoff),
+                Ok(Cycle::Retry) => {
+                    backoff = next_backoff(backoff);
+                }
+                Err(e) => {
+                    warn!(error = %e, "registration permanently failed, exiting");
+                    break;
+                }
             }
         }
 
@@ -432,7 +438,7 @@ mod tests {
         assert!(saw_unregister, "stop 后应发出 Expires:0 注销包");
     }
 
-    /// 403 是永久失败：直接报错退出，不重试、不注销（从未注册成功）。
+    /// 403 是永久失败：直接退出，不重试、不注销（从未注册成功）。
     /// 用 CSeq 区分重传（同事务，CSeq 不变）与重试（新一轮，CSeq+1）。
     #[tokio::test]
     async fn forbidden_is_permanent() {
@@ -442,11 +448,12 @@ mod tests {
             .unwrap();
         let _endpoint = client.spawn_endpoint();
 
-        let err = client
-            .process_register()
-            .await
-            .expect_err("403 must bail permanently");
-        assert!(err.to_string().contains("permanently"), "got: {err}");
+        // 永久失败 now returns Ok(()) (breaks out of loop after warn)
+        let result = client.process_register().await;
+        assert!(
+            result.is_ok(),
+            "permanent failure should exit gracefully: {result:?}"
+        );
 
         observed.recv().await.expect("one REGISTER");
         // 首次退避是 1s——若被误分类成 Retry，3s 内一定会看到 CSeq:2 的重试

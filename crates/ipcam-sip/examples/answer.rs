@@ -131,9 +131,12 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 标准退出: 停注册循环 (best-effort 注销) + 收尾
-    info!("stopping (unregister)");
-    client.shutdown(reg).await
+    // select! 里的分支完成后, reg future 已被 select! 消费,
+    // 不能 shutdown(reg).await (会 double-await panic).
+    // 只需 cancel token 让 endpoint 收包循环退出即可.
+    info!("stopping");
+    client.stop();
+    Ok(())
 }
 
 /// 一路通话: 解析 offer → ringing + accept (带 answer SDP) → 起 RTP
