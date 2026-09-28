@@ -220,6 +220,64 @@ Linphone 拨打每次都成. 分支 3 和分支 4 线上差异只有音频.
 (数据离开本端), 再去怀疑 PBX 转发和对端解码 — 顺序反了会在错误的
 环节浪费一天.
 
+## SIP 接听侧媒体面 (rtp_recv)
+
+接听侧 (answer) 的收流 + 播放 + 录像链路, 排查手段同上: **本地
+call↔answer 互打 + GST_DEBUG_FILE 落盘分析**, 不等对端设备.
+
+### 收包统计 probe 挂 udpsrc, 别挂 depay
+
+depay (rtppcmudepay/rtph264depay) 会把多个连续 RTP 包合并成一个大
+buffer 输出, probe 挂它后面计数缩水 ~6 倍, 联调时误判"没收到包".
+挂 udpsrc src pad 才是真实收包数.
+
+### 中继下来的一路媒体可能全是垃圾包
+
+走 rustpbx 中继的通话, 音频方向实测全是空 payload 的 keep-alive 包
+(~1 pkt/s), depay 刷 `Received invalid RTP payload, dropping`, 真音频
+一个没有. 表现 = 收包计数 1/s. **这是中继行为不是接收器 bug**, 但
+接收器必须能在一路媒体全废的情况下正常工作 (下面三条都是被它逼出来的).
+
+### 录像别用 mp4mux, 用 mpegtsmux
+
+**现象**: 音频路全废时, 视频录像 0 字节 + 播放黑屏, 尽管视频 100 pkt/s
+正常进.
+
+**根因**: mp4mux 是 aggregator, 要等齐所有 request pad 都有数据才输出
+任何东西; 死 pad 把它卡死, filesink 收不到 buffer 卡在 preroll, 整条
+管线永远到不了 PLAYING. 另外 mp4 的 moov 只在 EOS 写, 进程被杀整个
+文件作废.
+
+**解法**: 换 mpegtsmux (流式写出, collectpads 不等死 pad, 实测死音频
+pad 下视频照常写 600KB+). 音频仍转 opus (TS 不认 G.711). 输出文件改
+`.ts`; 要 mp4 就事后 `ffmpeg -i in.ts -c copy out.mp4` 无损转封装.
+
+### 死分支的 sink 必须 async=false
+
+**现象**: 换成 mpegtsmux 后录像依然 0 字节.
+
+**根因**: gst-launch 二分定位 —  tee 播放分支末尾的 sink
+(autoaudiosink/fakesink) 收不到数据时, 默认 `async=true` 让它永远卡在
+preroll, 整条管线拖在 PAUSED, mpegtsmux 的 src 推不下去. 反直觉的点:
+死的是音频播放分支, 饿死的是视频录像.
+
+**解法**: 所有末端 sink 关 async. filesink 直接设; auto*sink 是 bin,
+`async` 在 READY→PAUSED 才懒创建的内部真 sink 上, 用 `element-added`
+信号逮住它再设 (gstutil `disable_sink_async`).
+
+### tee 分叉后 h264parse 的输出格式必须显式锁 byte-stream
+
+tee 下游挂着 avdec (优先 avc) 和 mpegtsmux (只收 byte-stream) 时,
+h264parse 可能协商出 avc → mux 那条链 caps 不兼容静默断流. parse 后
+加 capsfilter `video/x-h264,stream-format=byte-stream` 锁死, avdec 和
+mpegtsmux 都认这个格式.
+
+### tee 分支 queue 必须 leaky
+
+同 ingest 侧教训 (上文), 收端 tee 分叉 (播放/录像) 同样适用: 普通
+queue 1s 填满反压 tee, 另一路和整条管线一起冻结 (回归测试
+`missing_track_does_not_freeze_other` 守着).
+
 ## 优雅关停
 
 全进程共享一棵 `CancellationToken` 树（commit `d0b67c9`）：Ctrl+C/SIGTERM

@@ -213,7 +213,7 @@ async fn process_call(
     // 收端: 音视频合进同一个 mp4 (G.711 转码 opus, mp4 不认 G.711),
     // 同时 tee 出播放链送本机扬声器/屏幕
     let receiver = match start_rtp_receiver(RtpRecvConfig {
-        path: Some(output_dir.join("call.mp4")),
+        path: Some(output_dir.join("call.ts")),
         playback: true,
         video: video.map(|(_, c, _)| (VIDEO_RTP_PORT, c)),
         audio: audio_pt.map(|(_, c)| (AUDIO_RTP_PORT, c)),

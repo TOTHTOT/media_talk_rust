@@ -1,25 +1,28 @@
 //! RTP 接收器: 从 UDP 端口收 RTP 流, 两个出口可单开或同时开 (tee 分叉):
-//!   存盘 (cfg.path): 音视频合进同一个 mp4
+//!   存盘 (cfg.path): 音视频合进同一个 TS 流文件
 //!   播放 (cfg.playback): 解码后送本机扬声器/屏幕, 全双工对讲的收端
 //!
 //! 管线拓扑 (单出口时没有 tee, 直链):
-//!   视频: udpsrc(port) → rtph264depay → h264parse ─┬→ queue → mp4mux.video_%u
+//!   视频: udpsrc(port) → rtph264depay → h264parse ─┬→ queue → mpegtsmux.sink_%d
 //!         (存盘)                                    └→ queue → avdec_h264
 //!                                                    → videoconvert → autovideosink (播放)
 //!   音频: udpsrc(port) → rtppcmxdepay → mulawdec/alawdec ─┬→ audioconvert
-//!           → audioresample → opusenc → queue → mp4mux.audio_%u          (存盘)
+//!           → audioresample → opusenc → queue → mpegtsmux.sink_%d        (存盘)
 //!                                                        └→ queue → audioconvert
 //!                                                          → audioresample → autoaudiosink (播放)
-//!   mp4mux → filesink (.mp4)
+//!   mpegtsmux → filesink (.ts)
 //!
 //! 设计约束:
 //!   - udpsrc 绑定 0.0.0.0 接受任意来源的 RTP 包 (对端可能有多个 IP)
-//!   - mp4mux 不认 G.711/裸 PCM (实测 gst-inspect 的 audio_%u caps:
-//!     只有 mpeg/AAC/AC3/EAC3/ALAC/opus), 所以 G.711 存盘前解码转 opus
-//!   - mp4mux 是 aggregator, mux 前必须挂 queue, 否则 latency 协商失败
-//!   - mp4 的 moov 索引只在 EOS 时写入: stop() 从每个 udpsrc 的 src
-//!     pad 注入 EOS, 等 muxer 收尾 (bus 出现 EOS/Error) 才落 Null,
-//!     否则文件没有索引播不了
+//!   - 用 TS 不用 mp4: mp4mux 是 aggregator, 要等齐所有 pad 才输出, 一路
+//!     媒体静默就整体卡死 (实测录像 0 字节 + 播放黑屏), 且 moov 索引只在
+//!     EOS 写, 进程被杀整个文件作废. TS 流式写出, 崩了也能播. 要 mp4 的
+//!     话事后 `ffmpeg -i in.ts -c copy out.mp4` 无损转封装
+//!   - TS 不认 G.711/裸 PCM (mpegtsmux 音频只收 mpeg/AAC/AC3/opus 等),
+//!     所以 G.711 存盘前解码转 opus
+//!   - stop() 从每个 udpsrc 的 src pad 注入 EOS, 等 muxer 收尾 (bus 出现
+//!     EOS/Error) 才落 Null. TS 没有索引, EOS 只是冲刷, 丢了也只是
+//!     缺结尾而不是整个文件播不了
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,7 +33,7 @@ use gstreamer::prelude::*;
 use tracing::{debug, info, warn};
 
 use crate::GstStreamError;
-use crate::gstutil::{add_and_sync, leaky_queue, link_chain, make, static_pad};
+use crate::gstutil::{add_and_sync, disable_sink_async, leaky_queue, link_chain, make, static_pad};
 use ipcam_core::{AudioCodec, VideoCodec};
 
 use super::config::RtpRecvConfig;
@@ -54,7 +57,7 @@ impl RtpReceiver {
         )
     }
 
-    /// 停止接收: 先给下游发 EOS (muxer 写完 moov), 再拆管线.
+    /// 停止接收: 先给下游发 EOS (muxer 冲刷收尾), 再拆管线.
     /// 可重复调用 (Drop 也会调).
     pub fn stop(&self) {
         if self.stop_flag.swap(true, Ordering::SeqCst) {
@@ -89,12 +92,18 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stats = Arc::new(crate::PktStats::default());
 
-    // 存盘出口: mp4mux → filesink; 纯播放 (path=None) 不建
+    // 存盘出口: mpegtsmux → filesink; 纯播放 (path=None) 不建.
+    // 用 TS 不用 mp4: mp4mux 是 aggregator, 要等齐所有 pad 才输出,
+    // 一路媒体静默就整体卡死 (实测录像 0 字节 + 播放黑屏), 而且 moov
+    // 依赖 EOS, 进程被杀整个文件作废. TS 流式写出, 来什么录什么
     let mux = match &cfg.path {
         Some(path) => {
-            let mux = make("mp4mux")?;
+            let mux = make("mpegtsmux")?;
             let filesink = make("filesink")?;
             filesink.set_property("location", path.to_string_lossy().as_ref());
+            // 不等 preroll: 播放分支的 sink 可能永远拿不到数据 (对端
+            // 静默), async sink 会把整条管线拖在 PAUSED
+            filesink.set_property("async", false);
             add_and_sync(&pipeline, &[&mux, &filesink])?;
             link_chain(&[&mux, &filesink], "mux to filesink")?;
             Some(mux)
@@ -185,7 +194,11 @@ fn link_tee_branch(tee: &gst::Element, branch_head: &gst::Element) -> Result<(),
     Ok(())
 }
 
-/// queue src → mp4mux 的 request pad
+/// queue src → mpegtsmux 的 request pad. 构建期急切挂接 (不用懒挂):
+/// mpegtsmux 是 collectpads 不是 aggregator, 死 pad 不会拖住输出
+/// (实测音频静默下视频照常写 600KB+), 而且急切挂接保证 latency query
+/// 能一路摸到 udpsrc, 管线才会被判为 live (live 管线不等 sink preroll,
+/// 否则文件/播放 sink 全部卡 PAUSED, 数据流不动)
 fn link_mux(
     queue: &gst::Element,
     mux: &gst::Element,
@@ -193,10 +206,10 @@ fn link_mux(
 ) -> Result<(), GstStreamError> {
     let mux_pad = mux
         .request_pad_simple(template)
-        .ok_or_else(|| GstStreamError::Link(format!("mp4mux request {template} pad failed")))?;
+        .ok_or_else(|| GstStreamError::Link(format!("mpegtsmux request {template} pad failed")))?;
     static_pad(queue, "src")?
         .link(&mux_pad)
-        .map_err(|e| GstStreamError::Link(format!("failed to link queue to mp4mux: {e}")))?;
+        .map_err(|e| GstStreamError::Link(format!("failed to link queue to mpegtsmux: {e}")))?;
     Ok(())
 }
 
@@ -211,9 +224,21 @@ fn build_video_track(
     codec: VideoCodec,
     stats: Arc<crate::PktStats>,
 ) -> Result<gst::Pad, GstStreamError> {
-    let (depay_name, parse_name, decode_name, encoding_name) = match codec {
-        VideoCodec::H264 => ("rtph264depay", "h264parse", "avdec_h264", "H264"),
-        VideoCodec::H265 => ("rtph265depay", "h265parse", "avdec_h265", "H265"),
+    let (depay_name, parse_name, decode_name, encoding_name, media_type) = match codec {
+        VideoCodec::H264 => (
+            "rtph264depay",
+            "h264parse",
+            "avdec_h264",
+            "H264",
+            "video/x-h264",
+        ),
+        VideoCodec::H265 => (
+            "rtph265depay",
+            "h265parse",
+            "avdec_h265",
+            "H265",
+            "video/x-h265",
+        ),
         other => {
             return Err(GstStreamError::InvalidConfig(format!(
                 "unsupported video codec for receive: {other:?}"
@@ -237,6 +262,15 @@ fn build_video_track(
 
     let depay = make(depay_name)?;
     let parse = make(parse_name)?;
+    // 强制 byte-stream: tee 分叉后 parse 可能选 avc (avdec 优先),
+    // 而 mpegtsmux 只收 byte-stream, 协商失败存盘链静默断流 (实测 0 字节)
+    let bs = make("capsfilter")?;
+    bs.set_property(
+        "caps",
+        gst::Caps::builder(media_type)
+            .field("stream-format", "byte-stream")
+            .build(),
+    );
 
     // 在 udpsrc src pad 上装 probe 统计收包数. 不能装在 depay 后面:
     // depay 会把多个连续 RTP 包合并成一个大 buffer 输出, 计数会缩水
@@ -250,36 +284,38 @@ fn build_video_track(
 
     match (mux, playback) {
         (Some(mux), false) => {
-            // mp4mux 是 aggregator, 直挂会报 "Impossible to configure latency",
-            // mux 前必须有 queue 缓冲
+            // mux 前挂 queue 解耦: mux 的消费节奏不能卡住网络收包线程
             let queue = make("queue")?;
-            let elems = [&udpsrc, &depay, &parse, &queue];
+            let elems = [&udpsrc, &depay, &parse, &bs, &queue];
             add_and_sync(pipeline, &elems)?;
             link_chain(&elems, "video recv chain")?;
-            link_mux(&queue, mux, "video_%u")?;
+            link_mux(&queue, mux, "sink_%d")?;
         }
         (None, true) => {
             let decode = make(decode_name)?;
             let convert = make("videoconvert")?;
             let sink = make("autovideosink")?;
-            let elems = [&udpsrc, &depay, &parse, &decode, &convert, &sink];
+            disable_sink_async(&sink);
+            let elems = [&udpsrc, &depay, &parse, &bs, &decode, &convert, &sink];
             add_and_sync(pipeline, &elems)?;
             link_chain(&elems, "video play chain")?;
         }
         (Some(mux), true) => {
             let tee = make("tee")?;
-            // tee 分支必须用 leaky queue: 任一分支停滞 (比如 mp4mux 等
-            // 不到另一路媒体) 时普通 queue 会填满反压 tee, 把另一条分支
+            // tee 分支必须用 leaky queue: 任一分支停滞 (比如 mux 或
+            // 播放 sink 卡住) 时普通 queue 会填满反压 tee, 把另一条分支
             // 和整条管线一起拖死 (实测: 音频缺失时视频冻结在 ~27 帧)
             let rec_queue = leaky_queue()?;
             let play_queue = leaky_queue()?;
             let decode = make(decode_name)?;
             let convert = make("videoconvert")?;
             let sink = make("autovideosink")?;
+            disable_sink_async(&sink);
             let elems = [
                 &udpsrc,
                 &depay,
                 &parse,
+                &bs,
                 &tee,
                 &rec_queue,
                 &play_queue,
@@ -288,14 +324,14 @@ fn build_video_track(
                 &sink,
             ];
             add_and_sync(pipeline, &elems)?;
-            link_chain(&[&udpsrc, &depay, &parse, &tee], "video recv head")?;
+            link_chain(&[&udpsrc, &depay, &parse, &bs, &tee], "video recv head")?;
             link_chain(
                 &[&play_queue, &decode, &convert, &sink],
                 "video play branch",
             )?;
             link_tee_branch(&tee, &rec_queue)?;
             link_tee_branch(&tee, &play_queue)?;
-            link_mux(&rec_queue, mux, "video_%u")?;
+            link_mux(&rec_queue, mux, "sink_%d")?;
         }
         (None, false) => {
             return Err(GstStreamError::InvalidConfig(
@@ -309,7 +345,7 @@ fn build_video_track(
 }
 
 /// 音频接收轨: udpsrc → depay → G.711 解码, 之后按出口分: 存盘 (convert
-/// → resample → opusenc → queue → mux, mp4 不认 G.711 转 opus) / 播放
+/// → resample → opusenc → queue → mux, TS 不认 G.711 转 opus) / 播放
 /// (convert → resample → autoaudiosink) / tee 双全.
 /// 返回 udpsrc 的 src pad (stop 时注入 EOS 用)
 fn build_audio_track(
@@ -362,17 +398,18 @@ fn build_audio_track(
             let convert = make("audioconvert")?;
             let resample = make("audioresample")?;
             let enc = make("opusenc")?;
-            // 同视频路: mux 前必须有 queue (aggregator latency)
+            // 同视频路: mux 前必须有 queue 解耦
             let queue = make("queue")?;
             let elems = [&udpsrc, &depay, &decode, &convert, &resample, &enc, &queue];
             add_and_sync(pipeline, &elems)?;
             link_chain(&elems, "audio recv chain")?;
-            link_mux(&queue, mux, "audio_%u")?;
+            link_mux(&queue, mux, "sink_%d")?;
         }
         (None, true) => {
             let convert = make("audioconvert")?;
             let resample = make("audioresample")?;
             let sink = make("autoaudiosink")?;
+            disable_sink_async(&sink);
             let elems = [&udpsrc, &depay, &decode, &convert, &resample, &sink];
             add_and_sync(pipeline, &elems)?;
             link_chain(&elems, "audio play chain")?;
@@ -384,6 +421,7 @@ fn build_audio_track(
             let play_convert = make("audioconvert")?;
             let play_resample = make("audioresample")?;
             let sink = make("autoaudiosink")?;
+            disable_sink_async(&sink);
             let rec_convert = make("audioconvert")?;
             let rec_resample = make("audioresample")?;
             let enc = make("opusenc")?;
@@ -414,7 +452,7 @@ fn build_audio_track(
             )?;
             link_tee_branch(&tee, &play_queue)?;
             link_tee_branch(&tee, &rec_convert)?;
-            link_mux(&rec_queue, mux, "audio_%u")?;
+            link_mux(&rec_queue, mux, "sink_%d")?;
         }
         (None, false) => {
             return Err(GstStreamError::InvalidConfig(
@@ -438,17 +476,17 @@ mod tests {
         dir
     }
 
-    /// 端到端: 真发 RTP (本机环回) → 接收器合并成 mp4 → stop() 注入 EOS
-    /// 后文件必须有 moov 索引 (非空且能被 discoverer 认出).
+    /// 端到端: 真发 RTP (本机环回) → 接收器合并成 TS → stop() 注入 EOS
+    /// 收尾 (TS 无索引, EOS 只是冲刷; 文件非空且能被 discoverer 认出即可).
     /// gst-launch 测不了这条路径: 它对 udpsrc 注入不了 EOS, 只有
     /// stop() 的 push_event 能走到
     #[test]
-    fn receiver_merges_av_into_playable_mp4() {
+    fn receiver_merges_av_into_playable_ts() {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
         crate::ensure_init_internal().unwrap();
 
         let dir = test_dir("record");
-        let path = dir.join("out.mp4");
+        let path = dir.join("out.ts");
 
         let receiver = start_rtp_receiver(RtpRecvConfig {
             path: Some(path.clone()),
@@ -475,18 +513,18 @@ mod tests {
 
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(bytes > 1000, "mp4 not finalized or empty ({bytes} bytes)");
+        assert!(bytes > 1000, "ts empty ({bytes} bytes)");
     }
 
     /// 播放 + 存盘同时开 (tee 分叉): 播放链 (autoaudiosink) 不能拖垮
-    /// 存盘链, mp4 照常落盘
+    /// 存盘链, TS 照常落盘
     #[test]
     fn audio_tee_playback_and_record() {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
         crate::ensure_init_internal().unwrap();
 
         let dir = test_dir("tee");
-        let path = dir.join("out.mp4");
+        let path = dir.join("out.ts");
 
         let receiver = start_rtp_receiver(RtpRecvConfig {
             path: Some(path.clone()),
@@ -510,11 +548,11 @@ mod tests {
 
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(bytes > 1000, "mp4 not finalized or empty ({bytes} bytes)");
+        assert!(bytes > 1000, "ts empty ({bytes} bytes)");
     }
 
     /// 回归: 一路媒体缺失时另一路不能冻结. 配了音视频双路但只发音频,
-    /// mp4mux 等不到视频会停滞, tee 分支必须是 leaky, 音频包数要持续
+    /// mux/sink 任一分支停滞时 tee 必须不被拖死 (leaky queue), 音频包数要持续
     /// 增长 (修复前: 普通 queue 1s≈50 包填满 → tee 反压 → 全线冻结)
     #[test]
     fn missing_track_does_not_freeze_other() {
@@ -522,7 +560,7 @@ mod tests {
         crate::ensure_init_internal().unwrap();
 
         let dir = test_dir("freeze");
-        let path = dir.join("out.mp4");
+        let path = dir.join("out.ts");
 
         let receiver = start_rtp_receiver(RtpRecvConfig {
             path: Some(path.clone()),
@@ -546,9 +584,54 @@ mod tests {
         let (_video, audio) = receiver.packet_counts();
         receiver.stop();
         sender.set_state(gst::State::Null).ok();
+
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let _ = std::fs::remove_dir_all(&dir);
 
         // ptime=20ms → ~50 包/s, 3s 应 ~150; 冻结时卡死在 ~50
         assert!(audio > 100, "audio track froze at {audio} packets");
+        // 视频静默不影响纯音频 TS 落盘 (mpegtsmux 不等死 pad)
+        assert!(bytes > 1000, "audio-only ts not written ({bytes} bytes)");
+    }
+
+    /// 回归 (实机故障): 音频全是垃圾包/完全静默时, 视频必须照常录像.
+    /// 故障链: mp4mux 等齐所有 pad 才输出, 音频 pad 无数据 → 录像 0 字节
+    /// + 管线卡死黑屏. 换 mpegtsmux (流式, 不等死 pad) 后不再有这个约束
+    #[test]
+    fn video_record_survives_dead_audio() {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+        crate::ensure_init_internal().unwrap();
+
+        let dir = test_dir("dead_audio");
+        let path = dir.join("out.ts");
+
+        let receiver = start_rtp_receiver(RtpRecvConfig {
+            path: Some(path.clone()),
+            playback: true,
+            video: Some((42124, VideoCodec::H264)),
+            audio: Some((42126, AudioCodec::G711U)),
+        })
+        .expect("receiver starts");
+
+        // 只发视频, 音频路一个包都不发 (比垃圾包更极端)
+        let sender = gst::parse::launch(
+            "videotestsrc is-live=true ! video/x-raw,framerate=15/1 ! x264enc tune=zerolatency \
+             ! rtph264pay ! udpsink host=127.0.0.1 port=42124",
+        )
+        .expect("sender pipeline parses")
+        .downcast::<gst::Pipeline>()
+        .expect("sender is a pipeline");
+        sender.set_state(gst::State::Playing).unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+
+        let (video, _audio) = receiver.packet_counts();
+        receiver.stop();
+        sender.set_state(gst::State::Null).ok();
+
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(video > 30, "video track not receiving ({video} packets)");
+        assert!(bytes > 1000, "video-only ts not written ({bytes} bytes)");
     }
 }

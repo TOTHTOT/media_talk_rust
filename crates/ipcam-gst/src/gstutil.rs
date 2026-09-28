@@ -55,3 +55,18 @@ pub(crate) fn leaky_queue() -> Result<gst::Element, GstStreamError> {
     q.set_property("max-size-buffers", 5u32);
     Ok(q)
 }
+
+/// auto*sink 是 bin, `async` 属性在 READY→PAUSED 时才懒创建的内部真 sink
+/// 上, 这里通过 element-added 信号给它关掉. 收不到数据的播放分支如果
+/// 保持 async, sink 会永远卡在 preroll, 把整条管线拖在 PAUSED (实测:
+/// 音频静默时录像 0 字节). async=false 后来数据直接渲染
+pub(crate) fn disable_sink_async(sink: &gst::Element) {
+    let Ok(bin) = sink.clone().downcast::<gst::Bin>() else {
+        return;
+    };
+    bin.connect_element_added(move |_bin, child| {
+        if child.find_property("async").is_some() {
+            child.set_property("async", false);
+        }
+    });
+}
