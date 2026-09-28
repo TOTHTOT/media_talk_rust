@@ -238,6 +238,17 @@ buffer 输出, probe 挂它后面计数缩水 ~6 倍, 联调时误判"没收到�
 一个没有. 表现 = 收包计数 1/s. **这是中继行为不是接收器 bug**, 但
 接收器必须能在一路媒体全废的情况下正常工作 (下面三条都是被它逼出来的).
 
+当时"黑屏 + 录像 0 字节"其实是三个问题叠在一起, 对照表:
+
+| 症状 | 元凶 | 修复 |
+|---|---|---|
+| 画面黑屏 | autoaudiosink 拿不到数据卡在 preroll (async=true), 整条管道拖在 PAUSED | sink async=false |
+| 录像 0 字节 (原因之一) | mp4mux 等齐音视频两路才开工, 死音频路把它卡死 | 换 mpegtsmux |
+| 录像 0 字节 (原因之二) | tee 分叉后 h264parse 协商出 avc, mpegtsmux 只收 byte-stream | parse 后 capsfilter 锁 byte-stream |
+
+只修其中一处都不够: 只修 async 录像还是被 mp4mux/格式卡成 0 字节;
+只换 mpegtsmux 管道还是被 autoaudiosink 拖住黑屏. 三处都修才同时解决.
+
 ### 录像别用 mp4mux, 用 mpegtsmux
 
 **通俗版**: mp4 是个"盒子", 开头/结尾要写一份目录 (moov), 音视频两路
