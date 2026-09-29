@@ -3,6 +3,7 @@
 //! 电话的具体处理由调用方在 on_incoming_call 回调里 spawn 独立任务.
 
 use anyhow::Result;
+use rsipstack::dialog::DialogId;
 use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::dialog::invite_dialog::InviteDialog;
@@ -97,12 +98,13 @@ impl SipClient {
 /// 要求 remove_dialog，否则 confirmed dialog 永远挂在 registry 里
 /// （内存泄漏）。
 ///
-/// `on_update` 回调: 入参是 re-INVITE/UPDATE 请求 (带新 offer), 返回
-/// answer SDP body; None 表示不带 SDP 回 200 (媒体不变).
+/// `on_update` 回调: 入参是 dialog id 和 re-INVITE/UPDATE 请求 (带新
+/// offer), 返回 answer SDP body; None 表示不带 SDP 回 200. 回调是 async
+/// 的, 方便应用层转发给正在跑的通话任务做媒体重启后再应答.
 ///
 /// 注意：rsipstack 的状态通道是普通 mpsc（不是广播），dialog 的事件只
 /// 发给创建时给的那个 sender，所以必须消费调用方自己建的通道。
-pub async fn run_dialog_state_loop<F, G>(
+pub async fn run_dialog_state_loop<F, G, Fut>(
     dialog_layer: Arc<DialogLayer>,
     mut state_receiver: DialogStateReceiver,
     on_incoming_call: F,
@@ -110,7 +112,8 @@ pub async fn run_dialog_state_loop<F, G>(
 ) -> Result<()>
 where
     F: Fn(InviteDialog) + Send + Sync,
-    G: Fn(rsip::Request) -> Option<Vec<u8>> + Send + Sync,
+    G: Fn(DialogId, rsip::Request) -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = Option<Vec<u8>>> + Send,
 {
     while let Some(state) = state_receiver.recv().await {
         info!(%state, "dialog state");
@@ -124,7 +127,7 @@ where
                 }
             }
             DialogState::Updated(id, req, handle) => {
-                let body = on_update(req);
+                let body = on_update(id.clone(), req).await;
                 let headers = body
                     .as_ref()
                     .map(|_| vec![rsip::headers::Header::ContentType("application/sdp".into())]);

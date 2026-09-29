@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
         dialog_layer.clone(),
         state_receiver,
         |_| {},
-        |req| {
+        |_id, req| async move {
             info!(method = %req.method, "re-INVITE received, media unchanged");
             None
         },

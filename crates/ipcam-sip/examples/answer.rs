@@ -12,21 +12,30 @@
 
 use anyhow::Result;
 use clap::Parser;
-use ipcam_core::VideoCodec;
-use ipcam_gst::{RtpRecvConfig, start_rtp_receiver};
-use ipcam_sip::sdp::{PT_PCMA, build_av_answer, parse_offer_all};
+use ipcam_core::{AudioCodec, VideoCodec};
+use ipcam_gst::{RtpReceiver, RtpRecvConfig, RtpSender, start_rtp_receiver};
+use ipcam_sip::sdp::{OfferMedias, PT_PCMA, build_av_answer, parse_offer_all};
 use ipcam_sip::{SipClient, SipClientConfig, run_dialog_state_loop};
+use rsipstack::dialog::DialogId;
 use rsipstack::dialog::invite_dialog::InviteDialog;
 use rsipstack::sip::headers::Header;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tokio::select;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 /// 接收器监听端口 (冒烟工具一次只接一路, 固定即可)
 const AUDIO_RTP_PORT: u16 = 40000;
 const VIDEO_RTP_PORT: u16 = 40002;
+
+/// re-INVITE 转发给通话任务的消息: 新 offer 请求 + 应答 oneshot
+type UpdateMsg = (rsipstack::sip::Request, oneshot::Sender<Option<Vec<u8>>>);
+/// 进行中的通话路由表: dialog id -> 通话任务的 re-INVITE 通道
+type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
 
 #[derive(Parser)]
 #[command(about = "SIP 被叫冒烟: 注册 → 等来电 → 播放 + 存盘 + 麦克风回传")]
@@ -90,31 +99,53 @@ async fn main() -> Result<()> {
     let _endpoint = client.spawn_endpoint();
 
     let (state_sender, state_receiver) = client.dialog_layer.new_dialog_state_channel();
+    // 进行中通话的路由表: re-INVITE 按 dialog id 转发给对应通话任务
+    let routes: CallRoutes = Arc::new(Mutex::new(HashMap::new()));
     // 每通来电 spawn 独立任务处理, 不阻塞状态循环和后续来电
     let on_incoming_call = {
         let output_dir = args.output_dir.clone();
         let mic = !args.no_mic;
+        let routes = routes.clone();
         move |dialog: InviteDialog| {
             let dir = output_dir.clone();
+            let routes = routes.clone();
+            let (update_tx, update_rx) = mpsc::channel(4);
+            routes.lock().unwrap().insert(dialog.id(), update_tx);
             tokio::spawn(async move {
-                if let Err(e) = process_call(dialog, IpAddr::V4(local), dir, mic).await {
+                if let Err(e) =
+                    process_call(dialog, IpAddr::V4(local), dir, mic, update_rx, routes).await
+                {
                     warn!(error = %e, "call handling failed");
                 }
             });
         }
     };
-    // re-INVITE/UPDATE (中继会周期会话刷新): 媒体不变, 用同一套协商逻辑
-    // 对新 offer 重建 answer 回 200. 不回的话 rsipstack 兜底 501, 中继会
-    // 停转发媒体 (实测视频断流) 甚至拆通话
-    let on_update = move |req: rsipstack::sip::Request| -> Option<Vec<u8>> {
-        match parse_offer_all(req.body()).map(|offer| negotiate_answer(&offer, IpAddr::V4(local))) {
-            Ok((_, _, answer)) => {
-                info!("re-INVITE accepted, answer SDP:\n{}", answer);
-                Some(answer.into_bytes())
-            }
-            Err(e) => {
-                warn!(error = %e, "failed to parse re-INVITE offer, reply 200 without SDP");
-                None
+    // re-INVITE/UPDATE (中继会周期会话刷新): 转发给通话任务重新协商,
+    // 编码/对端地址变了就重启对应媒体管线. 不回的话 rsipstack 兜底 501,
+    // 中继会停转发媒体 (实测视频断流) 甚至拆通话
+    let on_update = {
+        let routes = routes.clone();
+        move |id: DialogId, req: rsipstack::sip::Request| {
+            let routes = routes.clone();
+            async move {
+                let tx = routes.lock().unwrap().get(&id).cloned();
+                let Some(tx) = tx else {
+                    warn!(dialog = %id, "re-INVITE for unknown dialog, reply 200 without SDP");
+                    return None;
+                };
+                let (reply_tx, reply_rx) = oneshot::channel();
+                if tx.send((req, reply_tx)).await.is_err() {
+                    warn!(dialog = %id, "call task gone, reply 200 without SDP");
+                    return None;
+                }
+                // 通话任务卡死时不能堵住状态循环, 超时让 rsipstack 兜底
+                match tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx).await {
+                    Ok(Ok(body)) => body,
+                    _ => {
+                        warn!(dialog = %id, "call task did not answer re-INVITE in time");
+                        None
+                    }
+                }
             }
         }
     };
@@ -216,14 +247,74 @@ fn negotiate_answer(offer: &ipcam_sip::sdp::OfferMedias, local_ip: IpAddr) -> Ne
     (audio_pt, video, answer.to_string())
 }
 
+/// 麦克风回传参数指纹: (对端收音频地址, pt, 编码). re-INVITE 后变了
+/// 才重启 sender
+fn mic_params(offer: &OfferMedias) -> Option<(SocketAddr, u8, AudioCodec)> {
+    offer.audio.as_ref().and_then(|a| {
+        a.codecs
+            .iter()
+            .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (a, c, ac)))
+            .map(|(a, c, ac)| (SocketAddr::new(a.addr, a.port), c.payload_type, ac))
+    })
+}
+
+/// 起麦克风回传. 没有可用编码或没有麦克风设备就只收不发, 通话继续
+fn start_mic_sender(params: (SocketAddr, u8, AudioCodec)) -> Option<RtpSender> {
+    let (addr, payload_type, codec) = params;
+    match ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
+        audio: Some((
+            ipcam_gst::TrackSource::Mic,
+            ipcam_gst::AudioDest {
+                addr,
+                payload_type,
+                codec,
+            },
+        )),
+        video: None,
+    }) {
+        Ok(s) => {
+            info!(%addr, payload_type, "mic sender started");
+            Some(s)
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to start mic sender, receive only");
+            None
+        }
+    }
+}
+
+/// 起 RTP 接收器 (音视频合进同一个 ts, G.711 转码 opus; 同时 tee 出
+/// 播放链送本机扬声器/屏幕)
+fn start_receiver(
+    output_dir: &std::path::Path,
+    audio: Option<AudioCodec>,
+    video: Option<VideoCodec>,
+) -> Option<RtpReceiver> {
+    match start_rtp_receiver(RtpRecvConfig {
+        path: Some(output_dir.join("call.ts")),
+        playback: true,
+        video: video.map(|c| (VIDEO_RTP_PORT, c)),
+        audio: audio.map(|c| (AUDIO_RTP_PORT, c)),
+    }) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            warn!(error = %e, "failed to start RTP receiver");
+            None
+        }
+    }
+}
+
 /// 一路通话: 解析 offer → ringing + accept (带 answer SDP) → 起 RTP
-/// 接收器 (存盘 + 本地播放) + 麦克风回传. 通话中的 re-INVITE 由
-/// run_dialog_state_loop 的 on_update 回调处理, 不在本函数里.
+/// 接收器 (存盘 + 本地播放) + 麦克风回传. 通话中的 re-INVITE 经
+/// run_dialog_state_loop → 路由表 → update_rx 进到这里: 重新协商,
+/// 编码/对端地址变了就重启对应的媒体管线, 应答 body 走 oneshot 回去.
 async fn process_call(
     dialog: InviteDialog,
     local_ip: IpAddr,
     output_dir: PathBuf,
     mic: bool,
+    mut update_rx: mpsc::Receiver<UpdateMsg>,
+    routes: CallRoutes,
 ) -> Result<()> {
     let offer = parse_offer_all(dialog.initial_request().body())?;
     info!(?offer, "incoming offer");
@@ -238,70 +329,69 @@ async fn process_call(
     if audio_pt.is_none() && video.is_none() {
         warn!("no supported media in offer, call kept up without recording");
     }
-    // 收端: 音视频合进同一个 ts (G.711 转码 opus, TS 不认 G.711),
-    // 同时 tee 出播放链送本机扬声器/屏幕
-    let receiver = match start_rtp_receiver(RtpRecvConfig {
-        path: Some(output_dir.join("call.ts")),
-        playback: true,
-        video: video.map(|(_, c, _)| (VIDEO_RTP_PORT, c)),
-        audio: audio_pt.map(|(_, c)| (AUDIO_RTP_PORT, c)),
-    }) {
-        Ok(r) => Some(r),
-        Err(e) => {
-            warn!(error = %e, "failed to start RTP receiver");
-            None
-        }
-    };
 
-    // 发端: 麦克风回传给对端, pt/编码用对端 offer 里的值 (RFC 3264,
-    // 同 call 侧规则); 没有麦克风设备就只收不发, 通话继续
-    let sender = if mic {
-        offer.audio.as_ref().and_then(|a| {
-            // pt/编码用对端 offer 里我们选中的那个 (RFC 3264, 同 call 侧规则)
-            let picked = a
-                .codecs
-                .iter()
-                .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (c, ac)));
-            match picked {
-                Some((c, codec)) => match ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
-                    audio: Some((
-                        ipcam_gst::TrackSource::Mic,
-                        ipcam_gst::AudioDest {
-                            addr: SocketAddr::new(a.addr, a.port),
-                            payload_type: c.payload_type,
-                            codec,
-                        },
-                    )),
-                    video: None,
-                }) {
-                    Ok(s) => {
-                        info!(addr = %a.addr, port = a.port, "mic sender started");
-                        Some(s)
+    // 接收端指纹: 只含编码. pt 不参与 — 接收器 udpsrc 不按 pt 过滤,
+    // 端口是我们在 answer 里声明的固定值, 不会变
+    let mut recv_fingerprint = (audio_pt.map(|(_, c)| c), video.map(|(_, c, _)| c));
+    let mut receiver = start_receiver(&output_dir, recv_fingerprint.0, recv_fingerprint.1);
+
+    let mut send_fingerprint = if mic { mic_params(&offer) } else { None };
+    let mut sender = send_fingerprint.and_then(start_mic_sender);
+    if mic && send_fingerprint.is_none() {
+        warn!("no sendable audio codec in offer, mic muted");
+    }
+    if !mic {
+        info!("mic disabled (--no-mic)");
+    }
+
+    // 对端 BYE → dialog.cancel_token 取消; 本地 Ctrl+C → 发 BYE;
+    // re-INVITE → 重新协商, 按需重启媒体
+    loop {
+        select! {
+            _ = dialog.cancel_token().cancelled() => {
+                info!("call ended by peer");
+                break;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("ctrl+c, sending BYE");
+                dialog.bye_with_headers(None).await?;
+                break;
+            }
+            msg = update_rx.recv() => {
+                let Some((req, reply)) = msg else { break };
+                let body = match parse_offer_all(req.body()) {
+                    Ok(new_offer) => {
+                        let (na, nv, answer) = negotiate_answer(&new_offer, local_ip);
+                        info!("re-INVITE accepted, answer SDP:\n{}", answer);
+                        // 编码变了 → 重启接收器 (会重新落一个新的 ts 文件)
+                        let new_recv = (na.map(|(_, c)| c), nv.map(|(_, c, _)| c));
+                        if new_recv != recv_fingerprint {
+                            info!(old = ?recv_fingerprint, new = ?new_recv, "codec changed, restarting receiver");
+                            if let Some(r) = receiver.take() {
+                                r.stop();
+                            }
+                            receiver = start_receiver(&output_dir, new_recv.0, new_recv.1);
+                            recv_fingerprint = new_recv;
+                        }
+                        // 对端收音频的地址/pt/编码变了 → 重启麦克风回传
+                        let new_send = if mic { mic_params(&new_offer) } else { None };
+                        if new_send != send_fingerprint {
+                            info!(old = ?send_fingerprint, new = ?new_send, "mic dest changed, restarting sender");
+                            if let Some(s) = sender.take() {
+                                s.stop();
+                            }
+                            sender = new_send.and_then(start_mic_sender);
+                            send_fingerprint = new_send;
+                        }
+                        Some(answer.into_bytes())
                     }
                     Err(e) => {
-                        warn!(error = %e, "failed to start mic sender, receive only");
+                        warn!(error = %e, "failed to parse re-INVITE offer, reply 200 without SDP");
                         None
                     }
-                },
-                None => {
-                    warn!(codecs = ?a.codecs, "no sendable audio codec in offer, mic muted");
-                    None
-                }
+                };
+                let _ = reply.send(body);
             }
-        })
-    } else {
-        info!("mic disabled (--no-mic)");
-        None
-    };
-
-    // 对端 BYE → dialog.cancel_token 取消; 本地 Ctrl+C → 发 BYE
-    select! {
-        _ = dialog.cancel_token().cancelled() => {
-            info!("call ended by peer");
-        }
-        _ = tokio::signal::ctrl_c() => {
-            info!("ctrl+c, sending BYE");
-            dialog.bye_with_headers(None).await?;
         }
     }
     if let Some(s) = sender {
@@ -310,6 +400,7 @@ async fn process_call(
     if let Some(r) = receiver {
         r.stop();
     }
+    routes.lock().unwrap().remove(&dialog.id());
     info!("call finished");
     Ok(())
 }
