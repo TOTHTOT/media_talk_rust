@@ -103,6 +103,21 @@ async fn main() -> Result<()> {
             });
         }
     };
+    // re-INVITE/UPDATE (中继会周期会话刷新): 媒体不变, 用同一套协商逻辑
+    // 对新 offer 重建 answer 回 200. 不回的话 rsipstack 兜底 501, 中继会
+    // 停转发媒体 (实测视频断流) 甚至拆通话
+    let on_update = move |req: rsipstack::sip::Request| -> Option<Vec<u8>> {
+        match parse_offer_all(req.body()).map(|offer| negotiate_answer(&offer, IpAddr::V4(local))) {
+            Ok((_, _, answer)) => {
+                info!("re-INVITE accepted, answer SDP:\n{}", answer);
+                Some(answer.into_bytes())
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to parse re-INVITE offer, reply 200 without SDP");
+                None
+            }
+        }
+    };
 
     info!(
         username = %args.username,
@@ -121,7 +136,7 @@ async fn main() -> Result<()> {
                 warn!(error = %e, "incoming request loop error");
             }
         }
-        r = run_dialog_state_loop(client.dialog_layer.clone(), state_receiver, on_incoming_call) => {
+        r = run_dialog_state_loop(client.dialog_layer.clone(), state_receiver, on_incoming_call, on_update) => {
             if let Err(e) = r {
                 warn!(error = %e, "dialog state loop error");
             }
@@ -139,22 +154,20 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// 一路通话: 解析 offer → ringing + accept (带 answer SDP) → 起 RTP
-/// 接收器 (存盘 + 本地播放) + 麦克风回传 → 等对端 BYE (dialog
-/// cancel_token) 或本地 Ctrl+C (发 BYE).
-async fn process_call(
-    dialog: InviteDialog,
-    local_ip: IpAddr,
-    output_dir: PathBuf,
-    mic: bool,
-) -> Result<()> {
-    let offer = parse_offer_all(dialog.initial_request().body())?;
-    info!(?offer, "incoming offer");
+/// 从 offer 协商编码并构建 answer SDP (初始 INVITE 和 re-INVITE 共用).
+/// 只接 G.711 音频和 H264/H265 视频; offer 的 fmt 列表按对端偏好排序,
+/// 从前到后挑第一个我们支持的 (典型 offer 是 opus 打头, PCMU/PCMA 跟在
+/// 后面); answer 的 pt/fmtp 回显选中的编码 (RFC 3264). 不支持的编码那
+/// 一路不存盘 (answer 里仍带着, 对端发了也收, 只是不落盘).
+/// 返回 (选中的音频 pt+编码, 选中的视频 pt+编码+fmtp, answer 文本)
+/// 协商结果: (选中的音频 pt+编码, 选中的视频 pt+编码+fmtp, answer 文本)
+type NegotiatedAnswer = (
+    Option<(u8, ipcam_core::AudioCodec)>,
+    Option<(u8, VideoCodec, Option<String>)>,
+    String,
+);
 
-    // 只接 G.711 音频和 H264/H265 视频; 不支持的编码那一路不存盘
-    // (answer 里仍带着, 对端发了也收, 只是不落盘).
-    // offer 的 fmt 列表按对端偏好排序, 从前到后挑第一个我们支持的
-    // (典型 offer 是 opus 打头, PCMU/PCMA 跟在后面)
+fn negotiate_answer(offer: &ipcam_sip::sdp::OfferMedias, local_ip: IpAddr) -> NegotiatedAnswer {
     let audio_pt = match offer.audio.as_ref() {
         Some(a) => match a
             .codecs
@@ -177,7 +190,7 @@ async fn process_call(
                 vc @ (VideoCodec::H264 | VideoCodec::H265) => Some((c, vc)),
                 _ => None,
             }) {
-            Some((c, vc)) => Some((c.payload_type, vc, c.fmtp.as_deref())),
+            Some((c, vc)) => Some((c.payload_type, vc, c.fmtp.clone())),
             None => {
                 warn!(codecs = ?v.codecs, "no supported video codec in offer, skip saving video");
                 None
@@ -186,7 +199,6 @@ async fn process_call(
         None => None,
     };
 
-    // answer 的 pt/fmtp 取 offer 里选中的那个编码 (回显, RFC 3264)
     let answer = build_av_answer(
         local_ip,
         AUDIO_RTP_PORT,
@@ -195,14 +207,30 @@ async fn process_call(
             warn!("audio_pt unwarp failed, used: {}", PT_PCMA);
             PT_PCMA
         }),
-        video.map(|(pt, _, _)| pt).unwrap_or_else(|| {
+        video.as_ref().map(|(pt, _, _)| *pt).unwrap_or_else(|| {
             warn!("video unwarp failed, used: {}", 96);
             96
         }),
-        video.and_then(|(_, _, fmtp)| fmtp),
+        video.as_ref().and_then(|(_, _, fmtp)| fmtp.as_deref()),
     );
+    (audio_pt, video, answer.to_string())
+}
+
+/// 一路通话: 解析 offer → ringing + accept (带 answer SDP) → 起 RTP
+/// 接收器 (存盘 + 本地播放) + 麦克风回传. 通话中的 re-INVITE 由
+/// run_dialog_state_loop 的 on_update 回调处理, 不在本函数里.
+async fn process_call(
+    dialog: InviteDialog,
+    local_ip: IpAddr,
+    output_dir: PathBuf,
+    mic: bool,
+) -> Result<()> {
+    let offer = parse_offer_all(dialog.initial_request().body())?;
+    info!(?offer, "incoming offer");
+
+    let (audio_pt, video, answer) = negotiate_answer(&offer, local_ip);
     let headers = vec![Header::ContentType("application/sdp".into())];
-    let answer_body = answer.to_string().into_bytes();
+    let answer_body = answer.clone().into_bytes();
     dialog.ringing(Some(headers.clone()), Some(answer_body.clone()))?;
     dialog.accept(Some(headers), Some(answer_body))?;
     info!("call accepted, answer SDP:\n{}", answer);
@@ -210,7 +238,7 @@ async fn process_call(
     if audio_pt.is_none() && video.is_none() {
         warn!("no supported media in offer, call kept up without recording");
     }
-    // 收端: 音视频合进同一个 mp4 (G.711 转码 opus, mp4 不认 G.711),
+    // 收端: 音视频合进同一个 ts (G.711 转码 opus, TS 不认 G.711),
     // 同时 tee 出播放链送本机扬声器/屏幕
     let receiver = match start_rtp_receiver(RtpRecvConfig {
         path: Some(output_dir.join("call.ts")),
@@ -266,8 +294,7 @@ async fn process_call(
         None
     };
 
-    // 对端 BYE → dialog.handle 处理完 cancel_token 关闭; 本地 Ctrl+C →
-    // 主动发 BYE. 全局退出由 main 的 select 兜底
+    // 对端 BYE → dialog.cancel_token 取消; 本地 Ctrl+C → 发 BYE
     select! {
         _ = dialog.cancel_token().cancelled() => {
             info!("call ended by peer");

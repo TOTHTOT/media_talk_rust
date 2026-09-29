@@ -99,11 +99,16 @@ async fn main() -> Result<()> {
 
     let dialog_layer = client.dialog_layer.clone();
     let (state_sender, state_receiver) = dialog_layer.new_dialog_state_channel();
-    // 状态日志 + Terminated 清理 (防泄漏) 甩后台; 主叫没有来电, 回调用不上
+    // 状态日志 + Terminated 清理 (防泄漏) 甩后台; 主叫没有来电, 回调用不上.
+    // 对端 re-INVITE (会话刷新) 回不带 SDP 的 200: 本端媒体不变
     tokio::spawn(run_dialog_state_loop(
         dialog_layer.clone(),
         state_receiver,
         |_| {},
+        |req| {
+            info!(method = %req.method, "re-INVITE received, media unchanged");
+            None
+        },
     ));
 
     let invite_option = InviteOption {
