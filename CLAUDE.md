@@ -20,27 +20,27 @@ cargo test  --workspace --features sw-decode
 
 ## 2. 文档注释模板 — 仅用于规模大的函数
 
-公开函数参数 > 3 或返回 `Result` / 复杂类型时,严格按下面格式生成,**逐行照抄,包括空行与缩进**:
+公开函数参数 > 3 或返回 `Result` / 复杂类型时,严格按下面格式生成,**逐行照抄,包括空行与缩进**， 每个参数都需要解释作用:
 
-```rust
+````rust
 ///
-/// 
-/// 
-/// # Arguments 
-/// 
-/// * `timeout_secs`: 
-/// * `json`: 
-/// * `username`: 
-/// * `password`: 
-/// 
-/// returns: Result<(), Error> 
-/// 
-/// # Examples 
-/// 
+///
+///
+/// # Arguments
+///
+/// * `timeout_secs`:
+/// * `json`:
+/// * `username`:
+/// * `password`:
+///
+/// returns: Result<(), Error>
+///
+/// # Examples
+///
 /// ```
-/// 
+///
 /// ```
-```
+````
 
 小工具 / 显而易见的 getter / 单参数内部 helper **不**需要这个模板。自行判断。
 
@@ -50,7 +50,7 @@ cargo test  --workspace --features sw-decode
 - 类型别名 (`type Foo = ...`) 单独一段简短注释, 不与函数 doc 合并
 - `main` / 流程入口**不**套模板, 用自由文本 + 编号流程说明
 - `# Arguments` 列表项**只写参数名 + 冒号** (例 `* \`offer\`:`), 详细含义放函数上方第一段自由文本
-- `# Examples` 块保留空代码块占位 (```\n\n```), 哪怕没可运行 example
+- `# Examples` 块保留空代码块占位 (`\n\n`), 哪怕没可运行 example
 - 模板的 `/// ` 前缀、连续空行、缩进**逐行照抄**, 不要合并段落
 
 ---
@@ -79,8 +79,8 @@ media_talk_rust.service      # systemd unit (生产部署)
 
 ## 4. Feature flags & 目标平台
 
-| Flag | 何时用 |
-| --- | --- |
+| Flag                   | 何时用                                                    |
+| ---------------------- | --------------------------------------------------------- |
 | `--features sw-decode` | 开发机 / CI / 桌面 Linux / Windows (SoftwareDecoder stub) |
 | `--features hw-decode` | 仅交叉编译到 `aarch64-unknown-linux-gnu.2.31` (rk356x 板) |
 
@@ -90,6 +90,7 @@ GStreamer + pkg-config; 所有 gstreamer API 调用只允许出现在
 纯逻辑 (config/packet/stats) 保持独立可测。
 
 交叉编译:
+
 ```bash
 cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 --release --features hw-decode
 ```

@@ -67,6 +67,17 @@ struct Args {
     no_mic: bool,
 }
 
+/// 启动日志 + CLI 解析 + 创建输出目录; 关键步骤:
+///   1. 解析 CLI (`Args`), `tracing_subscriber` 走 RUST_LOG
+///   2. 选本地 IPv4 (--local-ip 显式给, 否则 `ipcam_sip::local_ipv4()`)
+///   3. `SipClient::new` 注册循环, `spawn_endpoint` 拉起收包 task
+///   4. 建路由表 `CallRoutes`, 把来电/更新转发到对应通话任务
+///   5. `select!` 同时等: 注册循环 / 入向请求 / dialog 状态 / Ctrl+C
+///   6. 任一分支退出 → `client.stop()` 让 endpoint 收包循环收尾
+///
+/// 注意: select! 里的 `reg` future 被 pin, 退出时已被消费,
+/// 不能 `shutdown(reg).await` (double-await panic). 只需要
+/// `client.stop()` 让 cancel token 通知 endpoint 即可.
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -185,12 +196,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// 从 offer 协商编码并构建 answer SDP (初始 INVITE 和 re-INVITE 共用).
-/// 只接 G.711 音频和 H264/H265 视频; offer 的 fmt 列表按对端偏好排序,
-/// 从前到后挑第一个我们支持的 (典型 offer 是 opus 打头, PCMU/PCMA 跟在
-/// 后面); answer 的 pt/fmtp 回显选中的编码 (RFC 3264). 不支持的编码那
-/// 一路不存盘 (answer 里仍带着, 对端发了也收, 只是不落盘).
-/// 返回 (选中的音频 pt+编码, 选中的视频 pt+编码+fmtp, answer 文本)
 /// 协商结果: (选中的音频 pt+编码, 选中的视频 pt+编码+fmtp, answer 文本)
 type NegotiatedAnswer = (
     Option<(u8, ipcam_core::AudioCodec)>,
@@ -198,6 +203,29 @@ type NegotiatedAnswer = (
     String,
 );
 
+/// 从 offer 协商编码并构建 answer SDP (初始 INVITE 和 re-INVITE 共用).
+///
+/// 只接 G.711 音频和 H264/H265 视频; offer 的 fmt 列表按对端偏好排序,
+/// 从前到后挑第一个我们支持的 (典型 offer 是 opus 打头, PCMU/PCMA 跟在
+/// 后面); answer 的 pt/fmtp 回显选中的编码 (RFC 3264). 不支持的编码那
+/// 一路不存盘 (answer 里仍带着, 对端发了也收, 只是不落盘).
+///
+/// 选编码时复用 ipcam_gst::sendable_audio_codec 的 G.711 白名单; 视频
+/// 只接 H264/H265, 其他编 (VP8/VP9/AV1) 整路拒收, 但 SDP 仍带 audio
+/// 给对端一个能落地的 answer.
+///
+/// # Arguments
+///
+/// * `offer`: 解析后的offer SDP媒体列表, 包含音视频地址和编码
+/// * `local_ip`: 本机IPv4地址, answer SDP里的c=行用它
+///
+/// returns: NegotiatedAnswer
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 fn negotiate_answer(offer: &ipcam_sip::sdp::OfferMedias, local_ip: IpAddr) -> NegotiatedAnswer {
     let audio_pt = match offer.audio.as_ref() {
         Some(a) => match a
@@ -247,33 +275,59 @@ fn negotiate_answer(offer: &ipcam_sip::sdp::OfferMedias, local_ip: IpAddr) -> Ne
     (audio_pt, video, answer.to_string())
 }
 
-/// 麦克风回传参数指纹: (对端收音频地址, pt, 编码). re-INVITE 后变了
-/// 才重启 sender
-fn mic_params(offer: &OfferMedias) -> Option<(SocketAddr, u8, AudioCodec)> {
+/// 提取麦克风回传所需参数: 对端收音频地址, pt, 编码.
+///
+/// 用于指纹比对: re-INVITE 之后这三个字段任一变了就重启 sender (地址
+/// 变了 udpsink 找不到对端, pt/编码变了 RTP 头和 depay 链对不上).
+///
+/// # Arguments
+///
+/// * `offer`: 解析后的offer SDP, 从中找对端音频地址和编码参数
+///
+/// returns: Option<(SocketAddr, u8, AudioCodec)>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+fn mic_params(offer: &OfferMedias) -> Option<ipcam_gst::AudioDest> {
     offer.audio.as_ref().and_then(|a| {
         a.codecs
             .iter()
             .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (a, c, ac)))
-            .map(|(a, c, ac)| (SocketAddr::new(a.addr, a.port), c.payload_type, ac))
+            .map(|(a, c, ac)| ipcam_gst::AudioDest {
+                addr: SocketAddr::new(a.addr, a.port),
+                payload_type: c.payload_type,
+                codec: ac,
+            })
     })
 }
 
-/// 起麦克风回传. 没有可用编码或没有麦克风设备就只收不发, 通话继续
-fn start_mic_sender(params: (SocketAddr, u8, AudioCodec)) -> Option<RtpSender> {
-    let (addr, payload_type, codec) = params;
+/// 起麦克风回传: 在 wasapisrc/alsasrc 上拉一条 RTP 发送链, 把本机麦的
+/// 声音灌给对端给的地址.
+///
+/// 没有可用编码或没有麦克风设备就返回 None, 通话继续 (只收不发).
+/// 失败会 warn 但不抛 — 通话不因麦克风挂掉.
+///
+/// # Arguments
+///
+/// * `dest`: 对端收音频的地址、payload type和编码, 直接来自AudioDest
+///
+/// returns: Option<RtpSender>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+fn start_mic_sender(dest: ipcam_gst::AudioDest) -> Option<RtpSender> {
     match ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
-        audio: Some((
-            ipcam_gst::TrackSource::Mic,
-            ipcam_gst::AudioDest {
-                addr,
-                payload_type,
-                codec,
-            },
-        )),
+        audio: Some((ipcam_gst::TrackSource::Mic, dest)),
         video: None,
     }) {
         Ok(s) => {
-            info!(%addr, payload_type, "mic sender started");
+            info!(%dest.addr, dest.payload_type, "mic sender started");
             Some(s)
         }
         Err(e) => {
@@ -283,8 +337,29 @@ fn start_mic_sender(params: (SocketAddr, u8, AudioCodec)) -> Option<RtpSender> {
     }
 }
 
-/// 起 RTP 接收器 (音视频合进同一个 ts, G.711 转码 opus; 同时 tee 出
-/// 播放链送本机扬声器/屏幕)
+/// 起 RTP 接收器: 从 AUDIO_RTP_PORT / VIDEO_RTP_PORT 收对端的流, 同时
+/// 干两件事 — 存到 `output_dir/call.ts`, 本地播放到默认音频输出/屏幕.
+///
+/// 内部走 mp4mux(实为 mpegtsmux, 改名 ts 容器) + tee: 音视频合进同
+/// 一个 ts 文件; G.711 音频在 mux 前转 opus (mp4 不认 G.711, ts 容器
+/// 也按这套路避免出坑).
+///
+/// 失败返回 None, 通话继续 — 跟 start_mic_sender 一样不抛错.
+/// 重启接收器 (re-INVITE 改编码) 时调用方负责先 stop 旧的再调本函数.
+///
+/// # Arguments
+///
+/// * `output_dir`: 保存音视频的目录路径, ts 文件写入此目录
+/// * `audio`: 接收的音频编码, None 表示不接收音频
+/// * `video`: 接收的视频编码, None 表示不接收视频
+///
+/// returns: Option<RtpReceiver>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 fn start_receiver(
     output_dir: &std::path::Path,
     audio: Option<AudioCodec>,
@@ -304,10 +379,36 @@ fn start_receiver(
     }
 }
 
-/// 一路通话: 解析 offer → ringing + accept (带 answer SDP) → 起 RTP
-/// 接收器 (存盘 + 本地播放) + 麦克风回传. 通话中的 re-INVITE 经
-/// run_dialog_state_loop → 路由表 → update_rx 进到这里: 重新协商,
+/// 一路通话生命周期: 解析 offer → ringing + accept (带 answer SDP) →
+/// 起 RTP 接收器 (存盘 + 本地播放) + 麦克风回传. 通话中的 re-INVITE
+/// 经 run_dialog_state_loop → 路由表 → update_rx 进到这里: 重新协商,
 /// 编码/对端地址变了就重启对应的媒体管线, 应答 body 走 oneshot 回去.
+///
+/// 退出条件 (loop 里的 select):
+///   - 对端发 BYE → dialog.cancel_token() 触发, 收尾
+///   - 本地 Ctrl+C → 主动 dialog.bye_with_headers 发 BYE
+///   - update_rx 关闭 → 路由表摘掉 (理论上只有 cancel_token 才会到这)
+///
+/// 退出时先 stop sender 再 stop receiver, 顺序不能反 — receiver 在
+/// stop() 里给 udpsrc 推 EOS 等 mux 写 moov, 跟 sender 无关; 但若
+/// sender 没停, 它继续往外发 RTP, 对端以为我们没挂断.
+///
+/// # Arguments
+///
+/// * `dialog`: 来电InviteDialog, 包含初始offer和TU通道
+/// * `local_ip`: 本机IPv4地址, 用于构建answer SDP
+/// * `output_dir`: 音视频保存目录
+/// * `mic`: true则开启麦克风回传, false则只收不发
+/// * `update_rx`: re-INVITE更新消息通道, 由dialog状态循环写入
+/// * `routes`: 通话路由表, 退出时需从中摘除本dialog
+///
+/// returns: Result<(), Error>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 async fn process_call(
     dialog: InviteDialog,
     local_ip: IpAddr,

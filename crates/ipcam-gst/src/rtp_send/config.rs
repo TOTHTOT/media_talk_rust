@@ -29,7 +29,7 @@ pub fn sendable_audio_codec(name: &str) -> Option<AudioCodec> {
 /// 音频路的发送目标: 地址 + pt + answer 协商出的编码.
 /// 编码必须取 answer 里的值 -- 对端收窄到 PCMU 我们还发 PCMA,
 /// 就是标签和内容都对不上的错包 (RFC 3264)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AudioDest {
     pub addr: SocketAddr,
     pub payload_type: u8,
