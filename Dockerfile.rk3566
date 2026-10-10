@@ -1,0 +1,47 @@
+# 泰山派 (RK3566, aarch64) 部署构建镜像.
+# 在 ARM 主机 (M4 Mac) 上 docker build 是原生 aarch64 编译, 无 QEMU.
+# Ubuntu 20.04 = glibc 2.31, 对齐 aarch64-unknown-linux-gnu.2.31 目标.
+#
+# 注意: arm64v8/ubuntu 走 Docker Hub, 国内拉不动时先手动:
+#   docker pull docker.m.daocloud.io/arm64v8/ubuntu:20.04
+#   docker tag docker.m.daocloud.io/arm64v8/ubuntu:20.04 arm64v8/ubuntu:20.04
+FROM arm64v8/ubuntu:20.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+# apt 换清华 ubuntu-ports 源 (arm64 的 archive 在 ports 仓库).
+# 必须 http: 基础镜像没装 ca-certificates, https 握手必败;
+# ca-certificates 装好后后面的 rustup 才能走 https
+RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' \
+        /etc/apt/sources.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    libasound2-dev \
+    libgstreamer-plugins-base1.0-dev \
+    libgstreamer1.0-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# rustup / crates.io 换 rsproxy (字节) 镜像
+ENV RUSTUP_DIST_SERVER=https://rsproxy.cn \
+    RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup \
+    PATH=/root/.cargo/bin:$PATH
+# 容器本身就是 aarch64-linux, rustup 默认 target 即 aarch64-unknown-linux-gnu
+RUN curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh \
+    | sh -s -- -y --default-toolchain stable \
+    && rm -rf /root/.rustup/tmp \
+    && printf '%s\n' \
+    '[source.crates-io]' \
+    'replace-with = "rsproxy-sparse"' \
+    '[source.rsproxy-sparse]' \
+    'registry = "sparse+https://rsproxy.cn/index/"' \
+    '[net]' \
+    'git-fetch-with-cli = true' \
+    > /root/.cargo/config.toml
+
+WORKDIR /src
+COPY . .
+RUN cargo build --release -p media_talk_rust --features hw-decode \
+    && cp target/release/media_talk_rust /media_talk_rust
