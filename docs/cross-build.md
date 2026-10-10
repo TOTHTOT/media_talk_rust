@@ -103,7 +103,8 @@ Python 脚本字符串里 (不参与参数转换), 或给命令加 `MSYS_NO_PATH
 同一套 Dockerfile 可以直接搬进 CI, 见
 [rk3566.yml](../.github/workflows/rk3566.yml): 跑在 `ubuntu-24.04-arm`
 **原生 ARM64 runner** 上 (公开仓库免费), 容器编译 + 导出 + 传 Artifacts,
-手动触发或打 `v*` tag 时运行.
+手动触发或打 `v*` tag 时运行. 打 tag 触发时会额外用 `gh release create`
+把二进制挂到同名 Release 上; 手动触发只留 Artifacts.
 
 和 Mac 构建的差异:
 
