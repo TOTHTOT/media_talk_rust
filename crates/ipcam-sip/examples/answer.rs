@@ -163,6 +163,23 @@ async fn main() -> Result<()> {
 
 /// 来电入口: 建 re-INVITE 通道并登记路由表, spawn 独立任务跑通话,
 /// 不阻塞状态循环和后续来电.
+///
+///
+/// # Arguments
+///
+/// * `dialog`:
+/// * `local`:
+/// * `output_dir`:
+/// * `mic`:
+/// * `routes`:
+///
+/// returns: ()
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 fn spawn_call(
     dialog: InviteDialog,
     local: Ipv4Addr,
@@ -193,6 +210,20 @@ fn spawn_call(
 /// 兜底 501, 中继会停转发媒体 (实测视频断流) 甚至拆通话.
 ///
 /// 通话任务卡死时不能堵住状态循环, 2s 超时后回不带 SDP 的 200.
+///
+/// # Arguments
+///
+/// * `routes`:
+/// * `id`:
+/// * `req`:
+///
+/// returns: Option<Vec<u8>>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 async fn forward_update(
     routes: CallRoutes,
     id: DialogId,
@@ -261,6 +292,19 @@ fn pick_video(offer: &OfferMedias) -> Option<(u8, VideoCodec, Option<String>)> {
 /// 从 offer 协商编码并构建 answer SDP (初始 INVITE 和 re-INVITE 共用).
 /// answer 的 pt/fmtp 回显 offer 里选中的编码 (RFC 3264). 不支持的编码
 /// 那一路不存盘 (answer 里仍带着, 对端发了也收, 只是不落盘).
+///
+/// # Arguments
+///
+/// * `offer`:
+/// * `local_ip`:
+///
+/// returns: NegotiatedAnswer
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 fn negotiate_answer(offer: &OfferMedias, local_ip: IpAddr) -> NegotiatedAnswer {
     let audio_pt = pick_audio(offer);
     let video = pick_video(offer);
@@ -324,6 +368,20 @@ fn start_mic_sender(dest: ipcam_gst::AudioDest) -> Option<RtpSender> {
 ///
 /// 失败返回 None, 通话继续 — 跟 start_mic_sender 一样不抛错.
 /// 重启接收器 (re-INVITE 改编码) 时调用方负责先 stop 旧的再调本函数.
+///
+/// # Arguments
+///
+/// * `output_dir`:
+/// * `audio`:
+/// * `video`:
+///
+/// returns: Option<RtpReceiver>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 fn start_receiver(
     output_dir: &std::path::Path,
     audio: Option<AudioCodec>,
@@ -358,6 +416,23 @@ struct CallMedia {
 }
 
 impl CallMedia {
+    /// 建媒体面: 按指纹起接收器和麦克风回传. mic=false 或 offer 里没有
+    /// 可发编码时 sender 为 None (只收不发), 不抛错.
+    ///
+    /// # Arguments
+    ///
+    /// * `output_dir`:
+    /// * `mic`:
+    /// * `recv_fingerprint`:
+    /// * `send_fingerprint`:
+    ///
+    /// returns: Self
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     fn new(
         output_dir: PathBuf,
         mic: bool,
@@ -431,6 +506,23 @@ impl CallMedia {
 ///   - 对端发 BYE → dialog.cancel_token() 触发, 收尾
 ///   - 本地 Ctrl+C → 主动 dialog.bye_with_headers 发 BYE
 ///   - update_rx 关闭 → 路由表摘掉 (理论上只有 cancel_token 才会到这)
+///
+/// # Arguments
+///
+/// * `dialog`:
+/// * `local_ip`:
+/// * `output_dir`:
+/// * `mic`:
+/// * `update_rx`:
+/// * `routes`:
+///
+/// returns: Result<(), Error>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 async fn process_call(
     dialog: InviteDialog,
     local_ip: IpAddr,
