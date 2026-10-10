@@ -164,14 +164,13 @@ async fn main() -> Result<()> {
 /// 来电入口: 建 re-INVITE 通道并登记路由表, spawn 独立任务跑通话,
 /// 不阻塞状态循环和后续来电.
 ///
-///
 /// # Arguments
 ///
-/// * `dialog`:
-/// * `local`:
-/// * `output_dir`:
-/// * `mic`:
-/// * `routes`:
+/// * `dialog`: rsipstack 建的 server 端 InviteDialog, 带初始 offer 和应答通道
+/// * `local`: 本机 IPv4, 构建 answer SDP 的 c= 行用
+/// * `output_dir`: 录像 ts 文件的落盘目录
+/// * `mic`: 是否回传麦克风 (--no-mic 时为 false, 只收不发)
+/// * `routes`: 全局通话路由表, 本函数写入 dialog id -> re-INVITE 通道
 ///
 /// returns: ()
 ///
@@ -213,11 +212,11 @@ fn spawn_call(
 ///
 /// # Arguments
 ///
-/// * `routes`:
-/// * `id`:
-/// * `req`:
+/// * `routes`: 全局通话路由表, 按 dialog id 找通话任务
+/// * `id`: 被更新的 dialog id (状态循环从 Updated 事件带出)
+/// * `req`: re-INVITE/UPDATE 完整请求, body 里是新 offer SDP
 ///
-/// returns: Option<Vec<u8>>
+/// returns: Option<Vec<u8>> — 回给对端的 200 OK body, Some 是 answer SDP, None 不带 SDP
 ///
 /// # Examples
 ///
@@ -295,10 +294,10 @@ fn pick_video(offer: &OfferMedias) -> Option<(u8, VideoCodec, Option<String>)> {
 ///
 /// # Arguments
 ///
-/// * `offer`:
-/// * `local_ip`:
+/// * `offer`: 解析后的对端 SDP (音视频媒体列表 + 编码候选)
+/// * `local_ip`: 本机 IPv4, 写进 answer 的 c= 行告诉对端往哪发 RTP
 ///
-/// returns: NegotiatedAnswer
+/// returns: NegotiatedAnswer — 选中的音频/视频编码 (给媒体管线) + answer 文本 (给 SIP 应答)
 ///
 /// # Examples
 ///
@@ -371,11 +370,11 @@ fn start_mic_sender(dest: ipcam_gst::AudioDest) -> Option<RtpSender> {
 ///
 /// # Arguments
 ///
-/// * `output_dir`:
-/// * `audio`:
-/// * `video`:
+/// * `output_dir`: 录像 ts 的落盘目录 (写到 `<dir>/call.ts`)
+/// * `audio`: 要收的音频编码, None 表示音频路不建
+/// * `video`: 要收的视频编码, None 表示视频路不建
 ///
-/// returns: Option<RtpReceiver>
+/// returns: Option<RtpReceiver> — 运行中的接收器句柄, stop 即拆管线
 ///
 /// # Examples
 ///
@@ -421,10 +420,10 @@ impl CallMedia {
     ///
     /// # Arguments
     ///
-    /// * `output_dir`:
-    /// * `mic`:
-    /// * `recv_fingerprint`:
-    /// * `send_fingerprint`:
+    /// * `output_dir`: 录像 ts 的落盘目录
+    /// * `mic`: 是否回传麦克风
+    /// * `recv_fingerprint`: 接收端指纹 (音频编码, 视频编码), 也是起接收器的输入
+    /// * `send_fingerprint`: 回传指纹 (对端收音频地址, pt, 编码), None 表示不回传
     ///
     /// returns: Self
     ///
@@ -509,12 +508,12 @@ impl CallMedia {
 ///
 /// # Arguments
 ///
-/// * `dialog`:
-/// * `local_ip`:
-/// * `output_dir`:
-/// * `mic`:
-/// * `update_rx`:
-/// * `routes`:
+/// * `dialog`: 这通电话的 server 端 InviteDialog (取初始 offer, ringing/accept/BYE 都走它)
+/// * `local_ip`: 本机 IPv4, 构建 answer 用
+/// * `output_dir`: 录像 ts 落盘目录
+/// * `mic`: 是否回传麦克风
+/// * `update_rx`: re-INVITE 消息接收端 (状态循环经路由表写入)
+/// * `routes`: 全局路由表, 函数退出前摘掉本 dialog
 ///
 /// returns: Result<(), Error>
 ///

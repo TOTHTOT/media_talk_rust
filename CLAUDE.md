@@ -28,10 +28,10 @@ cargo test  --workspace --features sw-decode
 ///
 /// # Arguments
 ///
-/// * `timeout_secs`:
-/// * `json`:
-/// * `username`:
-/// * `password`:
+/// * `timeout_secs`: 超时时间 (秒), 0 表示不超时
+/// * `json`: 请求体 JSON 文本
+/// * `username`: 登录用户名
+/// * `password`: 登录密码
 ///
 /// returns: Result<(), Error>
 ///
@@ -49,7 +49,7 @@ cargo test  --workspace --features sw-decode
 - `examples/` / `bin/` / 测试 helper 等**非库代码**的私有辅助函数, 只要满足参数 / 返回值条件 (参数 > 3 或返回 `Result` / 复杂类型), 也按本模板
 - 类型别名 (`type Foo = ...`) 单独一段简短注释, 不与函数 doc 合并
 - `main` / 流程入口**不**套模板, 用自由文本 + 编号流程说明
-- `# Arguments` 列表项**只写参数名 + 冒号** (例 `* \`offer\`:`), 详细含义放函数上方第一段自由文本
+- `# Arguments` 列表项**写参数名 + 冒号 + 作用说明** (例 `* \`offer\`: 解析后的对端 SDP`), 每个参数都要解释; 函数级语义放上方自由文本
 - `# Examples` 块保留空代码块占位 (`\n\n`), 哪怕没可运行 example
 - 模板的 `/// ` 前缀、连续空行、缩进**逐行照抄**, 不要合并段落
 
