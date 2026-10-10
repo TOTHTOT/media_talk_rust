@@ -1,5 +1,5 @@
 //! SIP 被叫 (接听) 冒烟工具: 注册 → 等来电 INVITE → 解析 offer SDP →
-//! ringing + accept → 起 RTP 接收器 (存 mp4 + 本地播放) + 麦克风回传.
+//! ringing + accept → 起 RTP 接收器 (存 ts + 本地播放) + 麦克风回传.
 //! 对端 BYE 或本地 Ctrl+C 结束通话.
 //!
 //! 结构参考 rsipstack examples/client/main.rs, 事务分发和状态循环已下沉
@@ -20,7 +20,7 @@ use rsipstack::dialog::DialogId;
 use rsipstack::dialog::invite_dialog::InviteDialog;
 use rsipstack::sip::headers::Header;
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::select;
@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    std::fs::create_dir_all(&args.output_dir)?;
+    tokio::fs::create_dir_all(&args.output_dir).await?;
 
     // 多网卡机器使用 local_ip 参数绑定ip
     let local = match args.local_ip {
@@ -118,47 +118,12 @@ async fn main() -> Result<()> {
         let mic = !args.no_mic;
         let routes = routes.clone();
         move |dialog: InviteDialog| {
-            let dir = output_dir.clone();
-            let routes = routes.clone();
-            let (update_tx, update_rx) = mpsc::channel(4);
-            routes.lock().unwrap().insert(dialog.id(), update_tx);
-            tokio::spawn(async move {
-                if let Err(e) =
-                    process_call(dialog, IpAddr::V4(local), dir, mic, update_rx, routes).await
-                {
-                    warn!(error = %e, "call handling failed");
-                }
-            });
+            spawn_call(dialog, local, output_dir.clone(), mic, routes.clone())
         }
     };
-    // re-INVITE/UPDATE (中继会周期会话刷新): 转发给通话任务重新协商,
-    // 编码/对端地址变了就重启对应媒体管线. 不回的话 rsipstack 兜底 501,
-    // 中继会停转发媒体 (实测视频断流) 甚至拆通话
     let on_update = {
         let routes = routes.clone();
-        move |id: DialogId, req: rsipstack::sip::Request| {
-            let routes = routes.clone();
-            async move {
-                let tx = routes.lock().unwrap().get(&id).cloned();
-                let Some(tx) = tx else {
-                    warn!(dialog = %id, "re-INVITE for unknown dialog, reply 200 without SDP");
-                    return None;
-                };
-                let (reply_tx, reply_rx) = oneshot::channel();
-                if tx.send((req, reply_tx)).await.is_err() {
-                    warn!(dialog = %id, "call task gone, reply 200 without SDP");
-                    return None;
-                }
-                // 通话任务卡死时不能堵住状态循环, 超时让 rsipstack 兜底
-                match tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx).await {
-                    Ok(Ok(body)) => body,
-                    _ => {
-                        warn!(dialog = %id, "call task did not answer re-INVITE in time");
-                        None
-                    }
-                }
-            }
-        }
+        move |id: DialogId, req: rsipstack::sip::Request| forward_update(routes.clone(), id, req)
     };
 
     info!(
@@ -196,68 +161,109 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// 来电入口: 建 re-INVITE 通道并登记路由表, spawn 独立任务跑通话,
+/// 不阻塞状态循环和后续来电.
+fn spawn_call(
+    dialog: InviteDialog,
+    local: Ipv4Addr,
+    output_dir: PathBuf,
+    mic: bool,
+    routes: CallRoutes,
+) {
+    let (update_tx, update_rx) = mpsc::channel(4);
+    routes.lock().unwrap().insert(dialog.id(), update_tx);
+    tokio::spawn(async move {
+        if let Err(e) = process_call(
+            dialog,
+            IpAddr::V4(local),
+            output_dir,
+            mic,
+            update_rx,
+            routes,
+        )
+        .await
+        {
+            warn!(error = %e, "call handling failed");
+        }
+    });
+}
+
+/// re-INVITE/UPDATE (中继会周期会话刷新): 按 dialog id 转发给通话任务
+/// 重新协商, 编码/对端地址变了它会重启对应媒体管线. 不回的话 rsipstack
+/// 兜底 501, 中继会停转发媒体 (实测视频断流) 甚至拆通话.
+///
+/// 通话任务卡死时不能堵住状态循环, 2s 超时后回不带 SDP 的 200.
+async fn forward_update(
+    routes: CallRoutes,
+    id: DialogId,
+    req: rsipstack::sip::Request,
+) -> Option<Vec<u8>> {
+    let tx = routes.lock().unwrap().get(&id).cloned();
+    let Some(tx) = tx else {
+        warn!(dialog = %id, "re-INVITE for unknown dialog, reply 200 without SDP");
+        return None;
+    };
+    let (reply_tx, reply_rx) = oneshot::channel();
+    if tx.send((req, reply_tx)).await.is_err() {
+        warn!(dialog = %id, "call task gone, reply 200 without SDP");
+        return None;
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx).await {
+        Ok(Ok(body)) => body,
+        _ => {
+            warn!(dialog = %id, "call task did not answer re-INVITE in time");
+            None
+        }
+    }
+}
+
 /// 协商结果: (选中的音频 pt+编码, 选中的视频 pt+编码+fmtp, answer 文本)
 type NegotiatedAnswer = (
-    Option<(u8, ipcam_core::AudioCodec)>,
+    Option<(u8, AudioCodec)>,
     Option<(u8, VideoCodec, Option<String>)>,
     String,
 );
 
-/// 从 offer 协商编码并构建 answer SDP (初始 INVITE 和 re-INVITE 共用).
-///
-/// 只接 G.711 音频和 H264/H265 视频; offer 的 fmt 列表按对端偏好排序,
-/// 从前到后挑第一个我们支持的 (典型 offer 是 opus 打头, PCMU/PCMA 跟在
-/// 后面); answer 的 pt/fmtp 回显选中的编码 (RFC 3264). 不支持的编码那
-/// 一路不存盘 (answer 里仍带着, 对端发了也收, 只是不落盘).
-///
-/// 选编码时复用 ipcam_gst::sendable_audio_codec 的 G.711 白名单; 视频
-/// 只接 H264/H265, 其他编 (VP8/VP9/AV1) 整路拒收, 但 SDP 仍带 audio
-/// 给对端一个能落地的 answer.
-///
-/// # Arguments
-///
-/// * `offer`: 解析后的offer SDP媒体列表, 包含音视频地址和编码
-/// * `local_ip`: 本机IPv4地址, answer SDP里的c=行用它
-///
-/// returns: NegotiatedAnswer
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
-fn negotiate_answer(offer: &ipcam_sip::sdp::OfferMedias, local_ip: IpAddr) -> NegotiatedAnswer {
-    let audio_pt = match offer.audio.as_ref() {
-        Some(a) => match a
-            .codecs
-            .iter()
-            .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (c, ac)))
-        {
-            Some((c, ac)) => Some((c.payload_type, ac)),
-            None => {
-                warn!(codecs = ?a.codecs, "no supported audio codec in offer, skip saving audio");
-                None
-            }
-        },
-        None => None,
-    };
-    let video = match offer.video.as_ref() {
-        Some(v) => match v
-            .codecs
-            .iter()
-            .find_map(|c| match VideoCodec::from_name(&c.codec) {
-                vc @ (VideoCodec::H264 | VideoCodec::H265) => Some((c, vc)),
-                _ => None,
-            }) {
-            Some((c, vc)) => Some((c.payload_type, vc, c.fmtp.clone())),
-            None => {
-                warn!(codecs = ?v.codecs, "no supported video codec in offer, skip saving video");
-                None
-            }
-        },
-        None => None,
-    };
+/// 音频只接 G.711 (复用 ipcam_gst::sendable_audio_codec 的白名单).
+/// offer 的 fmt 列表按对端偏好排序, 从前到后挑第一个我们支持的
+/// (典型 offer 是 opus 打头, PCMU/PCMA 跟在后面).
+fn pick_audio(offer: &OfferMedias) -> Option<(u8, AudioCodec)> {
+    let a = offer.audio.as_ref()?;
+    let picked = a
+        .codecs
+        .iter()
+        .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (c.payload_type, ac)));
+    if picked.is_none() {
+        warn!(codecs = ?a.codecs, "no supported audio codec in offer, skip saving audio");
+    }
+    picked
+}
 
+/// 视频只接 H264/H265, 其他 (VP8/VP9/AV1) 整路拒收, 但 SDP 仍带 audio
+/// 给对端一个能落地的 answer.
+fn pick_video(offer: &OfferMedias) -> Option<(u8, VideoCodec, Option<String>)> {
+    let v = offer.video.as_ref()?;
+    let picked = v
+        .codecs
+        .iter()
+        .find_map(|c| match VideoCodec::from_name(&c.codec) {
+            vc @ (VideoCodec::H264 | VideoCodec::H265) => {
+                Some((c.payload_type, vc, c.fmtp.clone()))
+            }
+            _ => None,
+        });
+    if picked.is_none() {
+        warn!(codecs = ?v.codecs, "no supported video codec in offer, skip saving video");
+    }
+    picked
+}
+
+/// 从 offer 协商编码并构建 answer SDP (初始 INVITE 和 re-INVITE 共用).
+/// answer 的 pt/fmtp 回显 offer 里选中的编码 (RFC 3264). 不支持的编码
+/// 那一路不存盘 (answer 里仍带着, 对端发了也收, 只是不落盘).
+fn negotiate_answer(offer: &OfferMedias, local_ip: IpAddr) -> NegotiatedAnswer {
+    let audio_pt = pick_audio(offer);
+    let video = pick_video(offer);
     let answer = build_av_answer(
         local_ip,
         AUDIO_RTP_PORT,
@@ -275,22 +281,9 @@ fn negotiate_answer(offer: &ipcam_sip::sdp::OfferMedias, local_ip: IpAddr) -> Ne
     (audio_pt, video, answer.to_string())
 }
 
-/// 提取麦克风回传所需参数: 对端收音频地址, pt, 编码.
-///
-/// 用于指纹比对: re-INVITE 之后这三个字段任一变了就重启 sender (地址
-/// 变了 udpsink 找不到对端, pt/编码变了 RTP 头和 depay 链对不上).
-///
-/// # Arguments
-///
-/// * `offer`: 解析后的offer SDP, 从中找对端音频地址和编码参数
-///
-/// returns: Option<(SocketAddr, u8, AudioCodec)>
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
+/// 提取麦克风回传所需参数 (对端收音频地址, pt, 编码), 同时充当指纹:
+/// re-INVITE 之后这三个字段任一变了就重启 sender (地址变了 udpsink 找
+/// 不到对端, pt/编码变了 RTP 头和 depay 链对不上).
 fn mic_params(offer: &OfferMedias) -> Option<ipcam_gst::AudioDest> {
     offer.audio.as_ref().and_then(|a| {
         a.codecs
@@ -307,20 +300,8 @@ fn mic_params(offer: &OfferMedias) -> Option<ipcam_gst::AudioDest> {
 /// 起麦克风回传: 在 wasapisrc/alsasrc 上拉一条 RTP 发送链, 把本机麦的
 /// 声音灌给对端给的地址.
 ///
-/// 没有可用编码或没有麦克风设备就返回 None, 通话继续 (只收不发).
-/// 失败会 warn 但不抛 — 通话不因麦克风挂掉.
-///
-/// # Arguments
-///
-/// * `dest`: 对端收音频的地址、payload type和编码, 直接来自AudioDest
-///
-/// returns: Option<RtpSender>
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
+/// 没有麦克风设备就返回 None, 通话继续 (只收不发). 失败会 warn 但不
+/// 抛 — 通话不因麦克风挂掉.
 fn start_mic_sender(dest: ipcam_gst::AudioDest) -> Option<RtpSender> {
     match ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
         audio: Some((ipcam_gst::TrackSource::Mic, dest)),
@@ -339,27 +320,10 @@ fn start_mic_sender(dest: ipcam_gst::AudioDest) -> Option<RtpSender> {
 
 /// 起 RTP 接收器: 从 AUDIO_RTP_PORT / VIDEO_RTP_PORT 收对端的流, 同时
 /// 干两件事 — 存到 `output_dir/call.ts`, 本地播放到默认音频输出/屏幕.
-///
-/// 内部走 mp4mux(实为 mpegtsmux, 改名 ts 容器) + tee: 音视频合进同
-/// 一个 ts 文件; G.711 音频在 mux 前转 opus (mp4 不认 G.711, ts 容器
-/// 也按这套路避免出坑).
+/// G.711 音频在 mux 前转 opus (TS 不认 G.711).
 ///
 /// 失败返回 None, 通话继续 — 跟 start_mic_sender 一样不抛错.
 /// 重启接收器 (re-INVITE 改编码) 时调用方负责先 stop 旧的再调本函数.
-///
-/// # Arguments
-///
-/// * `output_dir`: 保存音视频的目录路径, ts 文件写入此目录
-/// * `audio`: 接收的音频编码, None 表示不接收音频
-/// * `video`: 接收的视频编码, None 表示不接收视频
-///
-/// returns: Option<RtpReceiver>
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
 fn start_receiver(
     output_dir: &std::path::Path,
     audio: Option<AudioCodec>,
@@ -379,36 +343,94 @@ fn start_receiver(
     }
 }
 
+/// 一路通话的媒体面: RTP 接收器 + 麦克风回传, 各带一份指纹.
+/// re-INVITE 来了按指纹比对, 变了才重启对应管线, 没变只回 answer.
+struct CallMedia {
+    output_dir: PathBuf,
+    mic: bool,
+    receiver: Option<RtpReceiver>,
+    sender: Option<RtpSender>,
+    /// 接收端指纹: 只含编码. pt 不参与 — 接收器 udpsrc 不按 pt 过滤,
+    /// 端口是我们在 answer 里声明的固定值, 不会变
+    recv_fingerprint: (Option<AudioCodec>, Option<VideoCodec>),
+    /// 回传指纹: (对端收音频地址, pt, 编码)
+    send_fingerprint: Option<ipcam_gst::AudioDest>,
+}
+
+impl CallMedia {
+    fn new(
+        output_dir: PathBuf,
+        mic: bool,
+        recv_fingerprint: (Option<AudioCodec>, Option<VideoCodec>),
+        send_fingerprint: Option<ipcam_gst::AudioDest>,
+    ) -> Self {
+        let receiver = start_receiver(&output_dir, recv_fingerprint.0, recv_fingerprint.1);
+        let sender = if mic {
+            if send_fingerprint.is_none() {
+                warn!("no sendable audio codec in offer, mic muted");
+            }
+            send_fingerprint.and_then(start_mic_sender)
+        } else {
+            info!("mic disabled (--no-mic)");
+            None
+        };
+        Self {
+            output_dir,
+            mic,
+            receiver,
+            sender,
+            recv_fingerprint,
+            send_fingerprint,
+        }
+    }
+
+    /// re-INVITE 重新协商: 编码变了重启接收器 (会重新落一个新的 ts
+    /// 文件); 对端收音频地址/pt/编码变了重启麦克风回传.
+    fn renegotiate(&mut self, offer: &OfferMedias) {
+        let new_recv = (
+            pick_audio(offer).map(|(_, c)| c),
+            pick_video(offer).map(|(_, c, _)| c),
+        );
+        if new_recv != self.recv_fingerprint {
+            info!(old = ?self.recv_fingerprint, new = ?new_recv, "codec changed, restarting receiver");
+            if let Some(r) = self.receiver.take() {
+                r.stop();
+            }
+            self.receiver = start_receiver(&self.output_dir, new_recv.0, new_recv.1);
+            self.recv_fingerprint = new_recv;
+        }
+        let new_send = if self.mic { mic_params(offer) } else { None };
+        if new_send != self.send_fingerprint {
+            info!(old = ?self.send_fingerprint, new = ?new_send, "mic dest changed, restarting sender");
+            if let Some(s) = self.sender.take() {
+                s.stop();
+            }
+            self.sender = new_send.and_then(start_mic_sender);
+            self.send_fingerprint = new_send;
+        }
+    }
+
+    /// 先停 sender 再停 receiver, 顺序不能反 — sender 没停会继续往外
+    /// 发 RTP, 对端以为我们没挂断.
+    fn stop(mut self) {
+        if let Some(s) = self.sender.take() {
+            s.stop();
+        }
+        if let Some(r) = self.receiver.take() {
+            r.stop();
+        }
+    }
+}
+
 /// 一路通话生命周期: 解析 offer → ringing + accept (带 answer SDP) →
-/// 起 RTP 接收器 (存盘 + 本地播放) + 麦克风回传. 通话中的 re-INVITE
+/// 起媒体 (CallMedia: 接收存盘+播放, 麦克风回传). 通话中的 re-INVITE
 /// 经 run_dialog_state_loop → 路由表 → update_rx 进到这里: 重新协商,
-/// 编码/对端地址变了就重启对应的媒体管线, 应答 body 走 oneshot 回去.
+/// 按需重启管线, 应答 body 走 oneshot 回去.
 ///
 /// 退出条件 (loop 里的 select):
 ///   - 对端发 BYE → dialog.cancel_token() 触发, 收尾
 ///   - 本地 Ctrl+C → 主动 dialog.bye_with_headers 发 BYE
 ///   - update_rx 关闭 → 路由表摘掉 (理论上只有 cancel_token 才会到这)
-///
-/// 退出时先 stop sender 再 stop receiver, 顺序不能反 — receiver 在
-/// stop() 里给 udpsrc 推 EOS 等 mux 写 moov, 跟 sender 无关; 但若
-/// sender 没停, 它继续往外发 RTP, 对端以为我们没挂断.
-///
-/// # Arguments
-///
-/// * `dialog`: 来电InviteDialog, 包含初始offer和TU通道
-/// * `local_ip`: 本机IPv4地址, 用于构建answer SDP
-/// * `output_dir`: 音视频保存目录
-/// * `mic`: true则开启麦克风回传, false则只收不发
-/// * `update_rx`: re-INVITE更新消息通道, 由dialog状态循环写入
-/// * `routes`: 通话路由表, 退出时需从中摘除本dialog
-///
-/// returns: Result<(), Error>
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
 async fn process_call(
     dialog: InviteDialog,
     local_ip: IpAddr,
@@ -431,19 +453,12 @@ async fn process_call(
         warn!("no supported media in offer, call kept up without recording");
     }
 
-    // 接收端指纹: 只含编码. pt 不参与 — 接收器 udpsrc 不按 pt 过滤,
-    // 端口是我们在 answer 里声明的固定值, 不会变
-    let mut recv_fingerprint = (audio_pt.map(|(_, c)| c), video.map(|(_, c, _)| c));
-    let mut receiver = start_receiver(&output_dir, recv_fingerprint.0, recv_fingerprint.1);
-
-    let mut send_fingerprint = if mic { mic_params(&offer) } else { None };
-    let mut sender = send_fingerprint.and_then(start_mic_sender);
-    if mic && send_fingerprint.is_none() {
-        warn!("no sendable audio codec in offer, mic muted");
-    }
-    if !mic {
-        info!("mic disabled (--no-mic)");
-    }
+    let mut media = CallMedia::new(
+        output_dir,
+        mic,
+        (audio_pt.map(|(_, c)| c), video.map(|(_, c, _)| c)),
+        mic_params(&offer),
+    );
 
     // 对端 BYE → dialog.cancel_token 取消; 本地 Ctrl+C → 发 BYE;
     // re-INVITE → 重新协商, 按需重启媒体
@@ -462,28 +477,9 @@ async fn process_call(
                 let Some((req, reply)) = msg else { break };
                 let body = match parse_offer_all(req.body()) {
                     Ok(new_offer) => {
-                        let (na, nv, answer) = negotiate_answer(&new_offer, local_ip);
+                        let (_, _, answer) = negotiate_answer(&new_offer, local_ip);
                         info!("re-INVITE accepted, answer SDP:\n{}", answer);
-                        // 编码变了 → 重启接收器 (会重新落一个新的 ts 文件)
-                        let new_recv = (na.map(|(_, c)| c), nv.map(|(_, c, _)| c));
-                        if new_recv != recv_fingerprint {
-                            info!(old = ?recv_fingerprint, new = ?new_recv, "codec changed, restarting receiver");
-                            if let Some(r) = receiver.take() {
-                                r.stop();
-                            }
-                            receiver = start_receiver(&output_dir, new_recv.0, new_recv.1);
-                            recv_fingerprint = new_recv;
-                        }
-                        // 对端收音频的地址/pt/编码变了 → 重启麦克风回传
-                        let new_send = if mic { mic_params(&new_offer) } else { None };
-                        if new_send != send_fingerprint {
-                            info!(old = ?send_fingerprint, new = ?new_send, "mic dest changed, restarting sender");
-                            if let Some(s) = sender.take() {
-                                s.stop();
-                            }
-                            sender = new_send.and_then(start_mic_sender);
-                            send_fingerprint = new_send;
-                        }
+                        media.renegotiate(&new_offer);
                         Some(answer.into_bytes())
                     }
                     Err(e) => {
@@ -495,12 +491,7 @@ async fn process_call(
             }
         }
     }
-    if let Some(s) = sender {
-        s.stop();
-    }
-    if let Some(r) = receiver {
-        r.stop();
-    }
+    media.stop();
     routes.lock().unwrap().remove(&dialog.id());
     info!("call finished");
     Ok(())
