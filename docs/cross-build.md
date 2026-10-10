@@ -97,3 +97,19 @@ ssh root@<泰山派> '
 会被 MSYS 路径转换吃掉: `put local /Users/yyy/file` 里的远程路径会被改写成
 `C:/Program Files/Git/Users/yyy/file`, 服务端报 ENOENT. 绕法: 把路径写进
 Python 脚本字符串里 (不参与参数转换), 或给命令加 `MSYS_NO_PATHCONV=1` 前缀.
+
+## GitHub Actions (推荐长期方案)
+
+同一套 Dockerfile 可以直接搬进 CI, 见
+[rk3566.yml](../.github/workflows/rk3566.yml): 跑在 `ubuntu-24.04-arm`
+**原生 ARM64 runner** 上 (公开仓库免费), 容器编译 + 导出 + 传 Artifacts,
+手动触发或打 `v*` tag 时运行.
+
+和 Mac 构建的差异:
+
+- runner 直连 Docker Hub, 基镜像不用 daocloud 预拉
+- Dockerfile 里的国内源 (tuna/rsproxy) 在 CI 上也能用, 不拆两套
+- glibc 版本由容器里的 ubuntu:20.04 保证, 与 runner 宿主 (24.04,
+  glibc 2.39) 无关 — 这正是用容器而不是直接在 runner 上 cargo build
+  的原因
+- 私有仓库的 arm runner 计费, 届时退回 Mac 构建即可

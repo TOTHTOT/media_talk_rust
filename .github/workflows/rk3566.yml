@@ -1,0 +1,31 @@
+name: rk3566-build
+
+# 泰山派 (RK3566) 的 aarch64 产物构建.
+# 手动触发或打 v* tag; 产物走 Actions Artifacts 下载.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    # ARM64 runner: 容器里 ubuntu:20.04 (glibc 2.31) 原生编译, 无 QEMU.
+    # 公开仓库 arm runner 免费; 私有仓库会计费, 届时可改回 Mac 构建
+    # (见 docs/cross-build.md).
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker build (native aarch64, glibc 2.31)
+        run: docker build -f Dockerfile.rk3566 -t media-talk-rk3566 .
+
+      - name: Export binary
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD/out:/out" media-talk-rk3566 cp /media_talk_rust /out/
+          file out/media_talk_rust
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media_talk_rust-aarch64-glibc2.31
+          path: out/media_talk_rust
