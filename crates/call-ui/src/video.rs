@@ -9,9 +9,23 @@ use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 pub fn make_frame_sink(ui: slint::Weak<crate::MainWindow>) -> ipcam_gst::VideoFrameSink {
     std::sync::Arc::new(parking_lot::Mutex::new(
         move |f: ipcam_gst::RawVideoFrame| {
+            let row = f.width as usize * 4;
+            // 防护: 上游若违反 stride 契约 (data 短于 stride*height 或
+            // stride 比一行像素还窄), 直接切片索引会 panic 在 GStreamer
+            // 流线程的 appsink 回调里, unwind 跨 FFI 边界 = 进程 abort.
+            // 数据不足就丢这一帧, 不推
+            if f.stride < row || f.data.len() < f.stride * f.height as usize {
+                tracing::warn!(
+                    width = f.width,
+                    height = f.height,
+                    stride = f.stride,
+                    data_len = f.data.len(),
+                    "video tap: frame data shorter than stride*height, dropping frame"
+                );
+                return;
+            }
             let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(f.width, f.height);
             let dst = buf.make_mut_bytes();
-            let row = f.width as usize * 4;
             for y in 0..f.height as usize {
                 let src = &f.data[y * f.stride..y * f.stride + row];
                 dst[y * row..(y + 1) * row].copy_from_slice(src);
