@@ -18,7 +18,7 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     let handle = bridge::UiHandle::new(ui.as_weak(), app.clone());
     let (cmd_tx, cmd_rx) = bridge::cmd_channel();
     let tap = video::make_frame_sink(ui.as_weak());
-    session::spawn(cfg, cmd_rx, handle, tap);
+    let worker = session::spawn(cfg, cmd_rx, handle, tap);
 
     // 把 AppState 字段刷到 slint 属性 (UiHandle::post 里也是这段)
     fn sync_props(ui: &MainWindow, app: &app::AppState) {
@@ -82,6 +82,11 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
         });
     }
     ui.run()?;
+    // 窗口已关: 显式 drop 本作用域持有的命令发送端 (回调里的克隆随窗口
+    // 销毁), 通道关闭 worker 才退出; 再 join 等它补 BYE + 注销
+    // (500ms + ≤2s, 收尾有界)
+    drop(cmd_tx);
+    let _ = worker.join();
     Ok(())
 }
 

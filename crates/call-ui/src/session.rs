@@ -471,12 +471,12 @@ async fn incoming_inner(
         Decision::Accept => {}
     }
 
-    // 用户已点接听, 之后的失败要给对端一个最终响应 (606), 否则对端
-    // INVITE 事务挂到 32s 超时
+    // 用户已点接听, 之后的失败要给对端一个最终响应 (488, SDP 不可接受
+    // 的惯例码), 否则对端 INVITE 事务挂到 32s 超时
     let offer = match parse_offer_all(dialog.initial_request().body()) {
         Ok(o) => o,
         Err(e) => {
-            let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptable), None);
+            let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptableHere), None);
             return Err(e);
         }
     };
@@ -484,7 +484,7 @@ async fn incoming_inner(
     let (audio_pt, video, answer) = negotiate_answer(&offer, IpAddr::V4(local));
     let headers = vec![Header::ContentType("application/sdp".into())];
     if let Err(e) = dialog.accept(Some(headers), Some(answer.clone().into_bytes())) {
-        let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptable), None);
+        let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptableHere), None);
         return Err(e.into());
     }
     info!("call accepted, answer SDP:\n{answer}");
