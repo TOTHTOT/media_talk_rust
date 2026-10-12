@@ -74,8 +74,12 @@ slint 的 `backend-linuxkms-noseat` 需要以下 dev 包 (已加进
 Dockerfile.rk3566 的 apt 段; 手工搭构建环境时照这份装):
 
 ```bash
-sudo apt install -y libgbm-dev libxkbcommon-dev libudev-dev libinput-dev
+sudo apt install -y libgbm-dev libxkbcommon-dev libudev-dev libinput-dev libfontconfig-dev
 ```
+
+`libfontconfig-dev` 是 slint kms 路径经 `yeslogic-fontconfig-sys` 引入的
+字体查找依赖, build script 用 pkg-config 找 `fontconfig.pc`, 容器里缺它
+cargo build 必败 (focal 仓库里有这个包).
 
 用 noseat 而不是 `backend-linuxkms`: Ubuntu 20.04 (focal) 仓库里没有
 `libseat-dev` (最早 jammy 才有), 完整版后端在 focal 上装不齐依赖.
@@ -100,9 +104,9 @@ SLINT_BACKEND=linuxkms-software ./media_talk_rust gui -u 9999 --server 192.168.1
 - `linuxkms-software` (优先): 纯 CPU 渲染, 不依赖 GPU/EGL, RK3566 最稳
 - `linuxkms-femtovg` (备选): GPU 加速, 需要 GPU/EGL 驱动可用; 板子
   Mali 驱动不齐时会起不来
-- 运行时还需要板上有 gbm/xkbcommon/udev/input 的运行库
+- 运行时还需要板上有 gbm/xkbcommon/udev/input/fontconfig 的运行库
   (装对应 `-dev` 包的系统一般已带; 精简 rootfs 需补
-  `libgbm1 libxkbcommon0 libudev1 libinput10`)
+  `libgbm1 libxkbcommon0 libudev1 libinput10 libfontconfig1`)
 
 ### 退路: winit + weston
 
