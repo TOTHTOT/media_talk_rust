@@ -28,5 +28,7 @@ slint-build = "1"
 [features]
 # 板子 (Armbian 无桌面) 用 KMS 直显: 编译时 --features kms,
 # 运行时 SLINT_BACKEND=linuxkms-* 选择渲染器. 需要系统包
-# libgbm-dev libxkbcommon-dev libudev-dev libseat-dev libinput-dev
-kms = ["slint/backend-linuxkms", "slint/renderer-software"]
+# libgbm-dev libxkbcommon-dev libudev-dev libinput-dev
+# (不用 libseat: focal 没有 libseat-dev, noseat 后端进程需拿 DRM master,
+# 板上 root 部署天然满足)
+kms = ["slint/backend-linuxkms-noseat", "slint/renderer-software"]
