@@ -268,9 +268,22 @@ async fn run(
     Ok(())
 }
 
-/// UI 命令处理: Dial 占线检查 + spawn 主叫任务; 通话三键转发进 ctl 通道
-// reason: 命令处理要触达 worker 全部上下文 (client/槽位/媒体源), 打包成
-// 结构体只有这一个调用点, 反而掩盖各参数的实际用途
+/// UI 命令处理: Dial 占线检查 + spawn 主叫任务; 通话三键转发进 ctl 通道.
+///
+/// reason: 命令处理要触达 worker 全部上下文 (client/槽位/媒体源), 打包成
+/// 结构体只有这一个调用点, 反而掩盖各参数的实际用途
+///
+/// # Arguments
+///
+/// * `cmd`: UI 命令 (Dial/Hangup/Accept/Reject)
+/// * `client`: SIP 客户端句柄
+/// * `credential`: Digest 鉴权凭据
+/// * `state_sender`: Dialog 状态发送通道
+/// * `slot`: 当前通话控制槽
+/// * `ui`: 事件回投句柄
+/// * `tap`: 视频帧回调
+/// * `cfg`: SIP 配置 (服务器/账号/媒体源)
+/// * `local`: 本机 IPv4
 #[allow(clippy::too_many_arguments)]
 fn handle_cmd(
     cmd: WorkerCmd,
@@ -392,6 +405,18 @@ async fn forward_update(routes: CallRoutes, id: DialogId, req: rsip::Request) ->
 /// 被叫一路通话: ringing → 等用户接听/拒接/对端取消/超时 → accept 起
 /// 媒体 → 通话 loop (对端 BYE / 本地挂断 / re-INVITE 重协商).
 /// 无论哪条路径退出, 收尾都要: 停媒体、摘路由、清 slot、通知 UI.
+///
+/// # Arguments
+///
+/// * `dialog`: 来电 InviteDialog
+/// * `local`: 本机 IPv4
+/// * `cfg`: SIP 配置
+/// * `ui`: 事件回投句柄
+/// * `tap`: 视频帧回调
+/// * `ctl_rx`: 用户操作控制通道
+/// * `update_rx`: re-INVITE 更新消息通道
+/// * `slot`: 通话槽位
+/// * `routes`: 进行中通话路由表
 // reason: 通话上下文参数打包传递, 照 answer.rs 的 process_call 结构;
 // 内层 incoming_inner 与它共享同一份上下文, 抽结构体收益不明显
 #[allow(clippy::too_many_arguments)]
@@ -422,6 +447,16 @@ async fn handle_incoming(
 
 /// 返回值: Ok(reason) 是正常结束 (对端取消/本地拒接/挂断/对端 BYE),
 /// Err 是失败 (信令或 SDP 错误), 由调用方分别映射 Terminated/Failed
+///
+/// # Arguments
+///
+/// * `dialog`: 来电 InviteDialog
+/// * `local`: 本机 IPv4
+/// * `cfg`: SIP 配置
+/// * `ui`: 事件回投句柄
+/// * `tap`: 视频帧回调
+/// * `ctl_rx`: 用户操作控制通道
+/// * `update_rx`: re-INVITE 更新消息通道
 // reason: 与外层 handle_incoming 共享同一份通话上下文, 拆分只为把
 // 收尾 (停媒体/摘路由/清 slot/通知 UI) 收敛到外层, 参数随上下文走
 #[allow(clippy::too_many_arguments)]
@@ -543,6 +578,23 @@ async fn incoming_inner(
 /// 主叫一路通话: INVITE → 非 200 即失败 → 200 解析 answer 起媒体 →
 /// 通话 loop (对端 BYE / 本地挂断). re-INVITE 不经路由表 (主叫不登记),
 /// forward_update 兜底回不带 SDP 的 200 — 本端媒体不变, 同 call.rs.
+///
+/// # Arguments
+///
+/// * `dialog_layer`: Dialog 层句柄
+/// * `state_sender`: Dialog 状态发送通道
+/// * `callee`: 被叫 URI
+/// * `contact`: 本机 Contact URI
+/// * `credential`: Digest 鉴权凭据
+/// * `number`: 拨号号码
+/// * `local`: 本机 IPv4
+/// * `rtp_ports`: 本机 RTP 端口 (音频, 视频)
+/// * `rtp_sockets`: 占位 socket (保 offer 端口)
+/// * `cfg`: SIP 配置
+/// * `ui`: 事件回投句柄
+/// * `tap`: 视频帧回调
+/// * `ctl_rx`: 用户操作控制通道
+/// * `slot`: 通话槽位
 // reason: 通话上下文参数打包传递, 照 call.rs 的 call_until_hangup 结构
 // (占位 socket 等一次性资源必须按值移交, 无法从共享上下文取)
 #[allow(clippy::too_many_arguments)]
@@ -593,6 +645,22 @@ async fn handle_outgoing(
 
 // reason: 与外层 handle_outgoing 共享同一份通话上下文, 拆分只为把
 // 收尾 (清 slot/通知 UI) 收敛到外层, 参数随上下文走
+///
+/// # Arguments
+///
+/// * `dialog_layer`: Dialog 层句柄
+/// * `state_sender`: Dialog 状态发送通道
+/// * `callee`: 被叫 URI
+/// * `contact`: 本机 Contact URI
+/// * `credential`: Digest 鉴权凭据
+/// * `number`: 拨号号码
+/// * `local`: 本机 IPv4
+/// * `rtp_ports`: 本机 RTP 端口 (音频, 视频)
+/// * `rtp_sockets`: 占位 socket (保 offer 端口)
+/// * `cfg`: SIP 配置
+/// * `ui`: 事件回投句柄
+/// * `tap`: 视频帧回调
+/// * `ctl_rx`: 用户操作控制通道
 #[allow(clippy::too_many_arguments)]
 async fn outgoing_inner(
     dialog_layer: Arc<DialogLayer>,

@@ -51,6 +51,23 @@ pub struct MediaHandles {
 impl MediaHandles {
     /// 按指纹起接收器和发送器. 单路不可用时该路 None (只收不发 /
     /// 只发不收), 不抛错.
+    ///
+    /// # Arguments
+    ///
+    /// * `recv_ports`: 本机接收端口 (音频, 视频)
+    /// * `cfg`: 本机媒体源与视频限宽配置
+    /// * `tap`: 视频帧回调, 接收器视频路经它上屏
+    /// * `recv_fingerprint`: 接收指纹 (音频编码, 视频编码)
+    /// * `send_audio_fingerprint`: 音频发送指纹, None 表示不发音频
+    /// * `send_video_fingerprint`: 视频发送指纹, None 表示不发视频
+    ///
+    /// returns: Self
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     fn new(
         recv_ports: (u16, u16),
         cfg: &GuiSipConfig,
