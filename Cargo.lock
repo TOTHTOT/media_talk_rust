@@ -763,9 +763,11 @@ dependencies = [
  "ipcam-gst",
  "ipcam-sip",
  "parking_lot",
+ "rsipstack",
  "slint",
  "slint-build",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

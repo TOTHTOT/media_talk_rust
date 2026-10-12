@@ -2,6 +2,9 @@
 slint::include_modules!();
 
 pub mod app;
+pub mod bridge;
+mod media;
+pub mod session;
 pub use app::Phase;
 
 /// 临时冒烟入口: 开窗验证 slint 编译和显示, 不接 SIP (Task 4 替换为 run)
