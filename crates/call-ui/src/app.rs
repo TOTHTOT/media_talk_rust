@@ -50,8 +50,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// SIP 事件驱动状态迁移. 事件可能迟到 (比如挂断后才来 Confirmed),
-    /// 与当前阶段不匹配的事件只清错误不迁移, 避免界面乱跳
+    /// SIP 事件驱动状态迁移. 事件可能迟到 (比如挂断后才来 Confirmed):
+    /// Incoming/Confirmed 与当前阶段不匹配时忽略不迁移, 避免界面乱跳;
+    /// 但 Terminated/Failed 是终态事件, 无条件回 Idle 并清 peer,
+    /// 其中 Failed 仅在非 Idle 时才写 error (Idle 下属于迟到事件, 不弹错误条)
     pub fn on_event(&mut self, ev: UiEvent) {
         match ev {
             UiEvent::Registered => self.error.clear(),
@@ -205,5 +207,27 @@ mod tests {
         });
         assert_eq!(app.phase, Phase::Idle);
         assert!(app.error.contains("486"));
+    }
+
+    #[test]
+    fn stale_failed_in_idle_keeps_error_empty() {
+        let mut app = AppState::default();
+        app.on_event(UiEvent::Failed {
+            reason: "408 Timeout".into(),
+        });
+        assert_eq!(app.phase, Phase::Idle);
+        assert_eq!(app.error, "", "Idle 下迟到的 Failed 不得弹错误条");
+        assert_eq!(app.peer, "");
+    }
+
+    #[test]
+    fn incoming_ignored_when_not_idle() {
+        let mut app = AppState::default();
+        app.dial("1002".into());
+        app.on_event(UiEvent::Incoming {
+            caller: "1001".into(),
+        });
+        assert_eq!(app.phase, Phase::Outgoing, "呼叫中收到来电不得被劫持");
+        assert_eq!(app.peer, "1002");
     }
 }
