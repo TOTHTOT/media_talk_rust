@@ -49,6 +49,12 @@ struct Args {
     /// 视频限宽 (对端解码能力, 超宽源会降采样, 保持宽高比); 0 = 不限
     #[arg(long, default_value_t = 640)]
     max_width: u32,
+    /// 强制 client socket 绑到指定 IPv4 网卡. 默认走
+    /// `ipcam_sip::local_ipv4()` (取本机第一个非 loopback IPv4),
+    /// 多网卡 / VPN / Tailscale 场景下可能选错 (例如选到 100.x Tailscale
+    /// 而对端物理网段不可达), 此时用这个选项显式指定 192.168.x.x 网卡
+    #[arg(long)]
+    local_ip: Option<IpAddr>,
 }
 
 #[tokio::main]
@@ -63,8 +69,12 @@ async fn main() -> Result<()> {
     let video_src = ipcam_gst::parse_track_source(&args.video_src).map_err(anyhow::Error::msg)?;
     let audio_src = ipcam_gst::parse_track_source(&args.audio_src).map_err(anyhow::Error::msg)?;
 
-    // Contact/SDP 都要用对端可达的 LAN 地址 (不能是 127.0.0.1)
-    let local = ipcam_sip::local_ipv4()?;
+    // 多网卡机器使用 local_ip 参数绑定 IP
+    let local = match args.local_ip {
+        Some(IpAddr::V4(v4)) => v4,
+        Some(_) => anyhow::bail!("only support IPv4 for now!"),
+        None => ipcam_sip::local_ipv4()?,
+    };
     let client_addr = SocketAddr::V4(SocketAddrV4::new(local, 0));
 
     let config = SipClientConfig::new(
