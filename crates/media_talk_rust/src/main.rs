@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
 use std::net::{IpAddr, SocketAddr};
-use std::process::ExitCode;
 use tracing_subscriber::{EnvFilter, fmt};
 
 mod ipc;
@@ -101,17 +100,17 @@ fn init_tracing() {
 }
 
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn main() -> anyhow::Result<()> {
     init_tracing();
     let cli = Cli::parse();
 
-    let result: anyhow::Result<()> = match cli.command {
+    match cli.command {
         Commands::Discover {
             timeout_secs,
             json,
             username,
             password,
-        } => ipc::discover::run(timeout_secs, json, username, password).await,
+        } => ipc::discover::run(timeout_secs, json, username, password).await?,
         Commands::Serve {
             bind,
             discovery_timeout_secs,
@@ -130,23 +129,17 @@ async fn main() -> ExitCode {
                 audio_out,
                 shutdown,
             )
-            .await
+            .await?
         }
         Commands::DecodeBench { path, max_frames } => {
-            ipc::decode_bench::run(&path, max_frames).await
+            ipc::decode_bench::run(&path, max_frames).await?
         }
-        Commands::Audio { action } => {
-            match action {
-                AudioAction::ListDevices => ipc::audio::list_devices(),
-            }
-            Ok(())
-        }
-        Commands::V4l2 { action } => {
-            match action {
-                V4l2Action::List => ipc::v4l2::list(),
-            }
-            Ok(())
-        }
+        Commands::Audio { action } => match action {
+            AudioAction::ListDevices => ipc::audio::list_devices(),
+        },
+        Commands::V4l2 { action } => match action {
+            V4l2Action::List => ipc::v4l2::list(),
+        },
         Commands::Gui {
             server,
             username,
@@ -157,37 +150,23 @@ async fn main() -> ExitCode {
             max_width,
             local_ip,
         } => {
-            // 参数校验/源解析失败要在 main (返回 ExitCode) 里走 match 尾部
-            // 的统一报错, 不能用 ? 提前返回, 包一层闭包收敛成 Result
-            let cfg = (|| -> anyhow::Result<call_ui::GuiSipConfig> {
-                let local_ip = match local_ip {
-                    Some(IpAddr::V4(v4)) => Some(v4),
-                    Some(_) => anyhow::bail!("only support IPv4 for now!"),
-                    None => None,
-                };
-                Ok(call_ui::GuiSipConfig {
-                    server,
-                    username,
-                    password,
-                    expires,
-                    local_ip,
-                    audio_src: ipcam_gst::parse_track_source(&audio_src)
-                        .map_err(anyhow::Error::msg)?,
-                    video_src: ipcam_gst::parse_track_source(&video_src)
-                        .map_err(anyhow::Error::msg)?,
-                    max_width,
-                })
-            })();
-            // 注意: 必须在主线程跑 slint 事件循环; 当前处于 tokio runtime 的
-            // block_on 里, 直接阻塞 OK — SIP 在 call_ui 内部自己的线程/运行时上
-            cfg.and_then(call_ui::run)
-        }
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e:?}");
-            ExitCode::from(1)
+            let local_ip = match local_ip {
+                Some(IpAddr::V4(v4)) => Some(v4),
+                Some(_) => anyhow::bail!("only support IPv4 for now!"),
+                None => None,
+            };
+            let cfg = call_ui::GuiSipConfig {
+                server,
+                username,
+                password,
+                expires,
+                local_ip,
+                audio_src: ipcam_gst::parse_track_source(&audio_src).map_err(anyhow::Error::msg)?,
+                video_src: ipcam_gst::parse_track_source(&video_src).map_err(anyhow::Error::msg)?,
+                max_width,
+            };
+            call_ui::run(cfg)?;
         }
     }
+    Ok(())
 }
