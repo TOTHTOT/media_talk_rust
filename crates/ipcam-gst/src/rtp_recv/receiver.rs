@@ -272,7 +272,6 @@ fn build_video_tap_branch(
 /// / 播放 (decode → videoconvert → autovideosink; tap=Some 时换成
 /// decode → videoconvert → capsfilter(RGBA) → appsink 回调) / tee 双全.
 /// 返回 udpsrc 的 src pad (stop 时注入 EOS 用)
-#[allow(clippy::too_many_arguments)]
 fn build_video_track(
     pipeline: &gst::Pipeline,
     mux: Option<&gst::Element>,
