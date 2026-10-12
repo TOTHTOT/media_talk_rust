@@ -34,9 +34,9 @@ use crate::app::UiEvent;
 use crate::bridge::{UiHandle, WorkerCmd};
 use crate::media;
 
-/// 被叫侧接收端口 (同 answer.rs, 单路固定即可)
-const AUDIO_RTP_PORT: u16 = 40000;
-const VIDEO_RTP_PORT: u16 = 40002;
+/// 被叫侧接收端口 (同 answer.rs, 单路固定即可); pub(crate) 给 media 层起接收器
+pub(crate) const AUDIO_RTP_PORT: u16 = 40000;
+pub(crate) const VIDEO_RTP_PORT: u16 = 40002;
 
 /// 来电振铃等待用户接听的最长时间, 超时自动拒接, 避免对端挂死在 ringing
 const INCOMING_TIMEOUT: Duration = Duration::from_secs(30);

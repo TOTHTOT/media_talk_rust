@@ -5,6 +5,8 @@ pub mod app;
 pub mod bridge;
 mod media;
 pub mod session;
+// Task 6 的 UI 入口装配时用 video::make_frame_sink 建帧回调
+pub mod video;
 pub use app::Phase;
 
 /// 临时冒烟入口: 开窗验证 slint 编译和显示, 不接 SIP (Task 4 替换为 run)
