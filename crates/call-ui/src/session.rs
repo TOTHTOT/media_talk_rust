@@ -41,7 +41,7 @@ pub(crate) const VIDEO_RTP_PORT: u16 = 40002;
 /// 来电振铃等待用户接听的最长时间, 超时自动拒接, 避免对端挂死在 ringing
 const INCOMING_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// SIP 配置: 服务器账号 + 本机媒体源, 由 UI 入口 (Task 6) 装配
+/// SIP 配置: 服务器账号 + 本机媒体源, 由 UI 入口装配
 pub struct GuiSipConfig {
     /// SIP 服务器地址 (注册与呼叫都走它)
     pub server: SocketAddr,
@@ -85,7 +85,7 @@ type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
 /// * `cmd_rx`: UI 命令接收端 (bridge::cmd_channel 的另一半); 通道关闭
 ///   (UI 窗口已关) 即触发 worker 收尾退出
 /// * `ui`: 事件回投句柄, worker 各阶段经它 post UiEvent 更新界面
-/// * `tap`: 视频帧回调, 透传给媒体层 (Task 5) 把对端画面送 GUI 上屏
+/// * `tap`: 视频帧回调, 透传给媒体层把对端画面送 GUI 上屏
 ///
 /// returns: std::thread::JoinHandle<()> — worker 线程句柄, UI 退出时 join 它
 ///
@@ -219,9 +219,10 @@ async fn run(
     loop {
         tokio::select! {
             r = &mut reg => {
-                // 注册循环退出 = 永久失败 (401/403/404) 或被取消
+                // 注册循环退出 = 永久失败 (401/403/404) 或被取消;
+                // 原因带给 UI 错误条, 不只留在日志里
                 warn!(result = ?r, "register loop exited");
-                ui.post(UiEvent::RegisterFailed("注册循环退出".into()));
+                ui.post(UiEvent::RegisterFailed(format!("注册循环退出: {r:?}")));
                 reg_done = true;
                 break;
             }
@@ -249,6 +250,16 @@ async fn run(
     }
 
     info!("stopping");
+    // 进行中通话补 BYE: cmd 通道断开直接 stop 会让 runtime drop 掐掉
+    // 通话任务, 对端不知道挂断; 先送 Hangup 给通话任务, 留出 BYE 的窗口
+    // (best-effort: 拨号 pending 期的 BYE 要等最终响应, 可能盖不住)
+    {
+        let ctl = slot.lock().clone();
+        if let Some(ctl) = ctl {
+            let _ = ctl.try_send(CallCtl::Hangup);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
     client.stop();
     // 正常退出路径等注册循环把 best-effort 注销 (Expires:0) 跑完
     if !reg_done {
@@ -460,11 +471,22 @@ async fn incoming_inner(
         Decision::Accept => {}
     }
 
-    let offer = parse_offer_all(dialog.initial_request().body())?;
+    // 用户已点接听, 之后的失败要给对端一个最终响应 (606), 否则对端
+    // INVITE 事务挂到 32s 超时
+    let offer = match parse_offer_all(dialog.initial_request().body()) {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptable), None);
+            return Err(e);
+        }
+    };
     info!(?offer, "incoming offer");
     let (audio_pt, video, answer) = negotiate_answer(&offer, IpAddr::V4(local));
     let headers = vec![Header::ContentType("application/sdp".into())];
-    dialog.accept(Some(headers), Some(answer.clone().into_bytes()))?;
+    if let Err(e) = dialog.accept(Some(headers), Some(answer.clone().into_bytes())) {
+        let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptable), None);
+        return Err(e.into());
+    }
     info!("call accepted, answer SDP:\n{answer}");
     ui.post(UiEvent::Confirmed {
         peer: caller.clone(),
