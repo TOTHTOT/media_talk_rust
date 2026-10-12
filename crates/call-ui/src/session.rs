@@ -41,14 +41,23 @@ const VIDEO_RTP_PORT: u16 = 40002;
 /// 来电振铃等待用户接听的最长时间, 超时自动拒接, 避免对端挂死在 ringing
 const INCOMING_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// SIP 配置: 服务器账号 + 本机媒体源, 由 UI 入口 (Task 6) 装配
 pub struct GuiSipConfig {
+    /// SIP 服务器地址 (注册与呼叫都走它)
     pub server: SocketAddr,
+    /// SIP 账号 (同时作为注册用户名)
     pub username: String,
+    /// 账号密码 (digest 鉴权)
     pub password: String,
+    /// 注册有效期 (秒), 续期按 75% 提前
     pub expires: u32,
+    /// 强制绑定的本机 IPv4 网卡; None 走 ipcam_sip::local_ipv4() 自动选
     pub local_ip: Option<Ipv4Addr>,
+    /// 通话时回传给对端的音频源 (麦克风/文件)
     pub audio_src: TrackSource,
+    /// 通话时发给对端的视频源 (相机/文件/RTSP)
     pub video_src: TrackSource,
+    /// 视频限宽 (对端解码能力, 超宽源降采样); 0 = 不限
     pub max_width: u32,
 }
 
@@ -65,7 +74,26 @@ type UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>);
 /// 进行中的通话路由表: dialog id -> 通话任务的 re-INVITE 通道
 type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
 
-/// 启动 SIP worker 线程. panic 只记日志, 不拖垮 GUI 进程.
+/// 启动 SIP worker 线程: 独立线程跑自己的 tokio runtime, 注册常驻,
+/// UI 命令逐条处理, 事件经 UiHandle 回投主线程. 内部任何失败 (runtime
+/// 创建/run 出错/worker panic 由线程边界兜住) 只记日志, 不拖垮 GUI 进程;
+/// 线程创建失败时返回一个立即退出的占位线程, 保持签名不 panic.
+///
+/// # Arguments
+///
+/// * `cfg`: SIP 服务器账号与本机媒体源配置
+/// * `cmd_rx`: UI 命令接收端 (bridge::cmd_channel 的另一半); 通道关闭
+///   (UI 窗口已关) 即触发 worker 收尾退出
+/// * `ui`: 事件回投句柄, worker 各阶段经它 post UiEvent 更新界面
+/// * `tap`: 视频帧回调, 透传给媒体层 (Task 5) 把对端画面送 GUI 上屏
+///
+/// returns: std::thread::JoinHandle<()> — worker 线程句柄, UI 退出时 join 它
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn spawn(
     cfg: GuiSipConfig,
     cmd_rx: UnboundedReceiver<WorkerCmd>,
@@ -230,6 +258,8 @@ async fn run(
 }
 
 /// UI 命令处理: Dial 占线检查 + spawn 主叫任务; 通话三键转发进 ctl 通道
+// reason: 命令处理要触达 worker 全部上下文 (client/槽位/媒体源), 打包成
+// 结构体只有这一个调用点, 反而掩盖各参数的实际用途
 #[allow(clippy::too_many_arguments)]
 fn handle_cmd(
     cmd: WorkerCmd,
@@ -351,6 +381,8 @@ async fn forward_update(routes: CallRoutes, id: DialogId, req: rsip::Request) ->
 /// 被叫一路通话: ringing → 等用户接听/拒接/对端取消/超时 → accept 起
 /// 媒体 → 通话 loop (对端 BYE / 本地挂断 / re-INVITE 重协商).
 /// 无论哪条路径退出, 收尾都要: 停媒体、摘路由、清 slot、通知 UI.
+// reason: 通话上下文参数打包传递, 照 answer.rs 的 process_call 结构;
+// 内层 incoming_inner 与它共享同一份上下文, 抽结构体收益不明显
 #[allow(clippy::too_many_arguments)]
 async fn handle_incoming(
     dialog: InviteDialog,
@@ -379,6 +411,8 @@ async fn handle_incoming(
 
 /// 返回值: Ok(reason) 是正常结束 (对端取消/本地拒接/挂断/对端 BYE),
 /// Err 是失败 (信令或 SDP 错误), 由调用方分别映射 Terminated/Failed
+// reason: 与外层 handle_incoming 共享同一份通话上下文, 拆分只为把
+// 收尾 (停媒体/摘路由/清 slot/通知 UI) 收敛到外层, 参数随上下文走
 #[allow(clippy::too_many_arguments)]
 async fn incoming_inner(
     dialog: &InviteDialog,
@@ -487,6 +521,8 @@ async fn incoming_inner(
 /// 主叫一路通话: INVITE → 非 200 即失败 → 200 解析 answer 起媒体 →
 /// 通话 loop (对端 BYE / 本地挂断). re-INVITE 不经路由表 (主叫不登记),
 /// forward_update 兜底回不带 SDP 的 200 — 本端媒体不变, 同 call.rs.
+// reason: 通话上下文参数打包传递, 照 call.rs 的 call_until_hangup 结构
+// (占位 socket 等一次性资源必须按值移交, 无法从共享上下文取)
 #[allow(clippy::too_many_arguments)]
 async fn handle_outgoing(
     dialog_layer: Arc<DialogLayer>,
@@ -533,6 +569,8 @@ async fn handle_outgoing(
     *slot.lock() = None;
 }
 
+// reason: 与外层 handle_outgoing 共享同一份通话上下文, 拆分只为把
+// 收尾 (清 slot/通知 UI) 收敛到外层, 参数随上下文走
 #[allow(clippy::too_many_arguments)]
 async fn outgoing_inner(
     dialog_layer: Arc<DialogLayer>,
