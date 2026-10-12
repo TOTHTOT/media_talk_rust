@@ -389,6 +389,7 @@ fn start_receiver(
     match start_rtp_receiver(RtpRecvConfig {
         path: Some(output_dir.join("call.ts")),
         playback: true,
+        video_tap: None,
         video: video.map(|c| (VIDEO_RTP_PORT, c)),
         audio: audio.map(|c| (AUDIO_RTP_PORT, c)),
     }) {

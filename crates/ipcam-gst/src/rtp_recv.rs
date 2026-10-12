@@ -6,7 +6,8 @@
 //! # 管线拓扑
 //!
 //! 视频: `udpsrc(port) → rtph264depay → h264parse → [tee] → mp4mux.video_%u
-//!       / avdec_h264 → autovideosink`
+//!       / avdec_h264 → autovideosink` (video_tap=Some 时播放分支换成
+//!       `avdec_h264 → videoconvert → capsfilter(RGBA) → appsink` 回调吐裸帧)
 //!
 //! 音频: `udpsrc(port) → rtppcmxdepay → mulawdec/alawdec → [tee] →
 //!       opusenc → mp4mux.audio_%u / audioconvert → autoaudiosink`

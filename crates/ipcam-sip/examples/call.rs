@@ -187,6 +187,7 @@ async fn call_until_hangup(
     let receiver = match ipcam_gst::start_rtp_receiver(ipcam_gst::RtpRecvConfig {
         path: None,
         playback: true,
+        video_tap: None,
         audio: peers
             .audio
             .as_ref()

@@ -1,11 +1,15 @@
-//! RTP 接收器: 从 UDP 端口收 RTP 流, 两个出口可单开或同时开 (tee 分叉):
+//! RTP 接收器: 从 UDP 端口收 RTP 流, 出口可单开或同时开 (tee 分叉):
 //!   存盘 (cfg.path): 音视频合进同一个 TS 流文件
 //!   播放 (cfg.playback): 解码后送本机扬声器/屏幕, 全双工对讲的收端
+//!   视频 tap (cfg.video_tap): 视频解码后经 appsink 回调吐 RGBA 裸帧
+//!     (GUI 纹理通路); tap 存在时取代 autovideosink 播放分支, 不影响
+//!     音频 playback 和存盘
 //!
 //! 管线拓扑 (单出口时没有 tee, 直链):
 //!   视频: udpsrc(port) → rtph264depay → h264parse ─┬→ queue → mpegtsmux.sink_%d
 //!         (存盘)                                    └→ queue → avdec_h264
-//!                                                    → videoconvert → autovideosink (播放)
+//!                                                    → videoconvert → autovideosink (播放,
+//!                                                      tap=Some 时换 capsfilter(RGBA) → appsink)
 //!   音频: udpsrc(port) → rtppcmxdepay → mulawdec/alawdec ─┬→ audioconvert
 //!           → audioresample → opusenc → queue → mpegtsmux.sink_%d        (存盘)
 //!                                                        └→ queue → audioconvert
@@ -117,6 +121,7 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
             &pipeline,
             mux.as_ref(),
             cfg.playback,
+            cfg.video_tap.as_ref(),
             port,
             codec,
             stats.clone(),
@@ -213,13 +218,66 @@ fn link_mux(
     Ok(())
 }
 
+/// 视频 tap 分支链头之后的一段: decode → convert → capsfilter(RGBA) →
+/// appsink(回调吐帧). 返回要接进 tee/链尾的元素列表已 link 完成.
+/// capsfilter 锁 RGBA: tap 回调契约就是 RGBA 裸帧 (ingest::tap 同契约)
+fn build_video_tap_branch(
+    decode_name: &str,
+    tap: &crate::VideoFrameSink,
+) -> Result<Vec<gst::Element>, GstStreamError> {
+    let decode = make(decode_name)?;
+    let convert = make("videoconvert")?;
+    let rgba = make("capsfilter")?;
+    rgba.set_property(
+        "caps",
+        gst::Caps::builder("video/x-raw")
+            .field("format", "RGBA")
+            .build(),
+    );
+    let appsink = make("appsink")?;
+    appsink.set_property("emit-signals", true);
+    disable_sink_async(&appsink);
+    let sink = appsink
+        .clone()
+        .dynamic_cast::<gstreamer_app::AppSink>()
+        .map_err(|_| GstStreamError::Init("appsink cast failed".into()))?;
+    let tap = tap.clone();
+    sink.set_callbacks(
+        gstreamer_app::AppSinkCallbacks::builder()
+            .new_sample(move |appsink| {
+                let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let caps = sample.caps().ok_or(gst::FlowError::Error)?;
+                let s = caps.structure(0).ok_or(gst::FlowError::Error)?;
+                let width = s.get::<i32>("width").map_err(|_| gst::FlowError::Error)? as u32;
+                let height = s.get::<i32>("height").map_err(|_| gst::FlowError::Error)? as u32;
+                let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                // videoconvert 输出的 RGBA 是紧凑排列, 但显式按 stride 处理更安全:
+                // gst 2.20+ 有 stride 元数据, 这里按紧凑算 (width*4)
+                let frame = crate::RawVideoFrame {
+                    width,
+                    height,
+                    stride: width as usize * 4,
+                    data: &map,
+                };
+                (tap.lock())(frame);
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+    Ok(vec![decode, convert, rgba, appsink])
+}
+
 /// 视频接收轨: udpsrc → depay → parse, 之后按出口分: 存盘 (queue → mux)
-/// / 播放 (decode → videoconvert → autovideosink) / tee 双全.
+/// / 播放 (decode → videoconvert → autovideosink; tap=Some 时换成
+/// decode → videoconvert → capsfilter(RGBA) → appsink 回调) / tee 双全.
 /// 返回 udpsrc 的 src pad (stop 时注入 EOS 用)
+#[allow(clippy::too_many_arguments)]
 fn build_video_track(
     pipeline: &gst::Pipeline,
     mux: Option<&gst::Element>,
     playback: bool,
+    tap: Option<&crate::VideoFrameSink>,
     port: u16,
     codec: VideoCodec,
     stats: Arc<crate::PktStats>,
@@ -282,7 +340,9 @@ fn build_video_track(
         });
     }
 
-    match (mux, playback) {
+    // tap 优先于 autovideosink: tap=Some 时即使 playback=true 视频也走
+    // appsink 回调分支, 不弹独立窗口 (GUI 嵌不进 autovideosink)
+    match (mux, playback || tap.is_some()) {
         (Some(mux), false) => {
             // mux 前挂 queue 解耦: mux 的消费节奏不能卡住网络收包线程
             let queue = make("queue")?;
@@ -291,15 +351,24 @@ fn build_video_track(
             link_chain(&elems, "video recv chain")?;
             link_mux(&queue, mux, "sink_%d")?;
         }
-        (None, true) => {
-            let decode = make(decode_name)?;
-            let convert = make("videoconvert")?;
-            let sink = make("autovideosink")?;
-            disable_sink_async(&sink);
-            let elems = [&udpsrc, &depay, &parse, &bs, &decode, &convert, &sink];
-            add_and_sync(pipeline, &elems)?;
-            link_chain(&elems, "video play chain")?;
-        }
+        (None, true) => match tap {
+            Some(tap) => {
+                let branch = build_video_tap_branch(decode_name, tap)?;
+                let mut elems: Vec<&gst::Element> = vec![&udpsrc, &depay, &parse, &bs];
+                elems.extend(branch.iter());
+                add_and_sync(pipeline, &elems)?;
+                link_chain(&elems, "video tap chain")?;
+            }
+            None => {
+                let decode = make(decode_name)?;
+                let convert = make("videoconvert")?;
+                let sink = make("autovideosink")?;
+                disable_sink_async(&sink);
+                let elems = [&udpsrc, &depay, &parse, &bs, &decode, &convert, &sink];
+                add_and_sync(pipeline, &elems)?;
+                link_chain(&elems, "video play chain")?;
+            }
+        },
         (Some(mux), true) => {
             let tee = make("tee")?;
             // tee 分支必须用 leaky queue: 任一分支停滞 (比如 mux 或
@@ -307,40 +376,55 @@ fn build_video_track(
             // 和整条管线一起拖死 (实测: 音频缺失时视频冻结在 ~27 帧)
             let rec_queue = leaky_queue()?;
             let play_queue = leaky_queue()?;
-            let decode = make(decode_name)?;
-            let convert = make("videoconvert")?;
-            let sink = make("autovideosink")?;
-            disable_sink_async(&sink);
-            let elems = [
-                &udpsrc,
-                &depay,
-                &parse,
-                &bs,
-                &tee,
-                &rec_queue,
-                &play_queue,
-                &decode,
-                &convert,
-                &sink,
-            ];
-            add_and_sync(pipeline, &elems)?;
-            link_chain(&[&udpsrc, &depay, &parse, &bs, &tee], "video recv head")?;
-            link_chain(
-                &[&play_queue, &decode, &convert, &sink],
-                "video play branch",
-            )?;
+            match tap {
+                Some(tap) => {
+                    let branch = build_video_tap_branch(decode_name, tap)?;
+                    let mut elems: Vec<&gst::Element> =
+                        vec![&udpsrc, &depay, &parse, &bs, &tee, &rec_queue, &play_queue];
+                    elems.extend(branch.iter());
+                    add_and_sync(pipeline, &elems)?;
+                    link_chain(&[&udpsrc, &depay, &parse, &bs, &tee], "video recv head")?;
+                    let mut play_elems: Vec<&gst::Element> = vec![&play_queue];
+                    play_elems.extend(branch.iter());
+                    link_chain(&play_elems, "video tap branch")?;
+                }
+                None => {
+                    let decode = make(decode_name)?;
+                    let convert = make("videoconvert")?;
+                    let sink = make("autovideosink")?;
+                    disable_sink_async(&sink);
+                    let elems = [
+                        &udpsrc,
+                        &depay,
+                        &parse,
+                        &bs,
+                        &tee,
+                        &rec_queue,
+                        &play_queue,
+                        &decode,
+                        &convert,
+                        &sink,
+                    ];
+                    add_and_sync(pipeline, &elems)?;
+                    link_chain(&[&udpsrc, &depay, &parse, &bs, &tee], "video recv head")?;
+                    link_chain(
+                        &[&play_queue, &decode, &convert, &sink],
+                        "video play branch",
+                    )?;
+                }
+            }
             link_tee_branch(&tee, &rec_queue)?;
             link_tee_branch(&tee, &play_queue)?;
             link_mux(&rec_queue, mux, "sink_%d")?;
         }
         (None, false) => {
             return Err(GstStreamError::InvalidConfig(
-                "video track with neither record nor playback".into(),
+                "video track with neither record, playback nor tap".into(),
             ));
         }
     }
 
-    info!(port, codec = ?codec, record = mux.is_some(), playback, "video receive track linked");
+    info!(port, codec = ?codec, record = mux.is_some(), playback, tap = tap.is_some(), "video receive track linked");
     static_pad(&udpsrc, "src")
 }
 
@@ -476,6 +560,55 @@ mod tests {
         dir
     }
 
+    /// GUI 视频通路: 视频帧经 appsink tap 回调吐 RGBA 裸帧 (不进 autovideosink).
+    /// 环回发 H264, tap 必须收到帧且宽高与源一致
+    #[test]
+    fn video_tap_receives_decoded_frames() {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+        crate::ensure_init_internal().unwrap();
+
+        let frames = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let dims = std::sync::Arc::new(parking_lot::Mutex::new((0u32, 0u32)));
+        let tap: crate::VideoFrameSink = {
+            let frames = frames.clone();
+            let dims = dims.clone();
+            std::sync::Arc::new(parking_lot::Mutex::new(move |f: crate::RawVideoFrame| {
+                frames.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                *dims.lock() = (f.width, f.height);
+                // data 长度必须够 stride*height (回调内有效)
+                assert!(f.data.len() >= f.stride * f.height as usize);
+            }))
+        };
+
+        let receiver = start_rtp_receiver(RtpRecvConfig {
+            path: None,
+            playback: true, // 音频仍走 autoaudiosink; 视频被 tap 接管
+            video_tap: Some(tap),
+            video: Some((42130, VideoCodec::H264)),
+            audio: None,
+        })
+        .expect("receiver starts");
+
+        let sender = gst::parse::launch(
+            "videotestsrc is-live=true ! video/x-raw,width=320,height=240,framerate=15/1 \
+             ! x264enc tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=42130",
+        )
+        .expect("sender pipeline parses")
+        .downcast::<gst::Pipeline>()
+        .expect("sender is a pipeline");
+        sender.set_state(gst::State::Playing).unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+
+        receiver.stop();
+        sender.set_state(gst::State::Null).ok();
+
+        assert!(
+            frames.load(std::sync::atomic::Ordering::Relaxed) > 10,
+            "tap got no frames"
+        );
+        assert_eq!(*dims.lock(), (320, 240));
+    }
+
     /// 端到端: 真发 RTP (本机环回) → 接收器合并成 TS → stop() 注入 EOS
     /// 收尾 (TS 无索引, EOS 只是冲刷; 文件非空且能被 discoverer 认出即可).
     /// gst-launch 测不了这条路径: 它对 udpsrc 注入不了 EOS, 只有
@@ -491,6 +624,7 @@ mod tests {
         let receiver = start_rtp_receiver(RtpRecvConfig {
             path: Some(path.clone()),
             playback: false,
+            video_tap: None,
             video: Some((42110, VideoCodec::H264)),
             audio: Some((42112, AudioCodec::G711U)),
         })
@@ -529,6 +663,7 @@ mod tests {
         let receiver = start_rtp_receiver(RtpRecvConfig {
             path: Some(path.clone()),
             playback: true,
+            video_tap: None,
             video: None,
             audio: Some((42114, AudioCodec::G711U)),
         })
@@ -565,6 +700,7 @@ mod tests {
         let receiver = start_rtp_receiver(RtpRecvConfig {
             path: Some(path.clone()),
             playback: true,
+            video_tap: None,
             video: Some((42120, VideoCodec::H264)),
             audio: Some((42122, AudioCodec::G711U)),
         })
@@ -608,6 +744,7 @@ mod tests {
         let receiver = start_rtp_receiver(RtpRecvConfig {
             path: Some(path.clone()),
             playback: true,
+            video_tap: None,
             video: Some((42124, VideoCodec::H264)),
             audio: Some((42126, AudioCodec::G711U)),
         })
