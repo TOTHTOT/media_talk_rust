@@ -20,6 +20,8 @@ v4l2-device-cap = { path = "../v4l2-device-cap" }
 # GStreamer-based ingest (unconditional); requires GStreamer + pkg-config
 # on the build host.
 ipcam-gst = { path = "../ipcam-gst" }
+# Slint 通话 GUI (gui 子命令)
+call-ui = { path = "../call-ui" }
 
 tokio = { workspace = true }
 clap = { workspace = true }
@@ -38,3 +40,5 @@ tokio-util = { workspace = true }
 default = ["sw-decode"]
 sw-decode = []
 hw-decode = []
+# 板子 (Armbian 无桌面) KMS 直显: cargo build -p media_talk_rust --features kms
+kms = ["call-ui/kms"]

@@ -19,8 +19,13 @@ RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirrors.tuna.tsinghua.
     curl \
     git \
     libasound2-dev \
+    libgbm-dev \
     libgstreamer-plugins-base1.0-dev \
     libgstreamer1.0-dev \
+    libinput-dev \
+    libseat-dev \
+    libudev-dev \
+    libxkbcommon-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
@@ -43,5 +48,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh \
 
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p media_talk_rust --features hw-decode \
+# kms: call-ui 的 slint linuxkms 后端 (gui 子命令在板子上直显)
+RUN cargo build --release -p media_talk_rust --features hw-decode,kms \
     && cp target/release/media_talk_rust /media_talk_rust

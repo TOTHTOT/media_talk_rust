@@ -44,7 +44,7 @@ docker build -f Dockerfile.rk3566 -t media-talk-rk3566 .
 docker run --rm -v "$PWD/out:/out" media-talk-rk3566 cp /media_talk_rust /out/
 ```
 
-产物: `./out/media_talk_rust` (~6.5MB, ELF aarch64, stripped).
+产物: `./out/media_talk_rust` (ELF aarch64, stripped).
 
 ### Dockerfile 里的国内镜像三连
 
@@ -63,6 +63,46 @@ file out/media_talk_rust
 # ELF 64-bit LSB pie executable, ARM aarch64, ... for GNU/Linux 3.7.0, stripped
 ldd out/media_talk_rust   # 在容器里跑; 期望依赖见下节
 ```
+
+## GUI (call-ui) 构建
+
+`gui` 子命令 (Slint 通话界面) 在板子上走 KMS 直显, 不需要桌面环境.
+
+### 构建期系统包
+
+slint 的 `backend-linuxkms` 需要以下 dev 包 (已加进 Dockerfile.rk3566
+的 apt 段; 手工搭构建环境时照这份装):
+
+```bash
+sudo apt install -y libgbm-dev libxkbcommon-dev libudev-dev libseat-dev libinput-dev
+```
+
+### feature 开关
+
+- `call-ui` crate: feature `kms` = `slint/backend-linuxkms` +
+  `slint/renderer-software` (见 `crates/call-ui/Cargo.toml`)
+- `media_talk_rust` 转发: `kms = ["call-ui/kms"]`, 构建命令
+  `cargo build --release -p media_talk_rust --features hw-decode,kms`
+  (Dockerfile 已带; 不能用 `--features call-ui/kms` 直接跨包指定)
+
+### 运行时: SLINT_BACKEND 选择渲染器
+
+```bash
+SLINT_BACKEND=linuxkms-software ./media_talk_rust gui -u 9999 --server 192.168.11.17:5062
+```
+
+- `linuxkms-software` (优先): 纯 CPU 渲染, 不依赖 GPU/EGL, RK3566 最稳
+- `linuxkms-femtovg` (备选): GPU 加速, 需要 GPU/EGL 驱动可用; 板子
+  Mali 驱动不齐时会起不来
+- 运行时还需要板上有 gbm/xkbcommon/udev/seat/input 的运行库
+  (装对应 `-dev` 包的系统一般已带; 精简 rootfs 需补
+  `libgbm1 libxkbcommon0 libudev1 libseat1 libinput10`)
+
+### 退路: winit + weston
+
+linuxkms 后端在 slint 里仍是实验特性, 若编译或运行不过, 退路是板子装
+最小 weston, 然后 `SLINT_BACKEND=winit-femtovg` 跑 (winit 后端是默认
+feature, 不需要 kms 编译开关). 这里只记方案, 不实现.
 
 ## 板端运行时依赖
 
