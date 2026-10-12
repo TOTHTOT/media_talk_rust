@@ -1,0 +1,30 @@
+[package]
+name = "call-ui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+slint = { version = "1", default-features = false, features = [
+    "std",
+    "backend-winit",
+    "renderer-femtovg",
+    # slint 1.17 要求显式开 compat-1-2 (default-features=false 时被关掉)
+    "compat-1-2",
+] }
+tokio = { workspace = true, features = ["full"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+ipcam-core = { path = "../ipcam-core" }
+ipcam-gst = { path = "../ipcam-gst" }
+ipcam-sip = { path = "../ipcam-sip" }
+parking_lot = { workspace = true }
+
+[build-dependencies]
+slint-build = "1"
+
+[features]
+# 板子 (Armbian 无桌面) 用 KMS 直显: 编译时 --features kms,
+# 运行时 SLINT_BACKEND=linuxkms-* 选择渲染器. 需要系统包
+# libgbm-dev libxkbcommon-dev libudev-dev libseat-dev libinput-dev
+kms = ["slint/backend-linuxkms", "slint/renderer-software"]

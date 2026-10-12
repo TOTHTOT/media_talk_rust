@@ -1,0 +1,86 @@
+import { Button, LineEdit } from "std-widgets.slint";
+
+// phase: 0=Idle 1=Outgoing 2=Incoming 3=InCall (与 app.rs Phase 一一对应)
+export component MainWindow inherits Window {
+    in property <int> phase: 0;
+    in property <string> peer: "";
+    in property <string> error-text: "";
+    in property <image> video-frame;
+    callback dial(string);
+    callback accept-call();
+    callback reject-call();
+    callback hangup();
+
+    title: "media_talk";
+    preferred-width: 800px;
+    preferred-height: 480px;
+    background: #101418;
+
+    // 通话中: 视频铺满 + 挂断
+    if root.phase == 3: Rectangle {
+        Image {
+            source: root.video-frame;
+            width: 100%;
+            height: 100%;
+            image-fit: contain;
+        }
+        Button {
+            text: "挂断";
+            x: parent.width - self.width - 20px;
+            y: parent.height - self.height - 20px;
+            clicked => { root.hangup(); }
+        }
+    }
+
+    // 待机: 拨号
+    if root.phase == 0: VerticalLayout {
+        alignment: center;
+        spacing: 16px;
+        padding: 60px;
+        number := LineEdit {
+            placeholder-text: "输入号码";
+            font-size: 28px;
+            horizontal-alignment: center;
+        }
+        Button {
+            text: "拨打";
+            enabled: number.text != "";
+            clicked => { root.dial(number.text); }
+        }
+    }
+
+    // 呼出中
+    if root.phase == 1: VerticalLayout {
+        alignment: center;
+        spacing: 16px;
+        Text { text: "呼叫 " + root.peer + " ..."; color: white; font-size: 24px; horizontal-alignment: center; }
+        Button { text: "取消"; clicked => { root.hangup(); } }
+    }
+
+    // 来电
+    if root.phase == 2: VerticalLayout {
+        alignment: center;
+        spacing: 16px;
+        Text { text: "来电: " + root.peer; color: white; font-size: 24px; horizontal-alignment: center; }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 24px;
+            Button { text: "接听"; clicked => { root.accept-call(); } }
+            Button { text: "拒接"; clicked => { root.reject-call(); } }
+        }
+    }
+
+    // 错误条
+    if root.error-text != "": Rectangle {
+        y: 0;
+        width: 100%;
+        height: 32px;
+        background: #a03030;
+        Text {
+            text: root.error-text;
+            color: white;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+}
