@@ -14,7 +14,7 @@ use anyhow::Result;
 use clap::Parser;
 use ipcam_core::{AudioCodec, VideoCodec};
 use ipcam_gst::{RtpReceiver, RtpRecvConfig, RtpSender, start_rtp_receiver};
-use ipcam_sip::sdp::{OfferMedias, PT_PCMA, build_av_answer, parse_offer_all};
+use ipcam_sip::sdp::{OfferMedias, parse_offer_all};
 use ipcam_sip::{SipClient, SipClientConfig, run_dialog_state_loop};
 use rsipstack::dialog::DialogId;
 use rsipstack::dialog::invite_dialog::InviteDialog;
@@ -247,96 +247,32 @@ async fn forward_update(
     }
 }
 
-/// 协商结果: (选中的音频 pt+编码, 选中的视频 pt+编码+fmtp, answer 文本)
-type NegotiatedAnswer = (
-    Option<(u8, AudioCodec)>,
-    Option<(u8, VideoCodec, Option<String>)>,
-    String,
-);
-
-/// 音频只接 G.711 (复用 ipcam_gst::sendable_audio_codec 的白名单).
-/// offer 的 fmt 列表按对端偏好排序, 从前到后挑第一个我们支持的
-/// (典型 offer 是 opus 打头, PCMU/PCMA 跟在后面).
-fn pick_audio(offer: &OfferMedias) -> Option<(u8, AudioCodec)> {
-    let a = offer.audio.as_ref()?;
-    let picked = a
-        .codecs
-        .iter()
-        .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (c.payload_type, ac)));
-    if picked.is_none() {
-        warn!(codecs = ?a.codecs, "no supported audio codec in offer, skip saving audio");
-    }
-    picked
+/// 可收发音频谓词 (复用 ipcam_gst 发送白名单 G.711): 协商与指纹比对共用.
+/// offer 的 fmt 列表按对端偏好排序, negotiate::pick_audio 从前到后挑第一个
+/// 谓词接受的 (典型 offer 是 opus 打头, PCMU/PCMA 跟在后面).
+fn audio_pred(name: &str) -> Option<AudioCodec> {
+    ipcam_gst::sendable_audio_codec(name)
 }
 
-/// 视频只接 H264/H265, 其他 (VP8/VP9/AV1) 整路拒收, 但 SDP 仍带 audio
-/// 给对端一个能落地的 answer.
-fn pick_video(offer: &OfferMedias) -> Option<(u8, VideoCodec, Option<String>)> {
-    let v = offer.video.as_ref()?;
-    let picked = v
-        .codecs
-        .iter()
-        .find_map(|c| match VideoCodec::from_name(&c.codec) {
-            vc @ (VideoCodec::H264 | VideoCodec::H265) => {
-                Some((c.payload_type, vc, c.fmtp.clone()))
-            }
-            _ => None,
-        });
-    if picked.is_none() {
-        warn!(codecs = ?v.codecs, "no supported video codec in offer, skip saving video");
+/// 可收视频谓词: 只接 H264/H265, 其他 (VP8/VP9/AV1) 整路拒收, 但 SDP 仍带
+/// audio 给对端一个能落地的 answer.
+fn video_pred(name: &str) -> Option<VideoCodec> {
+    match VideoCodec::from_name(name) {
+        vc @ (VideoCodec::H264 | VideoCodec::H265) => Some(vc),
+        _ => None,
     }
-    picked
-}
-
-/// 从 offer 协商编码并构建 answer SDP (初始 INVITE 和 re-INVITE 共用).
-/// answer 的 pt/fmtp 回显 offer 里选中的编码 (RFC 3264). 不支持的编码
-/// 那一路不存盘 (answer 里仍带着, 对端发了也收, 只是不落盘).
-///
-/// # Arguments
-///
-/// * `offer`: 解析后的对端 SDP (音视频媒体列表 + 编码候选)
-/// * `local_ip`: 本机 IPv4, 写进 answer 的 c= 行告诉对端往哪发 RTP
-///
-/// returns: NegotiatedAnswer — 选中的音频/视频编码 (给媒体管线) + answer 文本 (给 SIP 应答)
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
-fn negotiate_answer(offer: &OfferMedias, local_ip: IpAddr) -> NegotiatedAnswer {
-    let audio_pt = pick_audio(offer);
-    let video = pick_video(offer);
-    let answer = build_av_answer(
-        local_ip,
-        AUDIO_RTP_PORT,
-        VIDEO_RTP_PORT,
-        audio_pt.map(|(pt, _)| pt).unwrap_or_else(|| {
-            warn!("audio_pt unwarp failed, used: {}", PT_PCMA);
-            PT_PCMA
-        }),
-        video.as_ref().map(|(pt, _, _)| *pt).unwrap_or_else(|| {
-            warn!("video unwarp failed, used: {}", 96);
-            96
-        }),
-        video.as_ref().and_then(|(_, _, fmtp)| fmtp.as_deref()),
-    );
-    (audio_pt, video, answer.to_string())
 }
 
 /// 提取麦克风回传所需参数 (对端收音频地址, pt, 编码), 同时充当指纹:
 /// re-INVITE 之后这三个字段任一变了就重启 sender (地址变了 udpsink 找
 /// 不到对端, pt/编码变了 RTP 头和 depay 链对不上).
 fn mic_params(offer: &OfferMedias) -> Option<ipcam_gst::AudioDest> {
-    offer.audio.as_ref().and_then(|a| {
-        a.codecs
-            .iter()
-            .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (a, c, ac)))
-            .map(|(a, c, ac)| ipcam_gst::AudioDest {
-                addr: SocketAddr::new(a.addr, a.port),
-                payload_type: c.payload_type,
-                codec: ac,
-            })
+    let a = offer.audio.as_ref()?;
+    let (payload_type, codec) = ipcam_sip::negotiate::pick_audio(offer, audio_pred)?;
+    Some(ipcam_gst::AudioDest {
+        addr: SocketAddr::new(a.addr, a.port),
+        payload_type,
+        codec,
     })
 }
 
@@ -463,8 +399,8 @@ impl CallMedia {
     /// 文件); 对端收音频地址/pt/编码变了重启麦克风回传.
     fn renegotiate(&mut self, offer: &OfferMedias) {
         let new_recv = (
-            pick_audio(offer).map(|(_, c)| c),
-            pick_video(offer).map(|(_, c, _)| c),
+            ipcam_sip::negotiate::pick_audio(offer, audio_pred).map(|(_, c)| c),
+            ipcam_sip::negotiate::pick_video(offer, video_pred).map(|(_, c, _)| c),
         );
         if new_recv != self.recv_fingerprint {
             info!(old = ?self.recv_fingerprint, new = ?new_recv, "codec changed, restarting receiver");
@@ -534,7 +470,14 @@ async fn process_call(
     let offer = parse_offer_all(dialog.initial_request().body())?;
     info!(?offer, "incoming offer");
 
-    let (audio_pt, video, answer) = negotiate_answer(&offer, local_ip);
+    let (audio_pt, video, answer) = ipcam_sip::negotiate::build_answer(
+        &offer,
+        local_ip,
+        AUDIO_RTP_PORT,
+        VIDEO_RTP_PORT,
+        audio_pred,
+        video_pred,
+    );
     let headers = vec![Header::ContentType("application/sdp".into())];
     let answer_body = answer.clone().into_bytes();
     dialog.ringing(Some(headers.clone()), Some(answer_body.clone()))?;
@@ -569,7 +512,14 @@ async fn process_call(
                 let Some((req, reply)) = msg else { break };
                 let body = match parse_offer_all(req.body()) {
                     Ok(new_offer) => {
-                        let (_, _, answer) = negotiate_answer(&new_offer, local_ip);
+                        let (_, _, answer) = ipcam_sip::negotiate::build_answer(
+                            &new_offer,
+                            local_ip,
+                            AUDIO_RTP_PORT,
+                            VIDEO_RTP_PORT,
+                            audio_pred,
+                            video_pred,
+                        );
                         info!("re-INVITE accepted, answer SDP:\n{}", answer);
                         media.renegotiate(&new_offer);
                         Some(answer.into_bytes())
