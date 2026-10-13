@@ -11,7 +11,9 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use ipcam_gst::{TrackSource, VideoFrameSink};
 use ipcam_sip::negotiate;
-use ipcam_sip::sdp::{PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all, parse_offer_all};
+use ipcam_sip::sdp::{
+    OfferMedias, PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all, parse_offer_all,
+};
 use ipcam_sip::{SipClient, SipClientConfig, run_dialog_state_loop};
 use parking_lot::Mutex;
 use rsipstack::dialog::DialogId;
@@ -190,42 +192,14 @@ async fn run(
     let cfg = Arc::new(cfg);
 
     // 来电入口: 占线直接 486, 否则占槽 + 登记 re-INVITE 路由 + spawn 通话任务
-    let on_incoming_call = {
-        let slot = slot.clone();
-        let routes = routes.clone();
-        let ui = ui.clone();
-        let tap = tap.clone();
-        let cfg = cfg.clone();
-        move |dialog: InviteDialog| {
-            let caller = caller_from_request(&dialog.initial_request());
-            {
-                let mut guard = slot.lock();
-                if guard.is_some() {
-                    warn!(%caller, "占线, 新来电回 486");
-                    drop(guard);
-                    if let Err(e) = dialog.reject(Some(rsip::StatusCode::BusyHere), None) {
-                        warn!(error = %e, "486 拒接失败");
-                    }
-                    return;
-                }
-                let (ctl_tx, ctl_rx) = mpsc::channel(4);
-                *guard = Some(ctl_tx);
-                let (update_tx, update_rx) = mpsc::channel(4);
-                routes.lock().insert(dialog.id(), update_tx);
-                let (cfg, ui, tap, slot, routes) = (
-                    cfg.clone(),
-                    ui.clone(),
-                    tap.clone(),
-                    slot.clone(),
-                    routes.clone(),
-                );
-                tokio::spawn(async move {
-                    handle_incoming(dialog, local, cfg, ui, tap, ctl_rx, update_rx, slot, routes)
-                        .await;
-                });
-            }
-        }
-    };
+    let on_incoming_call = make_incoming_handler(
+        slot.clone(),
+        routes.clone(),
+        ui.clone(),
+        tap.clone(),
+        cfg.clone(),
+        local,
+    );
     let on_update = {
         let routes = routes.clone();
         move |id: DialogId, req: rsip::Request| forward_update(routes.clone(), id, req)
@@ -318,6 +292,62 @@ async fn shutdown<'a>(
     // 正常退出路径等注册循环把 best-effort 注销 (Expires:0) 跑完
     if !reg_done {
         let _ = reg.await;
+    }
+}
+
+/// 来电入口工厂: 占线直接 486, 否则占槽 + 登记 re-INVITE 路由 + spawn 通话任务
+///
+/// # Arguments
+///
+/// * `slot`: 通话槽位
+/// * `routes`: 进行中通话路由表
+/// * `ui`: 事件回投句柄
+/// * `tap`: 视频帧回调
+/// * `cfg`: SIP 配置
+/// * `local`: 本机 IPv4
+///
+/// returns: impl Fn(InviteDialog) + Send + Sync — run_dialog_state_loop 的来电回调
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+fn make_incoming_handler(
+    slot: CallSlot,
+    routes: CallRoutes,
+    ui: UiHandle,
+    tap: VideoFrameSink,
+    cfg: Arc<GuiSipConfig>,
+    local: Ipv4Addr,
+) -> impl Fn(InviteDialog) + Send + Sync {
+    move |dialog: InviteDialog| {
+        let caller = caller_from_request(&dialog.initial_request());
+        {
+            let mut guard = slot.lock();
+            if guard.is_some() {
+                warn!(%caller, "占线, 新来电回 486");
+                drop(guard);
+                if let Err(e) = dialog.reject(Some(rsip::StatusCode::BusyHere), None) {
+                    warn!(error = %e, "486 拒接失败");
+                }
+                return;
+            }
+            let (ctl_tx, ctl_rx) = mpsc::channel(4);
+            *guard = Some(ctl_tx);
+            let (update_tx, update_rx) = mpsc::channel(4);
+            routes.lock().insert(dialog.id(), update_tx);
+            let (cfg, ui, tap, slot, routes) = (
+                cfg.clone(),
+                ui.clone(),
+                tap.clone(),
+                slot.clone(),
+                routes.clone(),
+            );
+            tokio::spawn(async move {
+                handle_incoming(dialog, local, cfg, ui, tap, ctl_rx, update_rx, slot, routes).await;
+            });
+        }
     }
 }
 
@@ -581,6 +611,61 @@ async fn wait_user_decision(
     Ok(decision)
 }
 
+/// 用户已点接听: 解析 offer + 协商 answer + accept; 失败一律先回 488
+/// 再报错, 对端 INVITE 事务不挂到 32s 超时
+///
+/// # Arguments
+///
+/// * `dialog`: 来电 InviteDialog
+/// * `local`: 本机 IPv4
+/// * `caller`: 主叫号码 (Confirmed 事件用)
+/// * `ui`: 事件回投句柄
+///
+/// returns: Result<(OfferMedias, String)> — (解析出的 offer 供媒体层用, answer 文本)
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+fn accept_with_answer(
+    dialog: &InviteDialog,
+    local: Ipv4Addr,
+    caller: &str,
+    ui: &UiHandle,
+) -> Result<(OfferMedias, String)> {
+    let offer = match parse_offer_all(dialog.initial_request().body()) {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptableHere), None);
+            return Err(e);
+        }
+    };
+    info!(?offer, "incoming offer");
+    let (audio_pt, video, answer) = negotiate::build_answer(
+        &offer,
+        IpAddr::V4(local),
+        AUDIO_RTP_PORT,
+        VIDEO_RTP_PORT,
+        media::audio_pred,
+        media::video_pred,
+    );
+    let headers = vec![Header::ContentType("application/sdp".into())];
+    if let Err(e) = dialog.accept(Some(headers), Some(answer.clone().into_bytes())) {
+        let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptableHere), None);
+        return Err(e.into());
+    }
+    info!("call accepted, answer SDP:\n{answer}");
+    ui.post(UiEvent::Confirmed {
+        peer: caller.to_string(),
+    });
+
+    if audio_pt.is_none() && video.is_none() {
+        warn!("no supported media in offer, call kept up without media");
+    }
+    Ok((offer, answer))
+}
+
 /// 返回值: Ok(reason) 是正常结束 (对端取消/本地拒接/挂断/对端 BYE),
 /// Err 是失败 (信令或 SDP 错误), 由调用方分别映射 Terminated/Failed
 ///
@@ -620,37 +705,7 @@ async fn incoming_inner(
         Decision::Accept => {}
     }
 
-    // 用户已点接听, 之后的失败要给对端一个最终响应 (488, SDP 不可接受
-    // 的惯例码), 否则对端 INVITE 事务挂到 32s 超时
-    let offer = match parse_offer_all(dialog.initial_request().body()) {
-        Ok(o) => o,
-        Err(e) => {
-            let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptableHere), None);
-            return Err(e);
-        }
-    };
-    info!(?offer, "incoming offer");
-    let (audio_pt, video, answer) = negotiate::build_answer(
-        &offer,
-        IpAddr::V4(local),
-        AUDIO_RTP_PORT,
-        VIDEO_RTP_PORT,
-        media::audio_pred,
-        media::video_pred,
-    );
-    let headers = vec![Header::ContentType("application/sdp".into())];
-    if let Err(e) = dialog.accept(Some(headers), Some(answer.clone().into_bytes())) {
-        let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptableHere), None);
-        return Err(e.into());
-    }
-    info!("call accepted, answer SDP:\n{answer}");
-    ui.post(UiEvent::Confirmed {
-        peer: caller.clone(),
-    });
-
-    if audio_pt.is_none() && video.is_none() {
-        warn!("no supported media in offer, call kept up without media");
-    }
+    let (offer, _) = accept_with_answer(dialog, local, &caller, ui)?;
     let mut media = media::start_incoming(&offer, cfg, tap);
 
     let reason = incoming_call_loop(dialog, &mut media, &mut ctl_rx, &mut update_rx, local).await?;
