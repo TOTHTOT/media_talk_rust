@@ -235,8 +235,8 @@ fn build_video_tap_branch(
             .build(),
     );
     let appsink = make("appsink")?;
-    appsink.set_property("emit-signals", true);
-    disable_sink_async(&appsink);
+    // appsink 走 set_callbacks 不需要 emit-signals; 它也不是 Bin,
+    // disable_sink_async 对它 no-op — 两处死配置已删 (auto*sink 的那些是真的, 别误删)
     let sink = appsink
         .clone()
         .dynamic_cast::<gstreamer_app::AppSink>()
