@@ -651,7 +651,9 @@ mod tests {
 
     /// 播放 + 存盘同时开 (tee 分叉): 播放链 (autoaudiosink) 不能拖垮
     /// 存盘链, TS 照常落盘
+    // CI 虚拟机无 PipeWire/ALSA 设备, autoaudiosink 会 SIGSEGV, 跳过
     #[test]
+    #[ignore = "requires audio playback device (PipeWire/ALSA)"]
     fn audio_tee_playback_and_record() {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
         crate::ensure_init_internal().unwrap();
@@ -688,7 +690,9 @@ mod tests {
     /// 回归: 一路媒体缺失时另一路不能冻结. 配了音视频双路但只发音频,
     /// mux/sink 任一分支停滞时 tee 必须不被拖死 (leaky queue), 音频包数要持续
     /// 增长 (修复前: 普通 queue 1s≈50 包填满 → tee 反压 → 全线冻结)
+    // CI 虚拟机无 PipeWire/ALSA 设备, autoaudiosink 会 SIGSEGV, 跳过
     #[test]
+    #[ignore = "requires audio playback device (PipeWire/ALSA)"]
     fn missing_track_does_not_freeze_other() {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
         crate::ensure_init_internal().unwrap();
@@ -732,7 +736,9 @@ mod tests {
     /// 回归 (实机故障): 音频全是垃圾包/完全静默时, 视频必须照常录像.
     /// 故障链: mp4mux 等齐所有 pad 才输出, 音频 pad 无数据 → 录像 0 字节
     /// + 管线卡死黑屏. 换 mpegtsmux (流式, 不等死 pad) 后不再有这个约束
+    // CI 虚拟机无 PipeWire/ALSA 设备, autoaudiosink 会 SIGSEGV, 跳过
     #[test]
+    #[ignore = "requires audio playback device (PipeWire/ALSA)"]
     fn video_record_survives_dead_audio() {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
         crate::ensure_init_internal().unwrap();
