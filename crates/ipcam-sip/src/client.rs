@@ -180,7 +180,9 @@ impl SipClient {
                 }
                 Err(e) => {
                     warn!(error = %e, "registration permanently failed, exiting");
-                    // 从未注册成功, 无需 best-effort 注销; 原因透传给调用方 —
+                    // 从未注册成功时无需 best-effort 注销; 续期轮 (registered==true
+                    // 之后) 遇 401/403/404 也走这个 return, 会跳过 Expires:0 注销,
+                    // 服务器残留绑定到自然过期 (已知取舍); 原因透传给调用方 —
                     // UI 错误条要看得到 401/403, 不能只留在日志里
                     return Err(e);
                 }

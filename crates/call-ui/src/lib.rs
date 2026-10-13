@@ -86,7 +86,7 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     let handle = bridge::UiHandle::new(ui.as_weak(), app.clone());
     let (cmd_tx, cmd_rx) = bridge::cmd_channel();
     let tap = video::make_frame_sink(ui.as_weak());
-    let worker = session::spawn(cfg, cmd_rx, handle, tap);
+    let worker = session::spawn(cfg, cmd_rx, handle, tap)?;
 
     // UI 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性
     wire_callbacks(&ui, &app, &cmd_tx);
@@ -95,7 +95,7 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     // 销毁), 通道关闭 worker 才退出; 再 join 等它补 BYE + 注销
     // (500ms + ≤2s, 收尾有界)
     drop(cmd_tx);
-    worker?
+    worker
         .join()
         .map_err(|e| anyhow::anyhow!("worker thread panicked: {e:?}"))?;
     Ok(())

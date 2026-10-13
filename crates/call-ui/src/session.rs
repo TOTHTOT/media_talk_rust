@@ -91,7 +91,8 @@ type DialPrep = (
 /// * `ui`: 事件回投句柄, worker 各阶段经它 post UiEvent 更新界面
 /// * `tap`: 视频帧回调, 透传给媒体层把对端画面送 GUI 上屏
 ///
-/// returns: std::thread::JoinHandle<()> — worker 线程句柄, UI 退出时 join 它
+/// returns: anyhow::Result<std::thread::JoinHandle<()>> — worker 线程句柄,
+/// UI 退出时 join 它; Err 是线程创建失败
 ///
 /// # Examples
 ///
