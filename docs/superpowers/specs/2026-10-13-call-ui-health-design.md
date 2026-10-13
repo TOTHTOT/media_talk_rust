@@ -115,3 +115,4 @@ pub fn build_answer(
 1. **`build_av_answer` 保持独立实现未改成薄封装**: 原计划让旧 answer 构造函数薄封装共享协商逻辑; 实现期发现薄封装会让主路径的逐字节回归测试自指失效 (测试比对的对象与被测实现同源), 故保留独立实现, 由逐字节钉测试兜底两条路径一致。
 2. **`shutdown` 的 reg 参数带显式生命周期 `<'a>`**: 设计稿签名 `Pin<Box<dyn Future<Output = Result<()>> + Send>>` 隐含 'static, 而 `process_register()` 借用 client, 编译不过; 实际签名为 `shutdown<'a>(client: &'a SipClient, reg: Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>, ...)`。
 3. **`prepare_dial` 返回值用 `DialPrep` type alias**: 设计稿的内联四元组返回签名触发 `clippy::type_complexity` (门禁 -D warnings); 拆出 `type DialPrep = (rsip::Uri, (u16, u16), (UdpSocket, UdpSocket), mpsc::Receiver<CallCtl>)` 别名替代, 未加 #[allow]。
+4. **§3 拆分清单外的补拆 (b508cc0)**: repowise 复测未达标后补拆两处 — `run` 的 on_incoming_call 闭包抽成 `make_incoming_handler` 工厂 (返回 `impl Fn + Send + Sync`, run_dialog_state_loop 的回调 bound 要求); accept 段抽成 `accept_with_answer`, "无媒体" warn 随之移入 (warn 条件依赖协商结果, 无法从 offer 重算, 时序与原代码等价)。
