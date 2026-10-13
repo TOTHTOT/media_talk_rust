@@ -16,7 +16,7 @@ use ipcam_sip::{SipClient, SipClientConfig, run_dialog_state_loop};
 use parking_lot::Mutex;
 use rsipstack::dialog::DialogId;
 use rsipstack::dialog::authenticate::Credential;
-use rsipstack::dialog::dialog::DialogStateSender;
+use rsipstack::dialog::dialog::{DialogStateReceiver, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::dialog::invitation::InviteOption;
 use rsipstack::dialog::invite_dialog::InviteDialog;
@@ -70,6 +70,13 @@ type CallSlot = Arc<Mutex<Option<mpsc::Sender<CallCtl>>>>;
 type UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>);
 /// 进行中的通话路由表: dialog id -> 通话任务的 re-INVITE 通道
 type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
+/// prepare_dial 全过返回的通话资源: (被叫 URI, RTP 端口对, 占位 socket 对, 控制通道接收端)
+type DialPrep = (
+    rsip::Uri,
+    (u16, u16),
+    (std::net::UdpSocket, std::net::UdpSocket),
+    mpsc::Receiver<CallCtl>,
+);
 
 /// 启动 SIP worker 线程: 独立线程跑自己的 tokio runtime, 注册常驻,
 /// UI 命令逐条处理, 事件经 UiHandle 回投主线程.
@@ -96,7 +103,14 @@ pub fn spawn(
     tap: VideoFrameSink,
 ) -> anyhow::Result<std::thread::JoinHandle<()>> {
     let worker = move || {
-        let rt = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败这里 panic");
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                // 建不起来 worker 直接结束; 上层 UI 会因命令通道无响应报错
+                warn!(error = %e, "SIP worker: 创建 tokio runtime 失败");
+                return;
+            }
+        };
         if let Err(e) = rt.block_on(run(cfg, cmd_rx, ui, tap)) {
             warn!(error = %e, "SIP worker 出错退出");
         }
@@ -108,15 +122,31 @@ pub fn spawn(
     Ok(handle)
 }
 
-/// worker 主循环: 注册/入向分发/dialog 状态循环常驻, UI 命令逐条处理.
-/// 三个常驻 future 只创建一次, loop 里 select 复用 (每次重建
-/// incoming_transactions 会丢包, state_receiver 更是 move 语义).
-async fn run(
-    cfg: GuiSipConfig,
-    mut cmd_rx: UnboundedReceiver<WorkerCmd>,
-    ui: UiHandle,
-    tap: VideoFrameSink,
-) -> Result<()> {
+/// 启动准备: 选网卡 + 构造 SipClient + spawn endpoint + 建 dialog 状态通道;
+/// client 构造失败 post RegisterFailed 后返回 Err
+///
+/// # Arguments
+///
+/// * `cfg`: SIP 服务器账号与本机媒体源配置
+/// * `ui`: 事件回投句柄 (client 构造失败上报)
+///
+/// returns: Result<(SipClient, Digest 鉴权凭据, dialog 状态发送端, 状态接收端, 本机 IPv4)>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+async fn setup(
+    cfg: &GuiSipConfig,
+    ui: &UiHandle,
+) -> Result<(
+    SipClient,
+    Credential,
+    DialogStateSender,
+    DialogStateReceiver,
+    Ipv4Addr,
+)> {
     let local = match cfg.local_ip {
         Some(ip) => ip,
         None => ipcam_sip::local_ipv4()?,
@@ -141,6 +171,20 @@ async fn run(
     let _endpoint = client.spawn_endpoint();
 
     let (state_sender, state_receiver) = client.dialog_layer.new_dialog_state_channel();
+    Ok((client, credential, state_sender, state_receiver, local))
+}
+
+/// worker 主循环: 注册/入向分发/dialog 状态循环常驻, UI 命令逐条处理.
+/// 三个常驻 future 只创建一次, loop 里 select 复用 (每次重建
+/// incoming_transactions 会丢包, state_receiver 更是 move 语义).
+async fn run(
+    cfg: GuiSipConfig,
+    mut cmd_rx: UnboundedReceiver<WorkerCmd>,
+    ui: UiHandle,
+    tap: VideoFrameSink,
+) -> Result<()> {
+    let (client, credential, state_sender, state_receiver, local) = setup(&cfg, &ui).await?;
+
     let routes: CallRoutes = Arc::new(Mutex::new(HashMap::new()));
     let slot: CallSlot = Arc::new(Mutex::new(None));
     let cfg = Arc::new(cfg);
@@ -235,6 +279,30 @@ async fn run(
         }
     }
 
+    shutdown(&client, reg, reg_done, &slot).await;
+    Ok(())
+}
+
+/// 收尾: 进行中通话补 BYE (给通话任务留 BYE 窗口), 停 client, 等注销跑完
+///
+/// # Arguments
+///
+/// * `client`: SIP 客户端句柄
+/// * `reg`: 注册循环 future (已在 select 里跑完则 reg_done 为 true)
+/// * `reg_done`: 注册循环是否已完成 (完成再 await 会 double-await panic)
+/// * `slot`: 通话槽位 (有通话则先送 Hangup)
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+async fn shutdown<'a>(
+    client: &'a SipClient,
+    reg: std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>,
+    reg_done: bool,
+    slot: &CallSlot,
+) {
     info!("stopping");
     // 进行中通话补 BYE: cmd 通道断开直接 stop 会让 runtime drop 掐掉
     // 通话任务, 对端不知道挂断; 先送 Hangup 给通话任务, 留出 BYE 的窗口
@@ -251,7 +319,6 @@ async fn run(
     if !reg_done {
         let _ = reg.await;
     }
-    Ok(())
 }
 
 /// UI 命令处理: Dial 占线检查 + spawn 主叫任务; 通话三键转发进 ctl 通道.
@@ -284,51 +351,11 @@ fn handle_cmd(
 ) {
     match cmd {
         WorkerCmd::Dial(number) => {
-            let mut guard = slot.lock();
-            if guard.is_some() {
-                drop(guard);
-                // UI 只会在 Idle 拨号, 走到这里是和来电抢了槽
-                ui.post(UiEvent::Failed {
-                    reason: "占线".into(),
-                });
+            let Some((callee, rtp_ports, rtp_sockets, ctl_rx)) =
+                prepare_dial(client, &number, local, slot, ui)
+            else {
                 return;
-            }
-            let callee = match client.callee_uri(&number) {
-                Ok(u) => u,
-                Err(e) => {
-                    warn!(error = %e, %number, "被叫 URI 解析失败");
-                    ui.post(UiEvent::Failed {
-                        reason: format!("号码无效: {number}"),
-                    });
-                    return;
-                }
             };
-            // 占位 socket 保端口 (同 call.rs): INVITE 完成前收到 RTP 不会
-            // ICMP unreachable; 绑失败属于立即失败, 直接报 UI 不占槽
-            let rtp_sockets = match (
-                std::net::UdpSocket::bind((local, 0)),
-                std::net::UdpSocket::bind((local, 0)),
-            ) {
-                (Ok(a), Ok(v)) => (a, v),
-                _ => {
-                    ui.post(UiEvent::Failed {
-                        reason: "RTP 端口绑定失败".into(),
-                    });
-                    return;
-                }
-            };
-            let rtp_ports = match (rtp_sockets.0.local_addr(), rtp_sockets.1.local_addr()) {
-                (Ok(a), Ok(v)) => (a.port(), v.port()),
-                _ => {
-                    ui.post(UiEvent::Failed {
-                        reason: "RTP 端口读取失败".into(),
-                    });
-                    return;
-                }
-            };
-            let (ctl_tx, ctl_rx) = mpsc::channel(4);
-            *guard = Some(ctl_tx);
-            drop(guard);
             tokio::spawn(handle_outgoing(
                 client.dialog_layer.clone(),
                 state_sender.clone(),
@@ -363,6 +390,79 @@ fn handle_cmd(
             }
         }
     }
+}
+
+/// Dial 前置: 占线检查 + URI 解析 + 占位 socket 绑定, 全过才占槽返回
+/// 通话资源; 任一步失败已报 UI, 返回 None
+///
+/// # Arguments
+///
+/// * `client`: SIP 客户端句柄
+/// * `number`: 拨号号码
+/// * `local`: 本机 IPv4
+/// * `slot`: 通话槽位 (全过时在此占槽)
+/// * `ui`: 事件回投句柄 (失败原因上报)
+///
+/// returns: Option<(被叫 URI, RTP 端口对, 占位 socket 对, 控制通道接收端)>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+fn prepare_dial(
+    client: &SipClient,
+    number: &str,
+    local: Ipv4Addr,
+    slot: &CallSlot,
+    ui: &UiHandle,
+) -> Option<DialPrep> {
+    let mut guard = slot.lock();
+    if guard.is_some() {
+        drop(guard);
+        // UI 只会在 Idle 拨号, 走到这里是和来电抢了槽
+        ui.post(UiEvent::Failed {
+            reason: "占线".into(),
+        });
+        return None;
+    }
+    let callee = match client.callee_uri(number) {
+        Ok(u) => u,
+        Err(e) => {
+            warn!(error = %e, %number, "被叫 URI 解析失败");
+            ui.post(UiEvent::Failed {
+                reason: format!("号码无效: {number}"),
+            });
+            return None;
+        }
+    };
+    // 占位 socket 保端口 (同 call.rs): INVITE 完成前收到 RTP 不会
+    // ICMP unreachable; 绑失败属于立即失败, 直接报 UI 不占槽
+    let rtp_sockets = match (
+        std::net::UdpSocket::bind((local, 0)),
+        std::net::UdpSocket::bind((local, 0)),
+    ) {
+        (Ok(a), Ok(v)) => (a, v),
+        _ => {
+            ui.post(UiEvent::Failed {
+                reason: "RTP 端口绑定失败".into(),
+            });
+            return None;
+        }
+    };
+    let rtp_ports = match (rtp_sockets.0.local_addr(), rtp_sockets.1.local_addr()) {
+        (Ok(a), Ok(v)) => (a.port(), v.port()),
+        _ => {
+            ui.post(UiEvent::Failed {
+                reason: "RTP 端口读取失败".into(),
+            });
+            return None;
+        }
+    };
+    let (ctl_tx, ctl_rx) = mpsc::channel(4);
+    *guard = Some(ctl_tx);
+    drop(guard);
+    Some((callee, rtp_ports, rtp_sockets, ctl_rx))
 }
 
 /// re-INVITE/UPDATE 转发 (原样搬自 answer.rs): 按 dialog id 找通话任务
@@ -431,6 +531,56 @@ async fn handle_incoming(
     *slot.lock() = None;
 }
 
+/// 来电等待用户操作的决定: 接听 / 拒接 (带 SIP 状态码) / 对端取消
+enum Decision {
+    Accept,
+    Reject(rsip::StatusCode),
+    PeerCancelled,
+}
+
+/// 先振铃 (不带 SDP, 无早期媒体), post Incoming 通知 UI, 然后等用户
+/// 决定, 不立即 accept; 超时自动拒接, 避免对端挂死在 ringing
+///
+/// # Arguments
+///
+/// * `dialog`: 来电 InviteDialog
+/// * `ui`: 事件回投句柄
+/// * `caller`: 主叫号码 (UI 事件与超时日志用)
+/// * `ctl_rx`: 用户操作控制通道
+///
+/// returns: Result<Decision> — 用户接听/拒接/对端取消/超时的决定
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+async fn wait_user_decision(
+    dialog: &InviteDialog,
+    ui: &UiHandle,
+    caller: &str,
+    ctl_rx: &mut mpsc::Receiver<CallCtl>,
+) -> Result<Decision> {
+    dialog.ringing(None, None)?;
+    ui.post(UiEvent::Incoming {
+        caller: caller.to_string(),
+    });
+
+    let decision = tokio::select! {
+        _ = dialog.cancel_token().cancelled() => Decision::PeerCancelled,
+        ctl = ctl_rx.recv() => match ctl {
+            Some(CallCtl::Accept) => Decision::Accept,
+            // Reject 是用户拒接; Hangup/None (worker 退出) 兜底也走拒接
+            _ => Decision::Reject(rsip::StatusCode::Decline),
+        },
+        _ = tokio::time::sleep(INCOMING_TIMEOUT) => {
+            warn!(%caller, "来电超时未接听");
+            Decision::Reject(rsip::StatusCode::TemporarilyUnavailable)
+        }
+    };
+    Ok(decision)
+}
+
 /// 返回值: Ok(reason) 是正常结束 (对端取消/本地拒接/挂断/对端 BYE),
 /// Err 是失败 (信令或 SDP 错误), 由调用方分别映射 Terminated/Failed
 ///
@@ -458,29 +608,7 @@ async fn incoming_inner(
     let caller = caller_from_request(&dialog.initial_request());
     info!(%caller, "incoming call");
 
-    // 先振铃 (不带 SDP, 无早期媒体), 然后等用户决定, 不立即 accept
-    dialog.ringing(None, None)?;
-    ui.post(UiEvent::Incoming {
-        caller: caller.clone(),
-    });
-
-    enum Decision {
-        Accept,
-        Reject(rsip::StatusCode),
-        PeerCancelled,
-    }
-    let decision = tokio::select! {
-        _ = dialog.cancel_token().cancelled() => Decision::PeerCancelled,
-        ctl = ctl_rx.recv() => match ctl {
-            Some(CallCtl::Accept) => Decision::Accept,
-            // Reject 是用户拒接; Hangup/None (worker 退出) 兜底也走拒接
-            _ => Decision::Reject(rsip::StatusCode::Decline),
-        },
-        _ = tokio::time::sleep(INCOMING_TIMEOUT) => {
-            warn!(%caller, "来电超时未接听");
-            Decision::Reject(rsip::StatusCode::TemporarilyUnavailable)
-        }
-    };
+    let decision = wait_user_decision(dialog, ui, &caller, &mut ctl_rx).await?;
     match decision {
         Decision::PeerCancelled => return Ok("对端取消".into()),
         Decision::Reject(code) => {
@@ -525,8 +653,38 @@ async fn incoming_inner(
     }
     let mut media = media::start_incoming(&offer, cfg, tap);
 
-    // 通话 loop: 对端 BYE → cancel_token; 本地挂断 → BYE;
-    // re-INVITE → 重协商, 媒体指纹变了由 media 层重启管线
+    let reason = incoming_call_loop(dialog, &mut media, &mut ctl_rx, &mut update_rx, local).await?;
+    if let Some(m) = media.take() {
+        m.stop();
+    }
+    Ok(reason)
+}
+
+/// 被叫通话 loop: 对端 BYE → cancel_token; 本地挂断 → BYE;
+/// re-INVITE → 重协商, 媒体指纹变了由 media 层重启管线
+///
+/// # Arguments
+///
+/// * `dialog`: 已接通的 InviteDialog
+/// * `media`: 媒体句柄 (re-INVITE 重协商时按需重启管线)
+/// * `ctl_rx`: 用户操作控制通道
+/// * `update_rx`: re-INVITE 更新消息通道
+/// * `local`: 本机 IPv4
+///
+/// returns: Result<String> — 结束原因 (对端挂断/本地挂断/路由通道关闭)
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+async fn incoming_call_loop(
+    dialog: &InviteDialog,
+    media: &mut Option<media::MediaHandles>,
+    ctl_rx: &mut mpsc::Receiver<CallCtl>,
+    update_rx: &mut mpsc::Receiver<UpdateMsg>,
+    local: Ipv4Addr,
+) -> Result<String> {
     let reason = loop {
         tokio::select! {
             _ = dialog.cancel_token().cancelled() => {
@@ -569,9 +727,6 @@ async fn incoming_inner(
             }
         }
     };
-    if let Some(m) = media.take() {
-        m.stop();
-    }
     Ok(reason)
 }
 
