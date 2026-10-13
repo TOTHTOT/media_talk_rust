@@ -3,6 +3,7 @@
 
 mod client;
 mod incoming;
+pub mod negotiate;
 pub mod sdp;
 
 pub use client::{SipClient, SipClientConfig, local_ipv4};

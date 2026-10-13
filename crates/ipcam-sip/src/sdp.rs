@@ -41,7 +41,7 @@ pub fn build_av_offer(
 /// (单 NAL 模式): 门口机 / 室内机的 RTP 接收器不认 FU-A 分片, 实测
 /// Linphone mode 0 能出画面而 mode 1 黑屏. 代价是片源必须切成 < MTU 的
 /// slice (rtp_send 的测试片源已按 slice-max-size=1300 重编码).
-fn video_media_description(port: u16, pt: u8, fmtp: Option<&str>) -> MediaDescription {
+pub(crate) fn video_media_description(port: u16, pt: u8, fmtp: Option<&str>) -> MediaDescription {
     let fmtp_params = fmtp.unwrap_or("profile-level-id=42e01f");
     MediaDescription {
         media: Media {
@@ -80,7 +80,7 @@ pub fn build_audio_offer(local_ip: IpAddr, port: u16, payload_types: &[u8]) -> S
 
 /// 会话级骨架 (v/o/s/c/t 等), offer/answer 唯一差别是 origin 的
 /// sess_version (answer 的要大于 offer 的).
-fn session_skeleton(local_ip: IpAddr, sess_version: &str) -> SessionDescription {
+pub(crate) fn session_skeleton(local_ip: IpAddr, sess_version: &str) -> SessionDescription {
     let addrtype = match local_ip {
         IpAddr::V4(_) => Addrtype::Ip4,
         IpAddr::V6(_) => Addrtype::Ip6,
@@ -124,7 +124,7 @@ fn session_skeleton(local_ip: IpAddr, sess_version: &str) -> SessionDescription 
 /// 音频媒体描述: fmt 列出全部候选 pt + 每 pt 一条 rtpmap + ptime +
 /// sendrecv. offer 传全部支持的 pt (对端从中挑一个 -- 只给一个就是
 /// "没得挑, 不行就拒"), answer 只传选中的那个.
-fn audio_media_description(port: u16, payload_types: &[u8]) -> MediaDescription {
+pub(crate) fn audio_media_description(port: u16, payload_types: &[u8]) -> MediaDescription {
     let fmt = payload_types
         .iter()
         .map(|p| p.to_string())
