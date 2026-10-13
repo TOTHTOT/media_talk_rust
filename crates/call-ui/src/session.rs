@@ -75,9 +75,7 @@ type UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>);
 type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
 
 /// 启动 SIP worker 线程: 独立线程跑自己的 tokio runtime, 注册常驻,
-/// UI 命令逐条处理, 事件经 UiHandle 回投主线程. 内部任何失败 (runtime
-/// 创建/run 出错/worker panic 由线程边界兜住) 只记日志, 不拖垮 GUI 进程;
-/// 线程创建失败时返回一个立即退出的占位线程, 保持签名不 panic.
+/// UI 命令逐条处理, 事件经 UiHandle 回投主线程.
 ///
 /// # Arguments
 ///
@@ -99,30 +97,18 @@ pub fn spawn(
     cmd_rx: UnboundedReceiver<WorkerCmd>,
     ui: UiHandle,
     tap: VideoFrameSink,
-) -> std::thread::JoinHandle<()> {
+) -> anyhow::Result<std::thread::JoinHandle<()>> {
     let worker = move || {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                warn!(error = %e, "SIP worker: 创建 tokio runtime 失败");
-                return;
-            }
-        };
+        let rt = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败这里 panic");
         if let Err(e) = rt.block_on(run(cfg, cmd_rx, ui, tap)) {
             warn!(error = %e, "SIP worker 出错退出");
         }
     };
-    match std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .name("sip-worker".into())
         .spawn(worker)
-    {
-        Ok(h) => h,
-        Err(e) => {
-            // 保持签名不变: 返回一个立即退出的线程, UI 侧发命令会失败并提示
-            warn!(error = %e, "SIP worker 线程创建失败");
-            std::thread::spawn(|| {})
-        }
-    }
+        .map_err(|e| anyhow::anyhow!("SIP worker 线程创建失败: {e}"))?;
+    Ok(handle)
 }
 
 /// worker 主循环: 注册/入向分发/dialog 状态循环常驻, UI 命令逐条处理.
@@ -643,8 +629,8 @@ async fn handle_outgoing(
     *slot.lock() = None;
 }
 
-// reason: 与外层 handle_outgoing 共享同一份通话上下文, 拆分只为把
-// 收尾 (清 slot/通知 UI) 收敛到外层, 参数随上下文走
+/// reason: 与外层 handle_outgoing 共享同一份通话上下文, 拆分只为把
+/// 收尾 (清 slot/通知 UI) 收敛到外层, 参数随上下文走
 ///
 /// # Arguments
 ///

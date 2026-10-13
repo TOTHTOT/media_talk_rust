@@ -9,6 +9,13 @@ pub mod video;
 pub use app::Phase;
 pub use session::GuiSipConfig;
 
+/// 把 AppState 字段刷到 slint 属性 (UiHandle::post 里也是这段)
+fn sync_props(ui: &MainWindow, app: &app::AppState) {
+    ui.set_phase(app.phase as i32);
+    ui.set_peer(app.peer.as_str().into());
+    ui.set_error_text(app.error.as_str().into());
+}
+
 /// 启动通话 GUI: 主线程跑 slint 事件循环, SIP worker 在后台线程.
 /// 窗口关闭后命令通道断开, worker 收到后 client.stop() 优雅退出
 pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
@@ -19,13 +26,6 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     let (cmd_tx, cmd_rx) = bridge::cmd_channel();
     let tap = video::make_frame_sink(ui.as_weak());
     let worker = session::spawn(cfg, cmd_rx, handle, tap);
-
-    // 把 AppState 字段刷到 slint 属性 (UiHandle::post 里也是这段)
-    fn sync_props(ui: &MainWindow, app: &app::AppState) {
-        ui.set_phase(app.phase as i32);
-        ui.set_peer(app.peer.as_str().into());
-        ui.set_error_text(app.error.as_str().into());
-    }
 
     // UI 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性
     {
@@ -86,7 +86,9 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     // 销毁), 通道关闭 worker 才退出; 再 join 等它补 BYE + 注销
     // (500ms + ≤2s, 收尾有界)
     drop(cmd_tx);
-    let _ = worker.join();
+    worker?
+        .join()
+        .map_err(|e| anyhow::anyhow!("worker thread panicked: {e:?}"))?;
     Ok(())
 }
 
