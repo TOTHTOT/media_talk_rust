@@ -15,6 +15,7 @@ use ipcam_gst::{
     AudioDest, RtpDest, RtpReceiver, RtpRecvConfig, RtpSendConfig, RtpSender, TrackSource,
     VideoFrameSink, start_rtp_receiver, start_rtp_sender,
 };
+use ipcam_sip::negotiate;
 use ipcam_sip::sdp::{OfferMedias, PeerMedias};
 use tracing::{info, warn};
 
@@ -107,8 +108,8 @@ impl MediaHandles {
     /// 变了重启接收器 (tap 复用); 对端收包地址/pt/编码变了重启发送器
     pub fn renegotiate(&mut self, offer: &OfferMedias) {
         let new_recv = (
-            pick_audio(offer).map(|(_, c)| c),
-            pick_video(offer).map(|(_, c, _)| c),
+            negotiate::pick_audio(offer, audio_pred).map(|(_, c)| c),
+            negotiate::pick_video(offer, video_pred).map(|(_, c, _)| c),
         );
         if new_recv != self.recv_fingerprint {
             info!(old = ?self.recv_fingerprint, new = ?new_recv, "codec changed, restarting receiver");
@@ -154,51 +155,29 @@ impl MediaHandles {
     }
 }
 
-/// 音频只接 G.711 (复用 ipcam_gst::sendable_audio_codec 的白名单),
-/// 按对端 offer 的偏好序挑第一个我们支持的
-fn pick_audio(offer: &OfferMedias) -> Option<(u8, AudioCodec)> {
-    let a = offer.audio.as_ref()?;
-    let picked = a
-        .codecs
-        .iter()
-        .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (c.payload_type, ac)));
-    if picked.is_none() {
-        warn!(codecs = ?a.codecs, "no supported audio codec in offer");
-    }
-    picked
+/// 可收发音频谓词 (复用 ipcam-gst 发送白名单 G.711): session 协商与
+/// 本模块指纹比对共用这一个, 防漂移
+pub(crate) fn audio_pred(name: &str) -> Option<AudioCodec> {
+    ipcam_gst::sendable_audio_codec(name)
 }
 
-/// 视频只接 H264/H265, 其他整路拒收 (不收不发)
-fn pick_video(offer: &OfferMedias) -> Option<(u8, VideoCodec, Option<String>)> {
-    let v = offer.video.as_ref()?;
-    let picked = v
-        .codecs
-        .iter()
-        .find_map(|c| match VideoCodec::from_name(&c.codec) {
-            vc @ (VideoCodec::H264 | VideoCodec::H265) => {
-                Some((c.payload_type, vc, c.fmtp.clone()))
-            }
-            _ => None,
-        });
-    if picked.is_none() {
-        warn!(codecs = ?v.codecs, "no supported video codec in offer");
+/// 可收视频谓词: H264/H265
+pub(crate) fn video_pred(name: &str) -> Option<VideoCodec> {
+    match VideoCodec::from_name(name) {
+        vc @ (VideoCodec::H264 | VideoCodec::H265) => Some(vc),
+        _ => None,
     }
-    picked
 }
 
 /// 从 offer 提取音频回传参数 (对端收音频地址, pt, 编码), 同时充当
 /// 发送指纹: re-INVITE 之后任一字段变了就重启发送器 (地址变了 udpsink
 /// 找不到对端, pt/编码变了 RTP 头和编码链对不上)
 fn audio_send_params(offer: &OfferMedias) -> Option<AudioDest> {
-    offer.audio.as_ref().and_then(|a| {
-        a.codecs
-            .iter()
-            .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (a, c, ac)))
-            .map(|(a, c, ac)| AudioDest {
-                addr: SocketAddr::new(a.addr, a.port),
-                payload_type: c.payload_type,
-                codec: ac,
-            })
+    let a = offer.audio.as_ref()?;
+    negotiate::pick_audio(offer, audio_pred).map(|(pt, codec)| AudioDest {
+        addr: SocketAddr::new(a.addr, a.port),
+        payload_type: pt,
+        codec,
     })
 }
 
@@ -206,7 +185,8 @@ fn audio_send_params(offer: &OfferMedias) -> Option<AudioDest> {
 /// 发送指纹. 编码取 pick_video 选中的那个 (H264/H265)
 fn video_send_params(offer: &OfferMedias) -> Option<VideoDest> {
     let v = offer.video.as_ref()?;
-    pick_video(offer).map(|(pt, codec, _)| (SocketAddr::new(v.addr, v.port), pt, codec))
+    negotiate::pick_video(offer, video_pred)
+        .map(|(pt, codec, _)| (SocketAddr::new(v.addr, v.port), pt, codec))
 }
 
 /// 起 RTP 接收器: 音频解码后进 autoaudiosink (扬声器), 视频解码后经
@@ -334,8 +314,8 @@ pub fn start_incoming(
     tap: &VideoFrameSink,
 ) -> Option<MediaHandles> {
     let recv_fingerprint = (
-        pick_audio(offer).map(|(_, c)| c),
-        pick_video(offer).map(|(_, c, _)| c),
+        negotiate::pick_audio(offer, audio_pred).map(|(_, c)| c),
+        negotiate::pick_video(offer, video_pred).map(|(_, c, _)| c),
     );
     Some(MediaHandles::new(
         (AUDIO_RTP_PORT, VIDEO_RTP_PORT),
@@ -443,7 +423,10 @@ mod tests {
             audio: Some(offer_media(&[(111, "opus"), (0, "PCMU"), (8, "PCMA")])),
             video: None,
         };
-        assert_eq!(pick_audio(&offer), Some((0, AudioCodec::G711U)));
+        assert_eq!(
+            negotiate::pick_audio(&offer, audio_pred),
+            Some((0, AudioCodec::G711U))
+        );
     }
 
     /// offer 里全是不支持的音频编码时返回 None
@@ -453,7 +436,7 @@ mod tests {
             audio: Some(offer_media(&[(111, "opus")])),
             video: None,
         };
-        assert_eq!(pick_audio(&offer), None);
+        assert_eq!(negotiate::pick_audio(&offer, audio_pred), None);
     }
 
     /// 视频跳过 VP8 选 H264; 全不支持时整路拒收
@@ -463,14 +446,14 @@ mod tests {
             audio: None,
             video: Some(offer_media(&[(96, "VP8"), (97, "H264")])),
         };
-        let picked = pick_video(&offer);
+        let picked = negotiate::pick_video(&offer, video_pred);
         assert!(matches!(picked, Some((97, VideoCodec::H264, None))));
 
         let offer = OfferMedias {
             audio: None,
             video: Some(offer_media(&[(96, "VP8")])),
         };
-        assert_eq!(pick_video(&offer), None);
+        assert_eq!(negotiate::pick_video(&offer, video_pred), None);
     }
 
     /// 音频发送指纹: 地址取 offer 媒体的 addr/port, pt/编码取选中项

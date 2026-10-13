@@ -9,12 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use ipcam_core::{AudioCodec, VideoCodec};
 use ipcam_gst::{TrackSource, VideoFrameSink};
-use ipcam_sip::sdp::{
-    OfferMedias, PT_PCMA, PT_PCMU, build_av_answer, build_av_offer, parse_answer_all,
-    parse_offer_all,
-};
+use ipcam_sip::negotiate;
+use ipcam_sip::sdp::{PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all, parse_offer_all};
 use ipcam_sip::{SipClient, SipClientConfig, run_dialog_state_loop};
 use parking_lot::Mutex;
 use rsipstack::dialog::DialogId;
@@ -205,10 +202,13 @@ async fn run(
     loop {
         tokio::select! {
             r = &mut reg => {
-                // 注册循环退出 = 永久失败 (401/403/404) 或被取消;
-                // 原因带给 UI 错误条, 不只留在日志里
+                // 注册循环退出 = 永久失败 (401/403/404, Err 带原因) 或被取消
                 warn!(result = ?r, "register loop exited");
-                ui.post(UiEvent::RegisterFailed(format!("注册循环退出: {r:?}")));
+                let reason = match r {
+                    Err(e) => format!("{e}"),
+                    Ok(()) => "注册循环退出".into(),
+                };
+                ui.post(UiEvent::RegisterFailed(reason));
                 reg_done = true;
                 break;
             }
@@ -502,7 +502,14 @@ async fn incoming_inner(
         }
     };
     info!(?offer, "incoming offer");
-    let (audio_pt, video, answer) = negotiate_answer(&offer, IpAddr::V4(local));
+    let (audio_pt, video, answer) = negotiate::build_answer(
+        &offer,
+        IpAddr::V4(local),
+        AUDIO_RTP_PORT,
+        VIDEO_RTP_PORT,
+        media::audio_pred,
+        media::video_pred,
+    );
     let headers = vec![Header::ContentType("application/sdp".into())];
     if let Err(e) = dialog.accept(Some(headers), Some(answer.clone().into_bytes())) {
         let _ = dialog.reject(Some(rsip::StatusCode::NotAcceptableHere), None);
@@ -539,7 +546,14 @@ async fn incoming_inner(
                 let Some((req, reply)) = msg else { break "路由通道关闭".to_string() };
                 let body = match parse_offer_all(req.body()) {
                     Ok(new_offer) => {
-                        let (_, _, answer) = negotiate_answer(&new_offer, IpAddr::V4(local));
+                        let (_, _, answer) = negotiate::build_answer(
+                            &new_offer,
+                            IpAddr::V4(local),
+                            AUDIO_RTP_PORT,
+                            VIDEO_RTP_PORT,
+                            media::audio_pred,
+                            media::video_pred,
+                        );
                         info!("re-INVITE accepted, answer SDP:\n{answer}");
                         if let Some(m) = media.as_mut() {
                             m.renegotiate(&new_offer);
@@ -725,62 +739,6 @@ async fn outgoing_inner(
         m.stop();
     }
     Ok(reason)
-}
-
-/// 协商结果: (选中的音频 pt+编码, 选中的视频 pt+编码+fmtp, answer 文本)
-type NegotiatedAnswer = (
-    Option<(u8, AudioCodec)>,
-    Option<(u8, VideoCodec, Option<String>)>,
-    String,
-);
-
-/// 音频只接 G.711 (同 answer.rs: 复用 ipcam_gst::sendable_audio_codec
-/// 的白名单), 按对端 offer 的偏好序挑第一个我们支持的
-fn pick_audio(offer: &OfferMedias) -> Option<(u8, AudioCodec)> {
-    let a = offer.audio.as_ref()?;
-    let picked = a
-        .codecs
-        .iter()
-        .find_map(|c| ipcam_gst::sendable_audio_codec(&c.codec).map(|ac| (c.payload_type, ac)));
-    if picked.is_none() {
-        warn!(codecs = ?a.codecs, "no supported audio codec in offer");
-    }
-    picked
-}
-
-/// 视频只接 H264/H265, 其他整路拒收, 但 SDP 仍带 audio 给对端一个能
-/// 落地的 answer (同 answer.rs)
-fn pick_video(offer: &OfferMedias) -> Option<(u8, VideoCodec, Option<String>)> {
-    let v = offer.video.as_ref()?;
-    let picked = v
-        .codecs
-        .iter()
-        .find_map(|c| match VideoCodec::from_name(&c.codec) {
-            vc @ (VideoCodec::H264 | VideoCodec::H265) => {
-                Some((c.payload_type, vc, c.fmtp.clone()))
-            }
-            _ => None,
-        });
-    if picked.is_none() {
-        warn!(codecs = ?v.codecs, "no supported video codec in offer");
-    }
-    picked
-}
-
-/// 从 offer 协商编码并构建 answer SDP (初始 accept 和 re-INVITE 共用,
-/// 同 answer.rs): answer 的 pt/fmtp 回显 offer 里选中的编码 (RFC 3264)
-fn negotiate_answer(offer: &OfferMedias, local_ip: IpAddr) -> NegotiatedAnswer {
-    let audio_pt = pick_audio(offer);
-    let video = pick_video(offer);
-    let answer = build_av_answer(
-        local_ip,
-        AUDIO_RTP_PORT,
-        VIDEO_RTP_PORT,
-        audio_pt.map(|(pt, _)| pt).unwrap_or(PT_PCMA),
-        video.as_ref().map(|(pt, _, _)| *pt).unwrap_or(96),
-        video.as_ref().and_then(|(_, _, fmtp)| fmtp.as_deref()),
-    );
-    (audio_pt, video, answer.to_string())
 }
 
 /// 从 INVITE 的 From 头提取主叫号码 (sip:<user>@host 的 user 段)
