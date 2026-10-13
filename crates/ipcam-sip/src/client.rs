@@ -180,7 +180,9 @@ impl SipClient {
                 }
                 Err(e) => {
                     warn!(error = %e, "registration permanently failed, exiting");
-                    break;
+                    // 从未注册成功, 无需 best-effort 注销; 原因透传给调用方 —
+                    // UI 错误条要看得到 401/403, 不能只留在日志里
+                    return Err(e);
                 }
             }
         }
@@ -448,11 +450,11 @@ mod tests {
             .unwrap();
         let _endpoint = client.spawn_endpoint();
 
-        // 永久失败 now returns Ok(()) (breaks out of loop after warn)
         let result = client.process_register().await;
+        let err = result.expect_err("permanent failure must propagate the reason");
         assert!(
-            result.is_ok(),
-            "permanent failure should exit gracefully: {result:?}"
+            err.to_string().contains("403"),
+            "reason must reach caller: {err}"
         );
 
         observed.recv().await.expect("one REGISTER");
