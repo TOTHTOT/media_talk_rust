@@ -1,7 +1,7 @@
 //! 共享类型与常量: session 模块内跨 worker/incoming/outgoing 共用.
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,14 +11,17 @@ use rsipstack::dialog::DialogId;
 use rsipstack::sip as rsip;
 use tokio::sync::{mpsc, oneshot};
 
-/// 被叫侧接收端口 (同 answer.rs, 单路固定即可); pub(crate) 给 media 层起接收器
-pub(crate) const AUDIO_RTP_PORT: u16 = 40000;
-pub(crate) const VIDEO_RTP_PORT: u16 = 40002;
+pub use crate::bridge::WorkerCmd;
+
+/// 被叫侧 RTP 端口默认值 (音频, 视频); 可通过 GuiSipConfig.rtp_ports 自定义
+pub(crate) const DEFAULT_AUDIO_RTP_PORT: u16 = 40000;
+pub(crate) const DEFAULT_VIDEO_RTP_PORT: u16 = 40002;
 
 /// 来电振铃等待用户接听的最长时间, 超时自动拒接, 避免对端挂死在 ringing
 pub const INCOMING_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// SIP 配置: 服务器账号 + 本机媒体源, 由 UI 入口装配
+/// SIP 配置: 服务器账号 + 本机媒体源, 由 UI 入口装配.
+/// `rtp_ports` 允许自定义, 默认 (40000, 40002).
 pub struct GuiSipConfig {
     /// SIP 服务器地址 (注册与呼叫都走它)
     pub server: SocketAddr,
@@ -36,18 +39,28 @@ pub struct GuiSipConfig {
     pub video_src: TrackSource,
     /// 视频限宽 (对端解码能力, 超宽源降采样); 0 = 不限
     pub max_width: u32,
+    /// 被叫侧 RTP 端口 (音频, 视频); 默认 (40000, 40002)
+    pub rtp_ports: Option<(u16, u16)>,
 }
 
-/// 通话控制: UI 的 Hangup/Accept/Reject 经它进通话任务
-#[derive(Debug)]
-pub enum CallCtl {
-    Hangup,
-    Accept,
-    Reject,
+impl Default for GuiSipConfig {
+    fn default() -> Self {
+        Self {
+            server: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 5060)),
+            username: Default::default(),
+            password: Default::default(),
+            expires: 3600,
+            local_ip: Default::default(),
+            audio_src: TrackSource::Mic,
+            video_src: TrackSource::LocalCamera { device: None },
+            max_width: Default::default(),
+            rtp_ports: Some((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
+        }
+    }
 }
 
 /// 当前通话的控制通道, Some 即占线
-pub type CallSlot = Arc<Mutex<Option<mpsc::Sender<CallCtl>>>>;
+pub type CallSlot = Arc<Mutex<Option<mpsc::Sender<WorkerCmd>>>>;
 pub type UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>);
 /// 进行中的通话路由表: dialog id -> 通话任务的 re-INVITE 通道
 pub type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
@@ -56,7 +69,7 @@ pub type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
 pub type DialPrep = (
     rsip::Uri,
     (std::net::UdpSocket, std::net::UdpSocket),
-    mpsc::Receiver<CallCtl>,
+    mpsc::Receiver<WorkerCmd>,
 );
 
 /// 从 INVITE 的 From 头提取主叫号码 (sip:<user>@host 的 user 段)
