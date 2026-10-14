@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use super::types::INCOMING_TIMEOUT;
 use super::types::{
-    CallRoutes, CallCtlTx, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, GuiSipConfig, UpdateMsg,
+    CallCtlTx, CallRoutes, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, GuiSipConfig, UpdateMsg,
     WorkerCmd, caller_from_request,
 };
 use crate::app::UiEvent;

@@ -22,7 +22,7 @@ use crate::bridge::{UiHandle, WorkerCmd};
 use super::incoming;
 use super::incoming::IncomingCtx;
 use super::outgoing;
-use super::types::{CallRoutes, CallCtlTx, DialPrep, GuiSipConfig, caller_from_request};
+use super::types::{CallCtlTx, CallRoutes, DialPrep, GuiSipConfig, caller_from_request};
 
 /// 启动 SIP worker 线程: 独立线程跑自己的 tokio runtime, 注册常驻,
 /// UI 命令逐条处理, 事件经 UiHandle 回投主线程.
