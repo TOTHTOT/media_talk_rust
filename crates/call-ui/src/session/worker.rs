@@ -22,7 +22,7 @@ use crate::bridge::{UiHandle, WorkerCmd};
 use super::incoming;
 use super::incoming::IncomingCtx;
 use super::outgoing;
-use super::types::{CallRoutes, CallSlot, DialPrep, GuiSipConfig, caller_from_request};
+use super::types::{CallRoutes, CallCtlTx, DialPrep, GuiSipConfig, caller_from_request};
 
 /// 启动 SIP worker 线程: 独立线程跑自己的 tokio runtime, 注册常驻,
 /// UI 命令逐条处理, 事件经 UiHandle 回投主线程.
@@ -147,7 +147,7 @@ async fn run(
     let (client, credential, state_sender, state_receiver, local) = setup(&cfg, &ui).await?;
 
     let routes: CallRoutes = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
-    let call_ctl_tx: CallSlot = Arc::new(parking_lot::Mutex::new(None));
+    let call_ctl_tx: CallCtlTx = Arc::new(parking_lot::Mutex::new(None));
     let cfg = Arc::new(cfg);
 
     let on_incoming_call = make_incoming_handler(
@@ -232,7 +232,7 @@ async fn shutdown<'a>(
     client: &'a SipClient,
     reg: std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>,
     reg_done: bool,
-    call_ctl_tx: &CallSlot,
+    call_ctl_tx: &CallCtlTx,
 ) {
     info!("stopping");
     {
@@ -267,7 +267,7 @@ async fn shutdown<'a>(
 ///
 /// ```
 pub fn make_incoming_handler(
-    call_ctl_tx: CallSlot,
+    call_ctl_tx: CallCtlTx,
     routes: CallRoutes,
     ui: UiHandle,
     tap: VideoFrameSink,
@@ -337,7 +337,7 @@ pub fn handle_cmd(
     client: &SipClient,
     credential: &Credential,
     state_sender: &rsipstack::dialog::dialog::DialogStateSender,
-    call_ctl_tx: &CallSlot,
+    call_ctl_tx: &CallCtlTx,
     ui: &UiHandle,
     tap: &VideoFrameSink,
     cfg: &Arc<GuiSipConfig>,
@@ -403,7 +403,7 @@ fn prepare_dial(
     client: &SipClient,
     number: &str,
     local: Ipv4Addr,
-    call_ctl_tx: &CallSlot,
+    call_ctl_tx: &CallCtlTx,
     ui: &UiHandle,
 ) -> Option<DialPrep> {
     let mut guard = call_ctl_tx.lock();

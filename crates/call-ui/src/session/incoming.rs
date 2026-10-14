@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use super::types::INCOMING_TIMEOUT;
 use super::types::{
-    CallRoutes, CallSlot, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, GuiSipConfig, UpdateMsg,
+    CallRoutes, CallCtlTx, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, GuiSipConfig, UpdateMsg,
     WorkerCmd, caller_from_request,
 };
 use crate::app::UiEvent;
@@ -45,7 +45,7 @@ use crate::media;
 pub(super) async fn handle_incoming(
     dialog: InviteDialog,
     mut ctx: IncomingCtx,
-    call_ctl_tx: CallSlot,
+    call_ctl_tx: CallCtlTx,
     routes: CallRoutes,
 ) {
     let res = incoming_inner(&dialog, &mut ctx).await;

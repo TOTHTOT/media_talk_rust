@@ -16,7 +16,7 @@ use rsipstack::sip as rsip;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::types::{CallSlot, GuiSipConfig, WorkerCmd};
+use super::types::{CallCtlTx, GuiSipConfig, WorkerCmd};
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
 use crate::media;
@@ -43,7 +43,7 @@ use crate::media;
 pub(super) async fn handle_outgoing(
     dialog_layer: Arc<DialogLayer>,
     state_sender: DialogStateSender,
-    slot: CallSlot,
+    slot: CallCtlTx,
     mut ctx: OutgoingCtx,
 ) {
     let res = outgoing_inner(dialog_layer, state_sender, &mut ctx).await;

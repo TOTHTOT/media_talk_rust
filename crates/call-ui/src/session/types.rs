@@ -60,7 +60,7 @@ impl Default for GuiSipConfig {
 }
 
 /// 当前通话的控制通道, Some 即占线
-pub type CallSlot = Arc<Mutex<Option<mpsc::Sender<WorkerCmd>>>>;
+pub type CallCtlTx = Arc<Mutex<Option<mpsc::Sender<WorkerCmd>>>>;
 pub type UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>);
 /// 进行中的通话路由表: dialog id -> 通话任务的 re-INVITE 通道
 pub type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
