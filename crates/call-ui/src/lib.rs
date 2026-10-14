@@ -78,7 +78,19 @@ fn wire_callbacks(
 }
 
 /// 启动通话 GUI: 主线程跑 slint 事件循环, SIP worker 在后台线程.
-/// 窗口关闭后命令通道断开, worker 收到后 client.stop() 优雅退出
+/// 窗口关闭后命令通道断开, worker 收到后 client.stop() 优雅退出.
+///
+/// # Arguments
+///
+/// * `cfg`: SIP 服务器账号与本机媒体源配置
+///
+/// returns: anyhow::Result<()>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     let ui = MainWindow::new()?;
     let app: bridge::SharedApp =
@@ -101,7 +113,15 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 临时冒烟入口: 开窗验证 slint 编译和显示, 不接 SIP (正式入口是 run)
+/// 临时冒烟入口: 开窗验证 slint 编译和显示, 不接 SIP (正式入口是 run).
+///
+/// returns: anyhow::Result<()>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn smoke() -> anyhow::Result<()> {
     let ui = MainWindow::new()?;
     let weak = ui.as_weak();
