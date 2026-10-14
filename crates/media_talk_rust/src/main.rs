@@ -164,6 +164,7 @@ async fn main() -> anyhow::Result<()> {
                 audio_src: ipcam_gst::parse_track_source(&audio_src).map_err(anyhow::Error::msg)?,
                 video_src: ipcam_gst::parse_track_source(&video_src).map_err(anyhow::Error::msg)?,
                 max_width,
+                rtp_ports: None,
             };
             call_ui::run(cfg)?;
         }

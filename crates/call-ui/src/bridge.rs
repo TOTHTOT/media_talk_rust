@@ -13,7 +13,7 @@ use crate::app::AppState;
 use crate::app::UiEvent;
 
 /// UI → SIP worker 命令
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum WorkerCmd {
     Dial(String),
     Hangup,

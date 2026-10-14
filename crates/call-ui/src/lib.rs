@@ -8,6 +8,7 @@ pub mod session;
 pub mod video;
 pub use app::Phase;
 pub use session::GuiSipConfig;
+use tracing::error;
 
 /// 把 AppState 字段刷到 slint 属性 (UiHandle::post 里也是这段)
 fn sync_props(ui: &MainWindow, app: &app::AppState) {
@@ -34,7 +35,9 @@ fn wire_callbacks(
         cmd: Option<bridge::WorkerCmd>,
     ) {
         if let Some(cmd) = cmd {
-            let _ = cmd_tx.send(cmd);
+            if let Err(e) = cmd_tx.send(cmd) {
+                error!(err = %e, "cmd send failed");
+            }
         }
         if let Some(ui) = weak.upgrade() {
             sync_props(&ui, &app.lock());
