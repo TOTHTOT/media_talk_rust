@@ -33,14 +33,8 @@ pub enum UiEvent {
     },
 }
 
-/// UI 决策出的动作, bridge 翻译成 SIP worker 命令
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Effect {
-    Dial(String),
-    Accept,
-    Reject,
-    Hangup,
-}
+/// UI 决策出的动作, 直接就是 SIP worker 命令, 无需翻译
+pub use crate::bridge::WorkerCmd;
 
 #[derive(Debug, Default)]
 pub struct AppState {
@@ -84,8 +78,8 @@ impl AppState {
         }
     }
 
-    /// 拨打: 仅 Idle 且号码非空; 返回 Effect 给 bridge 转发 worker
-    pub fn dial(&mut self, number: String) -> Option<Effect> {
+    /// 拨打: 仅 Idle 且号码非空; 返回 WorkerCmd 给 worker
+    pub fn dial(&mut self, number: String) -> Option<WorkerCmd> {
         let number = number.trim().to_string();
         if self.phase != Phase::Idle || number.is_empty() {
             return None;
@@ -93,33 +87,33 @@ impl AppState {
         self.phase = Phase::Outgoing;
         self.peer = number.clone();
         self.error.clear();
-        Some(Effect::Dial(number))
+        Some(WorkerCmd::Dial(number))
     }
 
     /// 接听: 仅 Incoming
-    pub fn accept(&mut self) -> Option<Effect> {
-        (self.phase == Phase::Incoming).then_some(Effect::Accept)
+    pub fn accept(&mut self) -> Option<WorkerCmd> {
+        (self.phase == Phase::Incoming).then_some(WorkerCmd::Accept)
     }
 
     /// 拒接: 仅 Incoming, 立即回 Idle
-    pub fn reject(&mut self) -> Option<Effect> {
+    pub fn reject(&mut self) -> Option<WorkerCmd> {
         if self.phase != Phase::Incoming {
             return None;
         }
         self.phase = Phase::Idle;
         self.peer.clear();
-        Some(Effect::Reject)
+        Some(WorkerCmd::Reject)
     }
 
     /// 挂断/取消: Outgoing 或 InCall 有效, 立即回 Idle
     /// (不等 worker 确认, 界面对讲机场景手感优先; worker 失败会再报 Failed)
-    pub fn hangup(&mut self) -> Option<Effect> {
+    pub fn hangup(&mut self) -> Option<WorkerCmd> {
         if !matches!(self.phase, Phase::Outgoing | Phase::InCall) {
             return None;
         }
         self.phase = Phase::Idle;
         self.peer.clear();
-        Some(Effect::Hangup)
+        Some(WorkerCmd::Hangup)
     }
 }
 
@@ -130,7 +124,10 @@ mod tests {
     #[test]
     fn dial_from_idle_goes_outgoing() {
         let mut app = AppState::default();
-        assert_eq!(app.dial("1002".into()), Some(Effect::Dial("1002".into())));
+        assert_eq!(
+            app.dial("1002".into()),
+            Some(WorkerCmd::Dial("1002".into()))
+        );
         assert_eq!(app.phase, Phase::Outgoing);
         assert_eq!(app.peer, "1002");
     }
@@ -166,7 +163,7 @@ mod tests {
             caller: "1001".into(),
         });
         assert_eq!(app.phase, Phase::Incoming);
-        assert_eq!(app.accept(), Some(Effect::Accept));
+        assert_eq!(app.accept(), Some(WorkerCmd::Accept));
         // accept 不切状态, 等 Confirmed
         assert_eq!(app.phase, Phase::Incoming);
         app.on_event(UiEvent::Confirmed {
@@ -178,7 +175,7 @@ mod tests {
         app.on_event(UiEvent::Incoming {
             caller: "1001".into(),
         });
-        assert_eq!(app.reject(), Some(Effect::Reject));
+        assert_eq!(app.reject(), Some(WorkerCmd::Reject));
         assert_eq!(app.phase, Phase::Idle);
     }
 

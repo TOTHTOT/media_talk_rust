@@ -89,6 +89,7 @@ async fn wait_user_decision(
     ctl_rx: &mut mpsc::Receiver<CallCtl>,
 ) -> Result<Decision> {
     dialog.ringing(None, None)?;
+    info!("post to ui, incoming from {caller}");
     ui.post(UiEvent::Incoming {
         caller: caller.to_string(),
     });

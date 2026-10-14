@@ -23,23 +23,17 @@ fn wire_callbacks(
     app: &bridge::SharedApp,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<bridge::WorkerCmd>,
 ) {
-    /// 决策落地: 有 Effect 才发命令, 然后刷属性.
-    /// 注意必须先 `let eff = app.lock().xxx();` 绑定再调本函数 —
+    /// 决策落地: 有命令才发, 然后刷属性.
+    /// 注意必须先 `let cmd = app.lock().xxx();` 绑定再调本函数 —
     /// 锁守卫若作为实参表达式存活到调用结束, 这里再 lock 会死锁
     /// (parking_lot Mutex 不可重入)
     fn apply(
         weak: &slint::Weak<MainWindow>,
         app: &bridge::SharedApp,
         cmd_tx: &tokio::sync::mpsc::UnboundedSender<bridge::WorkerCmd>,
-        eff: Option<app::Effect>,
+        cmd: Option<bridge::WorkerCmd>,
     ) {
-        if let Some(eff) = eff {
-            let cmd = match eff {
-                app::Effect::Dial(n) => bridge::WorkerCmd::Dial(n),
-                app::Effect::Accept => bridge::WorkerCmd::Accept,
-                app::Effect::Reject => bridge::WorkerCmd::Reject,
-                app::Effect::Hangup => bridge::WorkerCmd::Hangup,
-            };
+        if let Some(cmd) = cmd {
             let _ = cmd_tx.send(cmd);
         }
         if let Some(ui) = weak.upgrade() {
@@ -50,29 +44,29 @@ fn wire_callbacks(
     {
         let (app, cmd_tx, weak) = (app.clone(), cmd_tx.clone(), ui.as_weak());
         ui.on_dial(move |number| {
-            let eff = app.lock().dial(number.as_str().to_string());
-            apply(&weak, &app, &cmd_tx, eff);
+            let cmd = app.lock().dial(number.as_str().to_string());
+            apply(&weak, &app, &cmd_tx, cmd);
         });
     }
     {
         let (app, cmd_tx, weak) = (app.clone(), cmd_tx.clone(), ui.as_weak());
         ui.on_accept_call(move || {
-            let eff = app.lock().accept();
-            apply(&weak, &app, &cmd_tx, eff);
+            let cmd = app.lock().accept();
+            apply(&weak, &app, &cmd_tx, cmd);
         });
     }
     {
         let (app, cmd_tx, weak) = (app.clone(), cmd_tx.clone(), ui.as_weak());
         ui.on_reject_call(move || {
-            let eff = app.lock().reject();
-            apply(&weak, &app, &cmd_tx, eff);
+            let cmd = app.lock().reject();
+            apply(&weak, &app, &cmd_tx, cmd);
         });
     }
     {
         let (app, cmd_tx, weak) = (app.clone(), cmd_tx.clone(), ui.as_weak());
         ui.on_hangup(move || {
-            let eff = app.lock().hangup();
-            apply(&weak, &app, &cmd_tx, eff);
+            let cmd = app.lock().hangup();
+            apply(&weak, &app, &cmd_tx, cmd);
         });
     }
 }

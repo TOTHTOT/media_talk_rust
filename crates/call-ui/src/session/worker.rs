@@ -276,26 +276,18 @@ pub fn make_incoming_handler(
             let (update_tx, update_rx) = mpsc::channel(4);
             routes.lock().insert(dialog.id(), update_tx);
 
-            let cfg = cfg.clone();
-            let ui = ui.clone();
-            let tap = tap.clone();
             let slot = slot.clone();
             let routes = routes.clone();
+            let ctx = IncomingCtx {
+                cfg: cfg.clone(),
+                ui: ui.clone(),
+                tap: tap.clone(),
+                local,
+                ctl_rx,
+                update_rx,
+            };
             tokio::spawn(async move {
-                incoming::handle_incoming(
-                    dialog,
-                    IncomingCtx {
-                        cfg,
-                        ui,
-                        tap,
-                        local,
-                        ctl_rx,
-                        update_rx,
-                    },
-                    slot,
-                    routes,
-                )
-                .await;
+                incoming::handle_incoming(dialog, ctx, slot, routes).await;
             });
         }
     }
