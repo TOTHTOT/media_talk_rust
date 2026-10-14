@@ -4,7 +4,7 @@
 //! 和 examples/call.rs (主叫).
 //!
 //! 模块布局:
-//! - `types.rs`: 共享类型与常量 (GuiSipConfig / CallCtl / CallSlot / CallRoutes / DialPrep)
+//! - `types.rs`: 共享类型与常量 (GuiSipConfig / WorkerCmd / CallSlot / CallRoutes / DialPrep)
 //! - `worker.rs`: 主循环与命令处理 (spawn / setup / run / shutdown / handle_cmd / prepare_dial / forward_update)
 //! - `incoming.rs`: 被叫通话流程
 //! - `outgoing.rs`: 主叫通话流程

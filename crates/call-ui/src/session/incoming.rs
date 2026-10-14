@@ -17,8 +17,8 @@ use tracing::{info, warn};
 
 use super::types::INCOMING_TIMEOUT;
 use super::types::{
-    AUDIO_RTP_PORT, CallCtl, CallRoutes, CallSlot, GuiSipConfig, UpdateMsg, VIDEO_RTP_PORT,
-    caller_from_request,
+    CallRoutes, CallSlot, GuiSipConfig, UpdateMsg, WorkerCmd,
+    caller_from_request, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT,
 };
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
@@ -53,7 +53,7 @@ pub(crate) struct IncomingCtx {
     pub(super) ui: UiHandle,
     pub(super) tap: VideoFrameSink,
     pub(super) local: Ipv4Addr,
-    pub(super) ctl_rx: mpsc::Receiver<CallCtl>,
+    pub(super) ctl_rx: mpsc::Receiver<WorkerCmd>,
     pub(super) update_rx: mpsc::Receiver<UpdateMsg>,
 }
 
@@ -86,7 +86,7 @@ async fn wait_user_decision(
     dialog: &InviteDialog,
     ui: &UiHandle,
     caller: &str,
-    ctl_rx: &mut mpsc::Receiver<CallCtl>,
+    ctl_rx: &mut mpsc::Receiver<WorkerCmd>,
 ) -> Result<Decision> {
     dialog.ringing(None, None)?;
     info!("post to ui, incoming from {caller}");
@@ -97,7 +97,7 @@ async fn wait_user_decision(
     let decision = tokio::select! {
         _ = dialog.cancel_token().cancelled() => Decision::PeerCancelled,
         ctl = ctl_rx.recv() => match ctl {
-            Some(CallCtl::Accept) => Decision::Accept,
+            Some(WorkerCmd::Accept) => Decision::Accept,
             // Reject 是用户拒接; Hangup/None (worker 退出) 兜底也走拒接
             _ => Decision::Reject(rsip::StatusCode::Decline),
         },
@@ -131,6 +131,7 @@ fn accept_with_answer(
     local: Ipv4Addr,
     caller: &str,
     ui: &UiHandle,
+    rtp_ports: (u16, u16),
 ) -> Result<(OfferMedias, String)> {
     let offer = match parse_offer_all(dialog.initial_request().body()) {
         Ok(o) => o,
@@ -143,8 +144,8 @@ fn accept_with_answer(
     let (audio_pt, video, answer) = negotiate::build_answer(
         &offer,
         IpAddr::V4(local),
-        AUDIO_RTP_PORT,
-        VIDEO_RTP_PORT,
+        rtp_ports.0,
+        rtp_ports.1,
         media::audio_pred,
         media::video_pred,
     );
@@ -185,7 +186,13 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<
         Decision::Accept => {}
     }
 
-    let (offer, _) = accept_with_answer(dialog, ctx.local, &caller, &ctx.ui)?;
+    let (offer, _) = accept_with_answer(
+        dialog,
+        ctx.local,
+        &caller,
+        &ctx.ui,
+        ctx.cfg.rtp_ports.unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
+    )?;
     let mut media = media::start_incoming(&offer, &ctx.cfg, &ctx.tap);
 
     let reason = incoming_call_loop(
@@ -194,6 +201,7 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<
         &mut ctx.ctl_rx,
         &mut ctx.update_rx,
         ctx.local,
+        ctx.cfg.rtp_ports.unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
     )
     .await?;
     if let Some(m) = media.take() {
@@ -223,9 +231,10 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<
 async fn incoming_call_loop(
     dialog: &InviteDialog,
     media: &mut Option<media::MediaHandles>,
-    ctl_rx: &mut mpsc::Receiver<CallCtl>,
+    ctl_rx: &mut mpsc::Receiver<WorkerCmd>,
     update_rx: &mut mpsc::Receiver<UpdateMsg>,
     local: Ipv4Addr,
+    rtp_ports: (u16, u16),
 ) -> Result<String> {
     let reason = loop {
         tokio::select! {
@@ -234,7 +243,7 @@ async fn incoming_call_loop(
             }
             ctl = ctl_rx.recv() => {
                 match ctl {
-                    Some(CallCtl::Hangup) | None => {
+                    Some(WorkerCmd::Hangup) | None => {
                         dialog.bye_with_headers(None).await?;
                         break "local hung up".to_string();
                     }
@@ -249,8 +258,8 @@ async fn incoming_call_loop(
                         let (_, _, answer) = negotiate::build_answer(
                             &new_offer,
                             IpAddr::V4(local),
-                            AUDIO_RTP_PORT,
-                            VIDEO_RTP_PORT,
+                            rtp_ports.0,
+                            rtp_ports.1,
                             media::audio_pred,
                             media::video_pred,
                         );

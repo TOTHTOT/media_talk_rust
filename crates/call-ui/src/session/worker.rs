@@ -22,7 +22,7 @@ use crate::bridge::{UiHandle, WorkerCmd};
 use super::incoming;
 use super::incoming::IncomingCtx;
 use super::outgoing;
-use super::types::{CallCtl, CallRoutes, CallSlot, DialPrep, GuiSipConfig, caller_from_request};
+use super::types::{CallRoutes, CallSlot, DialPrep, GuiSipConfig, caller_from_request};
 
 /// 启动 SIP worker 线程: 独立线程跑自己的 tokio runtime, 注册常驻,
 /// UI 命令逐条处理, 事件经 UiHandle 回投主线程.
@@ -223,7 +223,7 @@ async fn shutdown<'a>(
     {
         let ctl = slot.lock().clone();
         if let Some(ctl) = ctl {
-            let _ = ctl.try_send(CallCtl::Hangup);
+            let _ = ctl.try_send(WorkerCmd::Hangup);
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
@@ -328,6 +328,7 @@ pub fn handle_cmd(
     cfg: &Arc<GuiSipConfig>,
     local: Ipv4Addr,
 ) {
+    info!(?cmd, "current deal");
     match cmd {
         WorkerCmd::Dial(number) => {
             let Some((callee, rtp_sockets, ctl_rx)) =
@@ -358,13 +359,7 @@ pub fn handle_cmd(
             let Some(ctl) = ctl else {
                 return;
             };
-            let msg = match cmd {
-                WorkerCmd::Hangup => CallCtl::Hangup,
-                WorkerCmd::Accept => CallCtl::Accept,
-                WorkerCmd::Reject => CallCtl::Reject,
-                WorkerCmd::Dial(_) => unreachable!(),
-            };
-            if let Err(e) = ctl.try_send(msg) {
+            if let Err(e) = ctl.try_send(cmd) {
                 warn!(error = %e, "call control channel full or closed");
             }
         }

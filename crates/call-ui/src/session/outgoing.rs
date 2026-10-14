@@ -16,7 +16,7 @@ use rsipstack::sip as rsip;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::types::{CallCtl, CallSlot, GuiSipConfig};
+use super::types::{CallSlot, GuiSipConfig, WorkerCmd};
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
 use crate::media;
@@ -57,7 +57,7 @@ pub(crate) struct OutgoingCtx {
     pub(super) cfg: Arc<GuiSipConfig>,
     pub(super) ui: UiHandle,
     pub(super) tap: VideoFrameSink,
-    pub(super) ctl_rx: mpsc::Receiver<CallCtl>,
+    pub(super) ctl_rx: mpsc::Receiver<WorkerCmd>,
 }
 
 async fn outgoing_inner(
@@ -94,7 +94,7 @@ async fn outgoing_inner(
         return Err(anyhow!("call rejected: {}", resp.status_code));
     }
 
-    if matches!(ctx.ctl_rx.try_recv(), Ok(CallCtl::Hangup)) {
+    if matches!(ctx.ctl_rx.try_recv(), Ok(WorkerCmd::Hangup)) {
         dialog.bye_with_headers(None).await?;
         return Ok("local cancelled".into());
     }
@@ -115,7 +115,7 @@ async fn outgoing_inner(
             }
             ctl = ctx.ctl_rx.recv() => {
                 match ctl {
-                    Some(CallCtl::Hangup) | None => {
+                    Some(WorkerCmd::Hangup) | None => {
                         dialog.bye_with_headers(None).await?;
                         break "local hung up".to_string();
                     }
