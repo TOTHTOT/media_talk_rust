@@ -147,11 +147,11 @@ async fn run(
     let (client, credential, state_sender, state_receiver, local) = setup(&cfg, &ui).await?;
 
     let routes: CallRoutes = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
-    let slot: CallSlot = Arc::new(parking_lot::Mutex::new(None));
+    let call_ctl_tx: CallSlot = Arc::new(parking_lot::Mutex::new(None));
     let cfg = Arc::new(cfg);
 
     let on_incoming_call = make_incoming_handler(
-        slot.clone(),
+        call_ctl_tx.clone(),
         routes.clone(),
         ui.clone(),
         tap.clone(),
@@ -205,12 +205,12 @@ async fn run(
                     info!("UI command channel closed, worker exiting");
                     break;
                 };
-                handle_cmd(cmd, &client, &credential, &state_sender, &slot, &ui, &tap, &cfg, local);
+                handle_cmd(cmd, &client, &credential, &state_sender, &call_ctl_tx, &ui, &tap, &cfg, local);
             }
         }
     }
 
-    shutdown(&client, reg, reg_done, &slot).await;
+    shutdown(&client, reg, reg_done, &call_ctl_tx).await;
     Ok(())
 }
 
@@ -221,7 +221,7 @@ async fn run(
 /// * `client`: SIP 客户端句柄
 /// * `reg`: 注册循环 future (已在 select 里跑完则 reg_done 为 true)
 /// * `reg_done`: 注册循环是否已完成 (完成再 await 会 double-await panic)
-/// * `slot`: 通话槽位 (有通话则先送 Hangup)
+/// * `call_ctl_tx`: 通话槽位 (有通话则先送 Hangup)
 ///
 /// # Examples
 ///
@@ -232,11 +232,11 @@ async fn shutdown<'a>(
     client: &'a SipClient,
     reg: std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>,
     reg_done: bool,
-    slot: &CallSlot,
+    call_ctl_tx: &CallSlot,
 ) {
     info!("stopping");
     {
-        let ctl = slot.lock().clone();
+        let ctl = call_ctl_tx.lock().clone();
         if let Some(ctl) = ctl {
             let _ = ctl.try_send(WorkerCmd::Hangup);
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -252,7 +252,7 @@ async fn shutdown<'a>(
 ///
 /// # Arguments
 ///
-/// * `slot`: 通话槽位
+/// * `call_ctl_tx`: 通话槽位
 /// * `routes`: 进行中通话路由表
 /// * `ui`: 事件回投句柄
 /// * `tap`: 视频帧回调
@@ -267,7 +267,7 @@ async fn shutdown<'a>(
 ///
 /// ```
 pub fn make_incoming_handler(
-    slot: CallSlot,
+    call_ctl_tx: CallSlot,
     routes: CallRoutes,
     ui: UiHandle,
     tap: VideoFrameSink,
@@ -277,7 +277,7 @@ pub fn make_incoming_handler(
     move |dialog: InviteDialog| {
         let caller = caller_from_request(&dialog.initial_request());
         {
-            let mut guard = slot.lock();
+            let mut guard = call_ctl_tx.lock();
             if guard.is_some() {
                 warn!(%caller, "busy, rejecting new incoming call with 486");
                 drop(guard);
@@ -291,7 +291,7 @@ pub fn make_incoming_handler(
             let (update_tx, update_rx) = mpsc::channel(4);
             routes.lock().insert(dialog.id(), update_tx);
 
-            let slot = slot.clone();
+            let call_ctl_tx = call_ctl_tx.clone();
             let routes = routes.clone();
             let ctx = IncomingCtx {
                 cfg: cfg.clone(),
@@ -302,7 +302,7 @@ pub fn make_incoming_handler(
                 update_rx,
             };
             tokio::spawn(async move {
-                incoming::handle_incoming(dialog, ctx, slot, routes).await;
+                incoming::handle_incoming(dialog, ctx, call_ctl_tx, routes).await;
             });
         }
     }
@@ -316,7 +316,7 @@ pub fn make_incoming_handler(
 /// * `client`: SIP 客户端句柄
 /// * `credential`: Digest 鉴权凭据
 /// * `state_sender`: Dialog 状态发送通道
-/// * `slot`: 当前通话控制槽
+/// * `call_ctl_tx`: 当前通话控制槽
 /// * `ui`: 事件回投句柄
 /// * `tap`: 视频帧回调
 /// * `cfg`: SIP 配置 (服务器/账号/媒体源)
@@ -337,7 +337,7 @@ pub fn handle_cmd(
     client: &SipClient,
     credential: &Credential,
     state_sender: &rsipstack::dialog::dialog::DialogStateSender,
-    slot: &CallSlot,
+    call_ctl_tx: &CallSlot,
     ui: &UiHandle,
     tap: &VideoFrameSink,
     cfg: &Arc<GuiSipConfig>,
@@ -347,14 +347,14 @@ pub fn handle_cmd(
     match cmd {
         WorkerCmd::Dial(number) => {
             let Some((callee, rtp_sockets, ctl_rx)) =
-                prepare_dial(client, &number, local, slot, ui)
+                prepare_dial(client, &number, local, call_ctl_tx, ui)
             else {
                 return;
             };
             tokio::spawn(crate::session::outgoing::handle_outgoing(
                 client.dialog_layer.clone(),
                 state_sender.clone(),
-                slot.clone(),
+                call_ctl_tx.clone(),
                 outgoing::OutgoingCtx {
                     callee,
                     contact: client.contact.clone(),
@@ -370,7 +370,7 @@ pub fn handle_cmd(
             ));
         }
         WorkerCmd::Hangup | WorkerCmd::Accept | WorkerCmd::Reject => {
-            let ctl = slot.lock().clone();
+            let ctl = call_ctl_tx.lock().clone();
             let Some(ctl) = ctl else {
                 return;
             };
@@ -389,7 +389,7 @@ pub fn handle_cmd(
 /// * `client`: SIP 客户端句柄
 /// * `number`: 拨号号码
 /// * `local`: 本机 IPv4
-/// * `slot`: 通话槽位 (全过时在此占槽)
+/// * `call_ctl_tx`: 通话槽位 (全过时在此占槽)
 /// * `ui`: 事件回投句柄 (失败原因上报)
 ///
 /// returns: Option<DialPrep>
@@ -403,10 +403,10 @@ fn prepare_dial(
     client: &SipClient,
     number: &str,
     local: Ipv4Addr,
-    slot: &CallSlot,
+    call_ctl_tx: &CallSlot,
     ui: &UiHandle,
 ) -> Option<DialPrep> {
-    let mut guard = slot.lock();
+    let mut guard = call_ctl_tx.lock();
     if guard.is_some() {
         drop(guard);
         ui.post(UiEvent::Failed {

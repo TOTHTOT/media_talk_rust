@@ -26,13 +26,13 @@ use crate::media;
 
 /// 被叫一路通话: ringing → 等用户接听/拒接/对端取消/超时 → accept 起
 /// 媒体 → 通话 loop (对端 BYE / 本地挂断 / re-INVITE 重协商).
-/// 无论哪条路径退出, 收尾都要: 停媒体、摘路由、清 slot、通知 UI.
+/// 无论哪条路径退出, 收尾都要: 停媒体、摘路由、清 call_ctl_tx、通知 UI.
 ///
 /// # Arguments
 ///
 /// * `dialog`: 来电 InviteDialog
 /// * `ctx`: 被叫通话上下文 (含 SIP 配置/UI 句柄/控制通道)
-/// * `slot`: 通话槽位 (退出时清空)
+/// * `call_ctl_tx`: 通话控制通道发送端 (退出时清空释放占位)
 /// * `routes`: 进行中通话路由表 (退出时摘除)
 ///
 /// returns: ()
@@ -45,7 +45,7 @@ use crate::media;
 pub(super) async fn handle_incoming(
     dialog: InviteDialog,
     mut ctx: IncomingCtx,
-    slot: CallSlot,
+    call_ctl_tx: CallSlot,
     routes: CallRoutes,
 ) {
     let res = incoming_inner(&dialog, &mut ctx).await;
@@ -59,7 +59,7 @@ pub(super) async fn handle_incoming(
         }
     }
     routes.lock().remove(&dialog.id());
-    *slot.lock() = None;
+    *call_ctl_tx.lock() = None;
 }
 
 /// 被叫通话上下文: 在 spawn 时打包, 整个通话生命周期内共享
