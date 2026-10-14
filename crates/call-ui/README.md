@@ -91,24 +91,24 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant PBX as rustpbx
-    participant In as run_incoming_loop
+    participant RIL as run_incoming_loop
     participant DL as dialog_layer
-    participant SL as state_loop
-    participant IC as on_incoming_call
+    participant RSL as run_dialog_state_loop
+    participant MIH as make_incoming_handler<br/>(闭包)
     participant HI as handle_incoming
     participant UI as UI (post)
     participant Med as media 模块
 
-    PBX->>+In: INVITE
-    In->>+DL: get_or_create_server_invite()
-    DL-->>-In: dialog
-    In->>DL: dialog.handle()
+    PBX->>+RIL: INVITE
+    RIL->>+DL: get_or_create_server_invite(state_sender)
+    DL-->>-RIL: dialog
+    RIL->>DL: dialog.handle()
 
-    SL->>+IC: DialogState::Calling(id)
-    IC->>+HI: spawn handle_incoming()
+    RSL->>+MIH: DialogState::Calling(id)
+    MIH->>+HI: spawn handle_incoming()
 
     HI->>+UI: post(Incoming { caller })
-    HI->>HI: dialog.ringing()
+    HI->>DL: dialog.ringing()
     UI-->>-HI: 更新来电弹窗
 
     Note over HI: 等待用户点 Accept/Reject/超时/对端取消
@@ -161,20 +161,20 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant In as run_incoming_loop
+    participant RIL as run_incoming_loop
     participant DL as dialog_layer
-    participant SL as state_loop
-    participant OU as on_update
+    participant RSL as run_dialog_state_loop
+    participant OU as on_update<br/>(forward_update 闭包)
     participant RT as routes
     participant HI as handle_incoming
     participant Med as MediaHandles
 
-    In->>+DL: match_dialog(tx)
-    DL-->>-In: dialog
-    In->>DL: dialog.handle()
+    RIL->>+DL: match_dialog(tx)
+    DL-->>-RIL: dialog
+    RIL->>DL: dialog.handle()
     Note over DL: handle_reinvite() 状态切 Updated
 
-    SL->>+OU: DialogState::Updated(id, req, handle)
+    RSL->>+OU: DialogState::Updated(id, req, handle)
     OU->>+RT: routes.get(id)
     RT-->>-OU: update_tx
     OU->>+HI: update_tx.send((req, reply_tx))
@@ -192,7 +192,7 @@ sequenceDiagram
 ```
 
 - 对端发 re-INVITE（To 带 tag，in-dialog 请求）
-- `state_loop` 通过 `routes` 表找到对应通话任务的 `update_tx`
+- `run_dialog_state_loop` 通过 `routes` 表找到对应通话任务的 `update_tx`
 - 通话任务内解析 SDP + 重新协商 + 按需重启媒体
 - oneshot 回复通道把 answer SDP 带回 `on_update`
 
