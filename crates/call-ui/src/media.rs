@@ -19,7 +19,8 @@ use ipcam_sip::negotiate;
 use ipcam_sip::sdp::{OfferMedias, PeerMedias};
 use tracing::{info, warn};
 
-use crate::session::{AUDIO_RTP_PORT, GuiSipConfig, VIDEO_RTP_PORT};
+use crate::session::GuiSipConfig;
+use crate::session::types::{AUDIO_RTP_PORT, VIDEO_RTP_PORT};
 
 /// 视频发送指纹: (对端收视频地址, pt, 编码). 编码参与比对 — 从 H264
 /// 切成 H265 时发送链建不出来, 指纹变了才触发重启逻辑重新判定

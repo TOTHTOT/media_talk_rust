@@ -15,9 +15,10 @@ use rsipstack::sip::headers::Header;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::{
-    AUDIO_RTP_PORT, CallCtl, CallRoutes, CallSlot, GuiSipConfig, INCOMING_TIMEOUT, UpdateMsg,
-    VIDEO_RTP_PORT, caller_from_request,
+use super::types::INCOMING_TIMEOUT;
+use super::types::{
+    AUDIO_RTP_PORT, CallCtl, CallRoutes, CallSlot, GuiSipConfig, UpdateMsg, VIDEO_RTP_PORT,
+    caller_from_request,
 };
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
@@ -47,7 +48,7 @@ pub(super) async fn handle_incoming(
 }
 
 /// 被叫通话上下文: 在 spawn 时打包, 整个通话生命周期内共享
-pub(super) struct IncomingCtx {
+pub(crate) struct IncomingCtx {
     pub(super) cfg: Arc<GuiSipConfig>,
     pub(super) ui: UiHandle,
     pub(super) tap: VideoFrameSink,
