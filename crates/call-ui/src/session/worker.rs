@@ -123,6 +123,21 @@ async fn setup(
 /// worker 主循环: 注册/入向分发/dialog 状态循环常驻, UI 命令逐条处理.
 /// 三个常驻 future 只创建一次, loop 里 select 复用 (每次重建
 /// incoming_transactions 会丢包, state_receiver 更是 move 语义).
+///
+/// # Arguments
+///
+/// * `cfg`: SIP 服务器账号与本机媒体源配置
+/// * `cmd_rx`: UI 命令接收端, channel 关闭时 worker 退出
+/// * `ui`: 事件回投句柄
+/// * `tap`: 视频帧回调
+///
+/// returns: Result<()> — setup 失败 / 任意常驻循环出错则返回 Err
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 async fn run(
     cfg: GuiSipConfig,
     mut cmd_rx: UnboundedReceiver<WorkerCmd>,
@@ -429,6 +444,20 @@ fn prepare_dial(
 
 /// re-INVITE/UPDATE 转发 (原样搬自 answer.rs): 按 dialog id 找通话任务
 /// 要 answer SDP; 找不到或 2s 没应答就回不带 SDP 的 200.
+///
+/// # Arguments
+///
+/// * `routes`: 进行中通话路由表
+/// * `id`: dialog id
+/// * `req`: 主叫发来的 re-INVITE/UPDATE 请求
+///
+/// returns: Option<Vec<u8>> — answer SDP body, 超时或任务消失返回 None
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub async fn forward_update(
     routes: CallRoutes,
     id: rsipstack::dialog::DialogId,

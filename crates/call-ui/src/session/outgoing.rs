@@ -25,6 +25,21 @@ use crate::media;
 /// media -> call loop (peer BYE / local hangup). re-INVITE does not go through
 /// the route table (caller does not register), forward_update falls back to 200
 /// without SDP -- local media unchanged, same as call.rs.
+///
+/// # Arguments
+///
+/// * `dialog_layer`: SIP dialog 层, 构造 INVITE 用
+/// * `state_sender`: dialog 状态发送端
+/// * `slot`: 通话槽位 (占线保护)
+/// * `ctx`: 主叫通话上下文
+///
+/// returns: ()
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(super) async fn handle_outgoing(
     dialog_layer: Arc<DialogLayer>,
     state_sender: DialogStateSender,
@@ -60,6 +75,23 @@ pub(crate) struct OutgoingCtx {
     pub(super) ctl_rx: mpsc::Receiver<WorkerCmd>,
 }
 
+/// 主叫通话内部流程: 构造 SDP offer -> INVITE -> 解析 answer -> 起媒体 -> 通话 loop.
+/// 对端 BYE / 本地 Hangup / route channel 关闭任一路均正常返回结束原因.
+///
+/// # Arguments
+///
+/// * `dialog_layer`: SIP dialog 层, 构造 INVITE 用
+/// * `state_sender`: dialog 状态发送端, 供 run_dialog_state_loop 接收事件用
+/// * `ctx`: 主叫通话上下文 (含被叫 URI / 凭据 / RTP socket / 配置)
+///
+/// returns: Result<String> — Ok 为结束原因 ("peer hung up" / "local hung up" /
+/// "local cancelled"), Err 为信令或媒体层错误
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 async fn outgoing_inner(
     dialog_layer: Arc<DialogLayer>,
     state_sender: DialogStateSender,

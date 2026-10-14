@@ -17,8 +17,8 @@ use tracing::{info, warn};
 
 use super::types::INCOMING_TIMEOUT;
 use super::types::{
-    CallRoutes, CallSlot, GuiSipConfig, UpdateMsg, WorkerCmd,
-    caller_from_request, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT,
+    CallRoutes, CallSlot, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, GuiSipConfig, UpdateMsg,
+    WorkerCmd, caller_from_request,
 };
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
@@ -27,6 +27,21 @@ use crate::media;
 /// 被叫一路通话: ringing → 等用户接听/拒接/对端取消/超时 → accept 起
 /// 媒体 → 通话 loop (对端 BYE / 本地挂断 / re-INVITE 重协商).
 /// 无论哪条路径退出, 收尾都要: 停媒体、摘路由、清 slot、通知 UI.
+///
+/// # Arguments
+///
+/// * `dialog`: 来电 InviteDialog
+/// * `ctx`: 被叫通话上下文 (含 SIP 配置/UI 句柄/控制通道)
+/// * `slot`: 通话槽位 (退出时清空)
+/// * `routes`: 进行中通话路由表 (退出时摘除)
+///
+/// returns: ()
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(super) async fn handle_incoming(
     dialog: InviteDialog,
     mut ctx: IncomingCtx,
@@ -118,6 +133,7 @@ async fn wait_user_decision(
 /// * `local`: 本机 IPv4
 /// * `caller`: 主叫号码 (Confirmed 事件用)
 /// * `ui`: 事件回投句柄
+/// * `rtp_ports`: 本机 RTP 接收端口 (音频, 视频)
 ///
 /// returns: Result<(OfferMedias, String)>
 ///
@@ -165,10 +181,22 @@ fn accept_with_answer(
     Ok((offer, answer))
 }
 
-/// 返回值: Ok(reason) 是正常结束 (对端取消/本地拒接/挂断/对端 BYE),
-/// Err 是失败 (信令或 SDP 错误), 由调用方分别映射 Terminated/Failed
+/// 被叫通话内部流程: 等用户决策 -> 协商 answer -> 起媒体 -> 通话 loop.
+/// Ok(reason) 是正常结束 (对端取消/本地拒接/挂断/对端 BYE),
+/// Err 是失败 (信令或 SDP 错误), 由调用方分别映射 Terminated/Failed.
 ///
-/// returns: Result<String>
+/// # Arguments
+///
+/// * `dialog`: 来电 InviteDialog
+/// * `ctx`: 被叫通话上下文 (含 SIP 配置/UI 句柄/控制通道)
+///
+/// returns: Result<String> — Ok 为结束原因, Err 为信令/媒体层错误
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<String> {
     let caller = caller_from_request(&dialog.initial_request());
     info!(%caller, "incoming call");
@@ -191,7 +219,9 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<
         ctx.local,
         &caller,
         &ctx.ui,
-        ctx.cfg.rtp_ports.unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
+        ctx.cfg
+            .rtp_ports
+            .unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
     )?;
     let mut media = media::start_incoming(&offer, &ctx.cfg, &ctx.tap);
 
@@ -201,7 +231,9 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<
         &mut ctx.ctl_rx,
         &mut ctx.update_rx,
         ctx.local,
-        ctx.cfg.rtp_ports.unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
+        ctx.cfg
+            .rtp_ports
+            .unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
     )
     .await?;
     if let Some(m) = media.take() {
@@ -220,6 +252,7 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<
 /// * `ctl_rx`: 用户操作控制通道
 /// * `update_rx`: re-INVITE 更新消息通道
 /// * `local`: 本机 IPv4
+/// * `rtp_ports`: 本机 RTP 接收端口 (音频, 视频)
 ///
 /// returns: Result<String> — 结束原因 (peer hung up / local hung up / route channel closed)
 ///

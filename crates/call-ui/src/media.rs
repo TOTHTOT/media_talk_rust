@@ -19,7 +19,7 @@ use ipcam_sip::negotiate;
 use ipcam_sip::sdp::{OfferMedias, PeerMedias};
 use tracing::{info, warn};
 
-use crate::session::types::{GuiSipConfig, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT};
+use crate::session::types::{DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, GuiSipConfig};
 
 /// 视频发送指纹: (对端收视频地址, pt, 编码). 编码参与比对 — 从 H264
 /// 切成 H265 时发送链建不出来, 指纹变了才触发重启逻辑重新判定
@@ -302,7 +302,8 @@ pub fn start_incoming(
         negotiate::pick_video(offer, video_pred).map(|(_, c, _)| c),
     );
     Some(MediaHandles::new(
-        cfg.rtp_ports.unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
+        cfg.rtp_ports
+            .unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
         cfg,
         tap.clone(),
         recv_fingerprint,
