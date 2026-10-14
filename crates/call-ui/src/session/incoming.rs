@@ -57,6 +57,7 @@ pub(super) struct IncomingCtx {
 }
 
 /// 来电等待用户操作的决定: 接听 / 拒接 (带 SIP 状态码) / 对端取消
+#[derive(Debug)]
 enum Decision {
     Accept,
     Reject(rsip::StatusCode),
@@ -170,6 +171,7 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<
     info!(%caller, "incoming call");
 
     let decision = wait_user_decision(dialog, &ctx.ui, &caller, &mut ctx.ctl_rx).await?;
+    info!(decision_result = ?decision);
     match decision {
         Decision::PeerCancelled => return Ok("peer cancelled".into()),
         Decision::Reject(code) => {

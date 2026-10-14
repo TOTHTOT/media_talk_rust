@@ -16,11 +16,24 @@ use tracing::{info, warn};
 use crate::SipClient;
 
 impl SipClient {
-    /// 事务层分发循环：只做路由，不碰 SDP/媒体。in-dialog 请求（To 带
-    /// tag）交给已跟踪的 dialog；新 INVITE 建 server dialog 并把 handle
-    /// 甩进独立任务，生命周期事件走 state_sender 通道（由
-    /// [`run_dialog_state_loop`] 接管）；其他新请求（OPTIONS 保活之类）
-    /// 直接回 OK。
+    /// 事务层分发循环: 只做路由, 不碰 SDP/媒体. in-dialog 请求 (To 带
+    /// tag) 交给已跟踪的 dialog; 新 INVITE 建 server dialog 并把 handle
+    /// 甩进独立任务, 生命周期事件走 state_sender 通道 (由
+    /// [`run_dialog_state_loop`] 接管); 其他新请求 (OPTIONS 保活之类)
+    /// 直接回 OK.
+    ///
+    /// # Arguments
+    ///
+    /// * `state_sender`: Dialog 状态发送端 (由 dialog_layer.new_dialog_state_channel 创建,
+    ///   传入新建的 server dialog, dialog 状态跃迁时发往此通道)
+    ///
+    /// returns: Result<()>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub async fn run_incoming_loop(&self, state_sender: &DialogStateSender) -> Result<()> {
         let mut incoming = self.endpoint.incoming_transactions()?;
         while let Some(mut tx) = incoming.recv().await {
@@ -90,20 +103,35 @@ impl SipClient {
     }
 }
 
-/// dialog 状态循环：全部状态打日志；Calling 且本端是 server（被叫）时
-/// 回调 on_incoming_call（每通电话在回调里 spawn 独立任务，别阻塞循环）；
+/// dialog 状态循环: 全部状态打日志; Calling 且本端是 server (被叫) 时
+/// 回调 on_incoming_call (每通电话在回调里 spawn 独立任务, 别阻塞循环);
 /// Updated (re-INVITE/UPDATE) 回调 on_update 拿 answer SDP 并回 200 OK —
 /// rsipstack 的 handle_reinvite 会把事务挂起等应用层回复, 没人理就兜底
 /// 501, 对端收不到 200 会停媒体甚至拆通话; Terminated 按 rsipstack 文档
-/// 要求 remove_dialog，否则 confirmed dialog 永远挂在 registry 里
-/// （内存泄漏）。
-///
-/// `on_update` 回调: 入参是 dialog id 和 re-INVITE/UPDATE 请求 (带新
+/// 要求 remove_dialog, 否则 confirmed dialog 永远挂在 registry 里
+/// (内存泄漏).
+/// on_update 回调: 入参是 dialog id 和 re-INVITE/UPDATE 请求 (带新
 /// offer), 返回 answer SDP body; None 表示不带 SDP 回 200. 回调是 async
 /// 的, 方便应用层转发给正在跑的通话任务做媒体重启后再应答.
+/// 注意: rsipstack 的状态通道是普通 mpsc (不是广播), dialog 的事件只
+/// 发给创建时给的那个 sender, 所以必须消费调用方自己建的通道.
 ///
-/// 注意：rsipstack 的状态通道是普通 mpsc（不是广播），dialog 的事件只
-/// 发给创建时给的那个 sender，所以必须消费调用方自己建的通道。
+/// # Arguments
+///
+/// * `dialog_layer`: Dialog 层句柄
+/// * `state_receiver`: Dialog 状态接收端 (由 dialog_layer.new_dialog_state_channel 创建)
+/// * `on_incoming_call`: 来电回调 (DialogState::Calling 且 server 角色时调用,
+///   在回调里 spawn 通话任务, 回调签名 Fn(InviteDialog))
+/// * `on_update`: re-INVITE/UPDATE 回调 (DialogState::Updated 时调用,
+///   入参 (DialogId, Request), 返回 Option<Vec<u8>> answer SDP 或 None)
+///
+/// returns: Result<()>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub async fn run_dialog_state_loop<F, G, Fut>(
     dialog_layer: Arc<DialogLayer>,
     mut state_receiver: DialogStateReceiver,
