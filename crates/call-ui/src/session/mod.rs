@@ -336,16 +336,26 @@ fn make_incoming_handler(
             *guard = Some(ctl_tx);
             let (update_tx, update_rx) = mpsc::channel(4);
             routes.lock().insert(dialog.id(), update_tx);
-            let (cfg, ui, tap, slot, routes) = (
-                cfg.clone(),
-                ui.clone(),
-                tap.clone(),
-                slot.clone(),
-                routes.clone(),
-            );
+
+            // Fn 闭包不能 move 捕获变量, 先 clone 再 move clone 进 async
+            let cfg = cfg.clone();
+            let ui = ui.clone();
+            let tap = tap.clone();
+            let slot = slot.clone();
+            let routes = routes.clone();
             tokio::spawn(async move {
                 incoming::handle_incoming(
-                    dialog, local, cfg, ui, tap, ctl_rx, update_rx, slot, routes,
+                    dialog,
+                    incoming::IncomingCtx {
+                        cfg,
+                        ui,
+                        tap,
+                        local,
+                        ctl_rx,
+                        update_rx,
+                    },
+                    slot,
+                    routes,
                 )
                 .await;
             });
