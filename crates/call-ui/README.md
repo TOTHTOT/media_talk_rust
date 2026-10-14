@@ -303,3 +303,4 @@ flowchart TB
 | `Arc<Mutex<AppState>>` | Slint UI 和 worker 都需要读写 AppState，用 Arc<Mutex> 而非 Rc<RefCell> 是因为 worker 线程需要 Send |
 | `UiHandle` 用 Weak | 避免循环引用导致内存泄漏，post() 失败时 warn 而不是 panic |
 | 媒体单路不崩原则 | 接收器或发送器启动失败只 warn，对应路 None，通话不因一路媒体挂掉 |
+| `IncomingCtx` 参数打包 | 消除 8 参数列表的 `#[allow(clippy::too_many_arguments)]`,`slot`/`routes` 只在收尾用,保留独立传参 |
