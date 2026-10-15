@@ -187,12 +187,6 @@ fn video_send_params(offer: &OfferMedias) -> Option<VideoDest> {
 /// * `video`: 要收的视频编码, None 表示视频路不建
 ///
 /// returns: Option<RtpReceiver> — 运行中的接收器句柄, stop 即拆管线
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
 fn start_receiver(
     tap: VideoFrameSink,
     ports: (u16, u16),
@@ -231,12 +225,6 @@ fn start_receiver(
 /// * `video`: 视频发送目标 (地址/pt/编码), None 表示不发视频
 ///
 /// returns: Option<RtpSender> — 运行中的发送器句柄, stop 即拆管线
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
 fn start_sender(
     audio_src: &TrackSource,
     video_src: &TrackSource,
@@ -286,12 +274,6 @@ fn start_sender(
 /// * `tap`: 视频帧回调, 接收器视频路经它上屏, 重启时复用
 ///
 /// returns: Option<MediaHandles> — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
 pub fn start_incoming(
     offer: &OfferMedias,
     cfg: &GuiSipConfig,
@@ -324,12 +306,6 @@ pub fn start_incoming(
 /// * `tap`: 视频帧回调, 接收器视频路经它上屏
 ///
 /// returns: Option<MediaHandles> — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
 pub fn start_outgoing(
     peers: &PeerMedias,
     rtp_ports: (u16, u16),
