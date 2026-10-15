@@ -60,7 +60,7 @@ fn shared_file_info(
     }
 }
 
-/// 同文件共享 uridecodebin: 只建一个解码器, audio pad 和 video pad 各自接发送链.
+/// 同文件共享 uridecodebin3: 只建一个解码器, audio pad 和 video pad 各自接发送链.
 ///
 /// # Arguments
 ///
@@ -113,7 +113,7 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     // 同文件共享: audio 和 video 都是 TrackSource::File 且路径相同,
-    // 只建一个 uridecodebin 解码一次, 音视频 pad 各自接发送链
+    // 只建一个 uridecodebin3 解码一次, 音视频 pad 各自接发送链
     let shared_file = shared_file_info(&cfg.audio, &cfg.video);
 
     if let Some((file_path, audio_dest, video_dest)) = shared_file {

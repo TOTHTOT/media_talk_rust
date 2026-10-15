@@ -1,5 +1,5 @@
 //! 源侧抽象: 一路媒体从哪来 (文件/RTSP/本机相机/麦克风), 以及怎么把
-//! 源接进管线 (uridecodebin 动态 pad / 设备源静态 pad). 只产裸流 pad,
+//! 源接进管线 (uridecodebin3 动态 pad / 设备源静态 pad). 只产裸流 pad,
 //! 后续重编码发送链在 chain.rs.
 
 use gstreamer as gst;
@@ -79,15 +79,15 @@ pub(super) fn redact_uri_credentials(uri: &str) -> String {
     )
 }
 
-/// 要建的是哪一路 (源段按它匹配 uridecodebin 的裸流 pad)
+/// 要建的是哪一路 (源段按它匹配 uridecodebin3 的裸流 pad)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TrackKind {
     Audio,
     Video,
 }
 
-/// 同文件共享 uridecodebin: 音视频两路都来自同一文件时, 只建一个
-/// uridecodebin 解码一次, audio pad 和 video pad 各自接发送链.
+/// 同文件共享 uridecodebin3: 音视频两路都来自同一文件时, 只建一个
+/// uridecodebin3 解码一次, audio pad 和 video pad 各自接发送链.
 /// audio_cb / video_cb 均为 None 时表示该路不建 (对应 cfg 中该路为 None).
 ///
 /// # Arguments
@@ -110,11 +110,11 @@ pub(super) fn plug_shared_uri_source(
     audio_cb: Option<impl Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static>,
     video_cb: Option<impl Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static>,
 ) -> Result<(), GstStreamError> {
-    let dec = make("uridecodebin")?;
+    let dec = make("uridecodebin3")?;
     dec.set_property("uri", uri);
     pipeline
         .add(&dec)
-        .map_err(|e| GstStreamError::Init(format!("add uridecodebin: {e}")))?;
+        .map_err(|e| GstStreamError::Init(format!("add uridecodebin3: {e}")))?;
     dec.connect_pad_added(move |_dec, pad| {
         let Some(caps) = pad.current_caps() else {
             return;
@@ -124,14 +124,14 @@ pub(super) fn plug_shared_uri_source(
             "video/x-raw" => {
                 if let Some(ref cb) = video_cb {
                     if let Err(e) = cb(pad.clone()) {
-                        tracing::warn!(error = %e, "shared uridecodebin: video chain link failed");
+                        tracing::warn!(error = %e, "shared uridecodebin3: video chain link failed");
                     }
                 }
             }
             "audio/x-raw" => {
                 if let Some(ref cb) = audio_cb {
                     if let Err(e) = cb(pad.clone()) {
-                        tracing::warn!(error = %e, "shared uridecodebin: audio chain link failed");
+                        tracing::warn!(error = %e, "shared uridecodebin3: audio chain link failed");
                     }
                 }
             }
@@ -139,11 +139,11 @@ pub(super) fn plug_shared_uri_source(
         }
     });
     dec.sync_state_with_parent()
-        .map_err(|e| GstStreamError::Init(format!("sync uridecodebin: {e}")))?;
+        .map_err(|e| GstStreamError::Init(format!("sync uridecodebin3: {e}")))?;
     Ok(())
 }
 
-/// 文件/RTSP 源: uridecodebin 解码出裸流, pad-added 里按 TrackKind 匹配,
+/// 文件/RTSP 源: uridecodebin3 解码出裸流, pad-added 里按 TrackKind 匹配,
 /// 命中的 pad 交给 on_raw_pad 接发送链. 源里没有请求的轨 = pad 永远不来,
 /// 不阻塞另一路 (靠 stats 0 包发现)
 pub(super) fn plug_uri_source(
@@ -152,11 +152,11 @@ pub(super) fn plug_uri_source(
     kind: TrackKind,
     on_raw_pad: impl Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static,
 ) -> Result<(), GstStreamError> {
-    let dec = make("uridecodebin")?;
+    let dec = make("uridecodebin3")?;
     dec.set_property("uri", uri);
     pipeline
         .add(&dec)
-        .map_err(|e| GstStreamError::Init(format!("add uridecodebin: {e}")))?;
+        .map_err(|e| GstStreamError::Init(format!("add uridecodebin3: {e}")))?;
     dec.connect_pad_added(move |_dec, pad| {
         let Some(caps) = pad.current_caps() else {
             return;
@@ -173,7 +173,7 @@ pub(super) fn plug_uri_source(
         }
     });
     dec.sync_state_with_parent()
-        .map_err(|e| GstStreamError::Init(format!("sync uridecodebin: {e}")))?;
+        .map_err(|e| GstStreamError::Init(format!("sync uridecodebin3: {e}")))?;
     Ok(())
 }
 
