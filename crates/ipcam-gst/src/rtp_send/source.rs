@@ -2,12 +2,16 @@
 //! 源接进管线 (uridecodebin3 动态 pad / 设备源静态 pad). 只产裸流 pad,
 //! 后续重编码发送链在 chain.rs.
 
-use gstreamer as gst;
-use gstreamer::prelude::*;
-use std::path::PathBuf;
-
 use crate::GstStreamError;
 use crate::gstutil::make;
+use gstreamer::prelude::*;
+use gstreamer::{self as gst};
+use std::path::PathBuf;
+use tracing::warn;
+
+/// 共享 uridecodebin3 的音视频回调类型: audio_cb / video_cb 各一个 Arc 闭包
+type MediaClusterType =
+    Option<std::sync::Arc<dyn Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static>>;
 
 /// 一路媒体的来源
 #[derive(Debug, Clone)]
@@ -88,7 +92,6 @@ pub(super) enum TrackKind {
 
 /// 同文件共享 uridecodebin3: 音视频两路都来自同一文件时, 只建一个
 /// uridecodebin3 解码一次, audio pad 和 video pad 各自接发送链.
-/// audio_cb / video_cb 均为 None 时表示该路不建 (对应 cfg 中该路为 None).
 ///
 /// # Arguments
 ///
@@ -107,40 +110,112 @@ pub(super) enum TrackKind {
 pub(super) fn plug_shared_uri_source(
     pipeline: &gst::Pipeline,
     uri: &str,
-    audio_cb: Option<impl Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static>,
-    video_cb: Option<impl Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static>,
+    audio_cb: MediaClusterType,
+    video_cb: MediaClusterType,
 ) -> Result<(), GstStreamError> {
     let dec = make("uridecodebin3")?;
     dec.set_property("uri", uri);
     pipeline
         .add(&dec)
         .map_err(|e| GstStreamError::Init(format!("add uridecodebin3: {e}")))?;
+
     dec.connect_pad_added(move |_dec, pad| {
-        let Some(caps) = pad.current_caps() else {
-            return;
-        };
-        let Some(s) = caps.structure(0) else { return };
-        match s.name().as_str() {
-            "video/x-raw" => {
-                if let Some(ref cb) = video_cb {
-                    if let Err(e) = cb(pad.clone()) {
-                        tracing::warn!(error = %e, "shared uridecodebin3: video chain link failed");
-                    }
-                }
+        // 1. Try immediate current_caps first
+        match try_link_from_caps(&pad, pad.current_caps().as_ref(), &video_cb, &audio_cb) {
+            Ok(true) => return, // linked successfully, done
+            Ok(false) => {
+                warn!("not our type, fall through to notify")
             }
-            "audio/x-raw" => {
-                if let Some(ref cb) = audio_cb {
-                    if let Err(e) = cb(pad.clone()) {
-                        tracing::warn!(error = %e, "shared uridecodebin3: audio chain link failed");
-                    }
-                }
+            Err(e) => {
+                warn!(error = %e, "shared uridecodebin3: try_link failed");
+                return;
             }
-            _ => {}
         }
+
+        // 2. Caps not ready: listen for notify::caps to retry
+        let video_cb = video_cb.clone();
+        let audio_cb = audio_cb.clone();
+        pad.connect_notify(Some("caps"), move |p, _spec| {
+            on_pad_caps_notified(p, &video_cb, &audio_cb);
+        });
     });
     dec.sync_state_with_parent()
         .map_err(|e| GstStreamError::Init(format!("sync uridecodebin3: {e}")))?;
     Ok(())
+}
+
+/// 根据 pad caps 结构将 pad 分派到 audio 或 video 发送链回调.
+///
+/// # Arguments
+///
+/// * `pad`: uridecodebin3 新创建的 pad
+/// * `caps`: pad 的当前 caps, None 表示还没协商好
+/// * `video_cb`: 视频发送链回调
+/// * `audio_cb`: 音频发送链回调
+///
+/// returns: Result<bool> — Ok(true) linked 成功, Ok(false) 非音视频类型, Err 回调执行失败
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+fn try_link_from_caps(
+    pad: &gst::Pad,
+    caps: Option<&gst::Caps>,
+    video_cb: &MediaClusterType,
+    audio_cb: &MediaClusterType,
+) -> Result<bool, GstStreamError> {
+    let Some(caps) = caps else { return Ok(false) };
+    dispatch_pad_core(pad, &caps, video_cb, audio_cb)
+}
+
+/// 共享分派核心: 根据 caps 结构名走 audio 或 video 回调.
+fn dispatch_pad_core(
+    pad: &gst::Pad,
+    caps: &gst::Caps,
+    video_cb: &MediaClusterType,
+    audio_cb: &MediaClusterType,
+) -> Result<bool, GstStreamError> {
+    let Some(s) = caps.structure(0) else { return Ok(false) };
+    match s.name().as_str() {
+        "video/x-raw" => {
+            if let Some(ref cb) = *video_cb {
+                cb(pad.clone())?;
+            }
+            Ok(true)
+        }
+        "audio/x-raw" => {
+            if let Some(ref cb) = *audio_cb {
+                cb(pad.clone())?;
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// pad 收到 caps 通知时调用, 触发 link 分派重试.
+///
+/// # Arguments
+///
+/// * `pad`: 收到 caps 通知的 pad
+/// * `video_cb`: 视频发送链回调
+/// * `audio_cb`: 音频发送链回调
+///
+/// returns: ()
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+fn on_pad_caps_notified(pad: &gst::Pad, video_cb: &MediaClusterType, audio_cb: &MediaClusterType) {
+    if let Some(caps) = pad.current_caps() {
+        if let Err(e) = dispatch_pad_core(pad, &caps, video_cb, audio_cb) {
+            warn!(error = %e, "shared uridecodebin3: notify caps link failed");
+        }
+    }
 }
 
 /// 文件/RTSP 源: uridecodebin3 解码出裸流, pad-added 里按 TrackKind 匹配,
@@ -158,9 +233,9 @@ pub(super) fn plug_uri_source(
         .add(&dec)
         .map_err(|e| GstStreamError::Init(format!("add uridecodebin3: {e}")))?;
     dec.connect_pad_added(move |_dec, pad| {
-        let Some(caps) = pad.current_caps() else {
-            return;
-        };
+        // uridecodebin3 may fire pad-added before caps are negotiated;
+        // use query_caps as fallback when current_caps returns None
+        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
         let Some(s) = caps.structure(0) else { return };
         let hit = matches!(
             (kind, s.name().as_str()),

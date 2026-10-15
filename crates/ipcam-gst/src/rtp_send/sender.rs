@@ -52,10 +52,9 @@ fn shared_file_info(
     video: &Option<(TrackSource, RtpDest)>,
 ) -> Option<(std::path::PathBuf, AudioDest, RtpDest)> {
     match (audio, video) {
-        (
-            Some((TrackSource::File(ap), ad)),
-            Some((TrackSource::File(vp), vd)),
-        ) if ap == vp => Some((ap.clone(), *ad, *vd)),
+        (Some((TrackSource::File(ap), ad)), Some((TrackSource::File(vp), vd))) if ap == vp => {
+            Some((ap.clone(), *ad, *vd))
+        }
         _ => None,
     }
 }
@@ -91,12 +90,12 @@ fn build_shared_file_track(
     plug_shared_uri_source(
         pipeline,
         uri,
-        Some(move |pad| {
+        Some(std::sync::Arc::new(move |pad| {
             link_audio_send_chain(&pipeline_for_audio, &pad, audio_dest, stats_audio.clone())
-        }),
-        Some(move |pad| {
+        })),
+        Some(std::sync::Arc::new(move |pad| {
             link_video_send_chain(&pipeline_for_video, &pad, video_dest, stats_video.clone())
-        }),
+        })),
     )
 }
 
@@ -118,6 +117,7 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
 
     if let Some((file_path, audio_dest, video_dest)) = shared_file {
         let uri = file_uri(&file_path)?;
+        info!("some audio and video path");
         build_shared_file_track(&pipeline, &uri, audio_dest, video_dest, &stats)?;
     } else {
         let pipeline_ref = &pipeline;
