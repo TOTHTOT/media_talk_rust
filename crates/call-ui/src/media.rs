@@ -194,6 +194,7 @@ fn start_receiver(
     video: Option<VideoCodec>,
 ) -> Option<RtpReceiver> {
     if audio.is_none() && video.is_none() {
+        warn!("audio or video is null, skip build recv gst pipeline");
         // RtpRecvConfig 要求至少一路媒体, 无媒体可收就不起管线
         return None;
     }

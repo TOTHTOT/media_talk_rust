@@ -86,6 +86,63 @@ pub(super) enum TrackKind {
     Video,
 }
 
+/// 同文件共享 uridecodebin: 音视频两路都来自同一文件时, 只建一个
+/// uridecodebin 解码一次, audio pad 和 video pad 各自接发送链.
+/// audio_cb / video_cb 均为 None 时表示该路不建 (对应 cfg 中该路为 None).
+///
+/// # Arguments
+///
+/// * `pipeline`: GStreamer 管线
+/// * `uri`: 文件 URI (`file://...`)
+/// * `audio_cb`: 音频 pad 出现时的发送链回调, None 表示不建音频路
+/// * `video_cb`: 视频 pad 出现时的发送链回调, None 表示不建视频路
+///
+/// returns: Result<()>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+pub(super) fn plug_shared_uri_source(
+    pipeline: &gst::Pipeline,
+    uri: &str,
+    audio_cb: Option<impl Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static>,
+    video_cb: Option<impl Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static>,
+) -> Result<(), GstStreamError> {
+    let dec = make("uridecodebin")?;
+    dec.set_property("uri", uri);
+    pipeline
+        .add(&dec)
+        .map_err(|e| GstStreamError::Init(format!("add uridecodebin: {e}")))?;
+    dec.connect_pad_added(move |_dec, pad| {
+        let Some(caps) = pad.current_caps() else {
+            return;
+        };
+        let Some(s) = caps.structure(0) else { return };
+        match s.name().as_str() {
+            "video/x-raw" => {
+                if let Some(ref cb) = video_cb {
+                    if let Err(e) = cb(pad.clone()) {
+                        tracing::warn!(error = %e, "shared uridecodebin: video chain link failed");
+                    }
+                }
+            }
+            "audio/x-raw" => {
+                if let Some(ref cb) = audio_cb {
+                    if let Err(e) = cb(pad.clone()) {
+                        tracing::warn!(error = %e, "shared uridecodebin: audio chain link failed");
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
+    dec.sync_state_with_parent()
+        .map_err(|e| GstStreamError::Init(format!("sync uridecodebin: {e}")))?;
+    Ok(())
+}
+
 /// 文件/RTSP 源: uridecodebin 解码出裸流, pad-added 里按 TrackKind 匹配,
 /// 命中的 pad 交给 on_raw_pad 接发送链. 源里没有请求的轨 = pad 永远不来,
 /// 不阻塞另一路 (靠 stats 0 包发现)

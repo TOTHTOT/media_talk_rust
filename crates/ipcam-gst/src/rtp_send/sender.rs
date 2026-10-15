@@ -15,11 +15,11 @@ use super::chain::{link_audio_send_chain, link_video_send_chain};
 use super::config::{AudioDest, RtpDest, RtpSendConfig};
 use super::source::{
     TrackKind, TrackSource, camera_src_name, file_uri, mic_src_name, plug_device_source,
-    plug_uri_source, redact_uri_credentials,
+    plug_shared_uri_source, plug_uri_source, redact_uri_credentials,
 };
 
 pub struct RtpSender {
-    pipeline: gst::Pipeline,
+    pipeline: Arc<gst::Pipeline>,
     stop_flag: Arc<AtomicBool>,
     stats: Arc<crate::PktStats>,
 }
@@ -27,7 +27,7 @@ pub struct RtpSender {
 impl RtpSender {
     pub fn stop(&self) {
         self.stop_flag.store(true, Ordering::Relaxed);
-        let _ = self.pipeline.set_state(gst::State::Null);
+        let _ = self.pipeline.clone().set_state(gst::State::Null);
     }
 
     /// (视频包数, 音频包数) -- payloader src 上的 probe 实时累加,
@@ -46,6 +46,60 @@ impl Drop for RtpSender {
     }
 }
 
+/// 检测 audio 和 video 是否来自同一文件, 是则返回 (文件路径, audio目标, video目标)
+fn shared_file_info(
+    audio: &Option<(TrackSource, AudioDest)>,
+    video: &Option<(TrackSource, RtpDest)>,
+) -> Option<(std::path::PathBuf, AudioDest, RtpDest)> {
+    match (audio, video) {
+        (
+            Some((TrackSource::File(ap), ad)),
+            Some((TrackSource::File(vp), vd)),
+        ) if ap == vp => Some((ap.clone(), *ad, *vd)),
+        _ => None,
+    }
+}
+
+/// 同文件共享 uridecodebin: 只建一个解码器, audio pad 和 video pad 各自接发送链.
+///
+/// # Arguments
+///
+/// * `pipeline`: GStreamer 管线, 闭包捕获 Arc 引用, caller 负责生命周期
+/// * `uri`: 文件绝对路径转成的 `file://` URI
+/// * `audio_dest`: 音频发送目标 (地址/pt/编码)
+/// * `video_dest`: 视频发送目标 (地址/pt/编码/限宽)
+/// * `stats`: 发包计数器 Arc, 闭包捕获克隆
+///
+/// returns: Result<()>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+fn build_shared_file_track(
+    pipeline: &Arc<gst::Pipeline>,
+    uri: &str,
+    audio_dest: AudioDest,
+    video_dest: RtpDest,
+    stats: &Arc<crate::PktStats>,
+) -> Result<(), GstStreamError> {
+    let stats_audio = stats.clone();
+    let stats_video = stats.clone();
+    let pipeline_for_audio = pipeline.clone();
+    let pipeline_for_video = pipeline.clone();
+    plug_shared_uri_source(
+        pipeline,
+        uri,
+        Some(move |pad| {
+            link_audio_send_chain(&pipeline_for_audio, &pad, audio_dest, stats_audio.clone())
+        }),
+        Some(move |pad| {
+            link_video_send_chain(&pipeline_for_video, &pad, video_dest, stats_video.clone())
+        }),
+    )
+}
+
 pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError> {
     ensure_init_internal()?;
     if cfg.audio.is_none() && cfg.video.is_none() {
@@ -54,15 +108,25 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
         ));
     }
 
-    let pipeline = gst::Pipeline::new();
+    let pipeline = Arc::new(gst::Pipeline::new());
     let stats = Arc::new(crate::PktStats::default());
     let stop_flag = Arc::new(AtomicBool::new(false));
 
-    if let Some((source, dest)) = &cfg.video {
-        build_video_track(&pipeline, source, *dest, stats.clone())?;
-    }
-    if let Some((source, dest)) = &cfg.audio {
-        build_audio_track(&pipeline, source, *dest, stats.clone())?;
+    // 同文件共享: audio 和 video 都是 TrackSource::File 且路径相同,
+    // 只建一个 uridecodebin 解码一次, 音视频 pad 各自接发送链
+    let shared_file = shared_file_info(&cfg.audio, &cfg.video);
+
+    if let Some((file_path, audio_dest, video_dest)) = shared_file {
+        let uri = file_uri(&file_path)?;
+        build_shared_file_track(&pipeline, &uri, audio_dest, video_dest, &stats)?;
+    } else {
+        let pipeline_ref = &pipeline;
+        if let Some((source, dest)) = &cfg.video {
+            build_video_track(pipeline_ref, source, *dest, stats.clone())?;
+        }
+        if let Some((source, dest)) = &cfg.audio {
+            build_audio_track(pipeline_ref, source, *dest, stats.clone())?;
+        }
     }
 
     // bus 线程: 只盯 EOS/Error 打日志, 不负责拆管线.
@@ -70,6 +134,7 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
     // 盲目在这里 set_state(Null) 会把刚起起来的管线误杀 (启动竞态实测复现),
     // 收尾统一由 RtpSender::stop/Drop 负责
     let bus = pipeline
+        .clone()
         .bus()
         .ok_or_else(|| GstStreamError::Init("pipeline has no bus".into()))?;
     std::thread::spawn(move || {
