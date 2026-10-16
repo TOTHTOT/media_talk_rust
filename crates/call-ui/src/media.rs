@@ -294,21 +294,20 @@ pub fn start_incoming(
     ))
 }
 
-/// 主叫侧起媒体: peers 是对端 answer 解析结果, rtp_sockets 占位
-/// socket 已由调用方释放. 发送 pt/编码必须用 answer 里的值 — answer
-/// 收窄成什么就发什么 (RFC 3264, 同 call.rs)
+/// 主叫侧起媒体: peers 是对端 answer 解析结果, rtp_ports 本机接收端口.
+/// 发送 pt/编码必须用 answer 里的值 — answer 收窄成什么就发什么 (RFC 3264, 同 call.rs)
 ///
 /// # Arguments
 ///
 /// * `peers`: 对端 answer 解析出的音视频协商结果
-/// * `rtp_sockets`: 占位 socket 对, 通话建立后释放给媒体层
+/// * `rtp_ports`: 本机 RTP 接收端口 (音频, 视频)
 /// * `cfg`: 本机媒体源与视频限宽配置
 /// * `tap`: 视频帧回调, 接收器视频路经它上屏
 ///
 /// returns: Option<MediaHandles> — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
 pub fn start_outgoing(
     peers: &PeerMedias,
-    rtp_sockets: &crate::session::RtpSocketPair,
+    rtp_ports: &RtpPorts,
     cfg: &GuiSipConfig,
     tap: &VideoFrameSink,
 ) -> Option<MediaHandles> {
@@ -344,7 +343,7 @@ pub fn start_outgoing(
         .as_ref()
         .map(|p| (p.addr, p.payload_type, VideoCodec::from_name(&p.codec)));
     Some(MediaHandles::new(
-        RtpPorts::from(rtp_sockets),
+        *rtp_ports,
         cfg,
         tap.clone(),
         (recv_audio, recv_video),

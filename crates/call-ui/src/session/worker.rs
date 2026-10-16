@@ -22,9 +22,7 @@ use crate::bridge::{UiHandle, WorkerCmd};
 use super::incoming;
 use super::incoming::IncomingCtx;
 use super::outgoing;
-use super::types::{
-    CallCtlTx, CallRoutes, DialPrep, GuiSipConfig, RtpSocketPair, caller_from_request,
-};
+use super::types::{CallCtlTx, CallRoutes, DialPrep, GuiSipConfig, caller_from_request};
 
 /// 启动 SIP worker 线程: 独立线程跑自己的 tokio runtime, 注册常驻,
 /// UI 命令逐条处理, 事件经 UiHandle 回投主线程.
@@ -350,9 +348,7 @@ pub fn handle_cmd(
     info!(?cmd, "current deal");
     match cmd {
         WorkerCmd::Dial(number) => {
-            let Some((callee, rtp_sockets, ctl_rx)) =
-                prepare_dial(client, &number, local, call_ctl_tx, ui)
-            else {
+            let Some((callee, ctl_rx)) = prepare_dial(client, &number, call_ctl_tx, ui) else {
                 return;
             };
             tokio::spawn(crate::session::outgoing::handle_outgoing(
@@ -365,7 +361,6 @@ pub fn handle_cmd(
                     credential: credential.clone(),
                     number,
                     local,
-                    rtp_sockets,
                     cfg: cfg.clone(),
                     ui: ui.clone(),
                     tap: tap.clone(),
@@ -385,14 +380,13 @@ pub fn handle_cmd(
     }
 }
 
-/// Dial 前置: 占线检查 + URI 解析 + 占位 socket 绑定, 全过才占槽返回
-/// 通话资源; 任一步失败已报 UI, 返回 None
+/// Dial 前置: 占线检查 + URI 解析, 全过才占槽返回通话资源;
+/// 任一步失败已报 UI, 返回 None
 ///
 /// # Arguments
 ///
 /// * `client`: SIP 客户端句柄
 /// * `number`: 拨号号码
-/// * `local`: 本机 IPv4
 /// * `call_ctl_tx`: 通话槽位 (全过时在此占槽)
 /// * `ui`: 事件回投句柄 (失败原因上报)
 ///
@@ -406,7 +400,6 @@ pub fn handle_cmd(
 fn prepare_dial(
     client: &SipClient,
     number: &str,
-    local: Ipv4Addr,
     call_ctl_tx: &CallCtlTx,
     ui: &UiHandle,
 ) -> Option<DialPrep> {
@@ -428,22 +421,10 @@ fn prepare_dial(
             return None;
         }
     };
-    let rtp_sockets = match (
-        std::net::UdpSocket::bind((local, 0)),
-        std::net::UdpSocket::bind((local, 0)),
-    ) {
-        (Ok(a), Ok(v)) => RtpSocketPair { audio: a, video: v },
-        _ => {
-            ui.post(UiEvent::Failed {
-                reason: "RTP 端口绑定失败".into(),
-            });
-            return None;
-        }
-    };
     let (ctl_tx, ctl_rx) = mpsc::channel(4);
     *guard = Some(ctl_tx);
     drop(guard);
-    Some((callee, rtp_sockets, ctl_rx))
+    Some((callee, ctl_rx))
 }
 
 /// re-INVITE/UPDATE 转发 (原样搬自 answer.rs): 按 dialog id 找通话任务

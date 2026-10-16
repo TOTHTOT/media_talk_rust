@@ -16,6 +16,6 @@ mod worker;
 
 pub use types::{
     CallCtlTx, CallRoutes, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, DialPrep, GuiSipConfig,
-    RtpPorts, RtpSocketPair, UpdateMsg,
+    RtpPorts, UpdateMsg,
 };
 pub use worker::{forward_update, handle_cmd, make_incoming_handler, spawn};

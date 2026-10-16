@@ -31,15 +31,6 @@ impl RtpPorts {
     };
 }
 
-impl From<&RtpSocketPair> for RtpPorts {
-    fn from(s: &RtpSocketPair) -> Self {
-        Self {
-            audio: s.audio.local_addr().unwrap().port(),
-            video: s.video.local_addr().unwrap().port(),
-        }
-    }
-}
-
 /// 来电振铃等待用户接听的最长时间, 超时自动拒接, 避免对端挂死在 ringing
 pub const INCOMING_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -88,16 +79,8 @@ pub type CallCtlTx = Arc<Mutex<Option<mpsc::Sender<WorkerCmd>>>>;
 pub type UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>);
 /// 进行中的通话路由表: dialog id -> 通话任务的 re-INVITE 通道
 pub type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
-/// 占位 socket 对: INVITE 完成前占用 RTP 端口, 确保 offer SDP 声明的
-/// 端口一直可用. 通话建立后 drop 释放给媒体层.
-#[derive(Debug)]
-pub struct RtpSocketPair {
-    pub audio: std::net::UdpSocket,
-    pub video: std::net::UdpSocket,
-}
-/// prepare_dial 全过返回的通话资源: (被叫 URI, 占位 socket 对, 控制通道接收端)
-// rtp_ports 在 handle_outgoing 内从 rtp_sockets.local_addr().port() 算出
-pub type DialPrep = (rsip::Uri, RtpSocketPair, mpsc::Receiver<WorkerCmd>);
+/// prepare_dial 全过返回的通话资源: (被叫 URI, 控制通道接收端)
+pub type DialPrep = (rsip::Uri, mpsc::Receiver<WorkerCmd>);
 
 /// 从 INVITE 的 From 头提取主叫号码 (sip:<user>@host 的 user 段)
 pub fn caller_from_request(req: &rsip::Request) -> String {
