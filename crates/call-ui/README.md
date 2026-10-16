@@ -90,19 +90,19 @@ sequenceDiagram
 sequenceDiagram
     participant UI
     participant handle_cmd
-    participant CTX[CallCtlTx slot]
+    participant slot as CallCtlTx slot
     participant call_loop
 
     Note over UI,call_loop: 拨号时
     UI->>+handle_cmd: cmd_tx.send(Dial)
-    handle_cmd->>CTX: slot = Some(call_ctl_tx)
+    handle_cmd->>slot: slot = Some(call_ctl_tx)
     handle_cmd->>call_loop: spawn(call_answer_ctl_rx)
 
     Note over UI,call_loop: 挂断时
     UI->>+handle_cmd: cmd_tx.send(Hangup)
-    handle_cmd->>CTX: slot.get()
-    CTX-->>call_loop: call_ctl_tx.send(Hangup)
-    call_loop->>call_loop: dialog.bye_with_headers()
+    handle_cmd->>slot: slot.get()
+    slot-->>call_loop: call_ctl_tx.send(Hangup)
+    Note over call_loop: dialog.bye_with_headers()
 ```
 
 **类型定义** (`types.rs`):
@@ -125,22 +125,21 @@ pub call_answer_ctl_rx: mpsc::Receiver<WorkerCmd>
 sequenceDiagram
     participant RSL as run_dialog_state_loop
     participant FU as forward_update
-    participant RT[CallRoutes]
+    participant RT as CallRoutes
     participant CL as call_loop
 
     Note over RSL,CL: 来电/拨号成功时
     CL->>+RT: routes.insert(dialog_id, update_tx)
 
     Note over RSL,CL: re-INVITE 到来时
-    RSL->>+FU: DialogState::Updated(id, req, handle)
+    RSL->>+FU: FU(id, req)
     FU->>+RT: routes.get(id)
     RT-->>FU: update_tx
-    FU->>CL: update_tx.send((req, reply_tx))
+    FU->>+CL: update_tx.send((req, reply_tx))
 
     Note over RSL,CL: 通话任务处理
-    CL->>CL: parse_offer / renegotiate
     CL-->>FU: reply_tx.send(answer SDP)
-    FU->>RSL: handle.respond(200 OK)
+    FU->>RSL: handle.respond(200 OK, body)
 ```
 
 **类型定义** (`ipcam_sip::call_route`):
@@ -164,10 +163,10 @@ pub type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
 flowchart LR
     subgraph worker["SIP worker 线程"]
         subgraph slot["CallCtlTx 槽位"]
-            CTX[Arc&lt;Mutex&lt;Option&lt;ctl_tx&gt;&gt;&gt;]
+            CTX["Arc&lt;Mutex&lt;Option&lt;ctl_tx&gt;&gt;&gt;"]
         end
         subgraph routes["CallRoutes"]
-            RT[HashMap&lt;DialogId, update_tx&gt;]
+            RT["HashMap&lt;DialogId, update_tx&gt;"]
         end
     end
 
