@@ -9,7 +9,7 @@ use anyhow::{Result, anyhow};
 use ipcam_sip::sdp::{PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all};
 use rsipstack::dialog::DialogId;
 use rsipstack::dialog::authenticate::Credential;
-use rsipstack::dialog::dialog::DialogStateSender;
+use rsipstack::dialog::dialog::{DialogState, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::dialog::invitation::InviteOption;
 use rsipstack::sip as rsip;
@@ -120,31 +120,50 @@ async fn outgoing_inner(
         offer: Some(offer.to_string().into_bytes()),
         ..Default::default()
     };
-    let (dialog, resp) = dialog_layer.do_invite(invite_option, state_sender).await?;
+    let (dialog, mut invite) = dialog_layer.do_invite_async(invite_option, state_sender)?;
+
+    // 振铃期间 (Trying/Early) 监听本地挂断: 收到 Hangup 发 CANCEL 中止
+    // INVITE 让对端停止振铃; 接通后的挂断走通话 loop 的 BYE.
+    // do_invite (同步版) 会一直阻塞到最终响应, 振铃期收不到挂断命令.
+    let (dialog_id, resp) = loop {
+        tokio::select! {
+            r = &mut invite => break r??,
+            ctl = ctx.base.ctl_rx.recv() => {
+                match ctl {
+                    Some(WorkerCmd::Hangup) | None => {
+                        dialog.cancel().await?;
+                        // cancel 只对 Trying/Early 生效; 挂断与 200 OK 同时
+                        // 到达的竞态下已接通, 补 BYE
+                        if matches!(dialog.state(), DialogState::Confirmed(..)) {
+                            dialog.bye_with_headers(None).await?;
+                        }
+                        return Ok("local cancelled".into());
+                    }
+                    // 振铃期 Accept/Reject 无意义 (迟到命令), 忽略继续等
+                    _ => {}
+                }
+            }
+        }
+    };
     let resp = resp.ok_or_else(|| anyhow!("INVITE has no final response (timeout)"))?;
     info!(code = %resp.status_code, "INVITE final response");
     if resp.status_code != rsip::StatusCode::OK {
         return Err(anyhow!("call rejected: {}", resp.status_code));
     }
 
-    // 登记 re-INVITE 路由: 对端 (如 Linphone 接通后开视频) 发来的
+    // 登记 re-INVITE 路由 (用 INVITE 完成后的 confirmed dialog id, 与
+    // dialog 层 re-key 一致): 对端 (如 Linphone 接通后开视频) 发来的
     // re-INVITE 才能经 forward_update 转进下面的通话 loop
     let _route = {
-        let id = dialog.id();
         ctx.routes
             .lock()
             .unwrap()
-            .insert(id.clone(), ctx.update_tx.clone());
+            .insert(dialog_id.clone(), ctx.update_tx.clone());
         RouteGuard {
             routes: ctx.routes.clone(),
-            id,
+            id: dialog_id,
         }
     };
-
-    if matches!(ctx.base.ctl_rx.try_recv(), Ok(WorkerCmd::Hangup)) {
-        dialog.bye_with_headers(None).await?;
-        return Ok("local cancelled".into());
-    }
 
     let peers = parse_answer_all(resp.body())?;
     ctx.base.ui.post(UiEvent::Confirmed {
