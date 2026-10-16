@@ -17,6 +17,7 @@ use rsipstack::sip as rsip;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use super::call_loop::call_loop;
 use super::types::{CallCtlTx, CallRoutes, GuiSipConfig, UpdateMsg, WorkerCmd};
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
@@ -161,31 +162,15 @@ async fn outgoing_inner(
     let mut media = media::start_outgoing(&peers, &ctx.cfg.rtp_ports, &ctx.cfg, &ctx.tap);
     info!("call established");
 
-    let reason = loop {
-        tokio::select! {
-            _ = dialog.cancel_token().cancelled() => {
-                break "peer hung up".to_string();
-            }
-            ctl = ctx.ctl_rx.recv() => {
-                match ctl {
-                    Some(WorkerCmd::Hangup) | None => {
-                        dialog.bye_with_headers(None).await?;
-                        break "local hung up".to_string();
-                    }
-                    _ => {}
-                }
-            }
-            msg = ctx.update_rx.recv() => {
-                let Some((req, reply)) = msg else { break "route channel closed".to_string() };
-                let _ = reply.send(media::reinvite_answer(
-                    req.body(),
-                    ctx.local,
-                    ctx.cfg.rtp_ports,
-                    &mut media,
-                ));
-            }
-        }
-    };
+    let reason = call_loop(
+        &dialog,
+        &mut media,
+        &mut ctx.ctl_rx,
+        &mut ctx.update_rx,
+        ctx.local,
+        ctx.cfg.rtp_ports,
+    )
+    .await?;
     if let Some(m) = media {
         m.stop();
     }

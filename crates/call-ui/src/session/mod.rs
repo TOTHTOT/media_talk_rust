@@ -6,9 +6,11 @@
 //! 模块布局:
 //! - `types.rs`: 共享类型与常量 (GuiSipConfig / WorkerCmd / CallCtlTx / CallRoutes / DialPrep)
 //! - `worker.rs`: 主循环与命令处理 (spawn / setup / run / shutdown / handle_cmd / prepare_dial / forward_update)
+//! - `call_loop.rs`: 主被叫共用的已接通通话 loop (BYE / 挂断 / re-INVITE 重协商)
 //! - `incoming.rs`: 被叫通话流程
 //! - `outgoing.rs`: 主叫通话流程
 
+mod call_loop;
 mod incoming;
 mod outgoing;
 pub(crate) mod types;
