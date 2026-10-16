@@ -14,14 +14,29 @@ use tokio::sync::{mpsc, oneshot};
 pub use crate::bridge::WorkerCmd;
 
 /// 被叫侧 RTP 端口默认值 (音频, 视频); 可通过 GuiSipConfig.rtp_ports 自定义
-pub(crate) const DEFAULT_AUDIO_RTP_PORT: u16 = 40000;
-pub(crate) const DEFAULT_VIDEO_RTP_PORT: u16 = 40002;
+pub const DEFAULT_AUDIO_RTP_PORT: u16 = 40000;
+pub const DEFAULT_VIDEO_RTP_PORT: u16 = 40002;
+
+/// RTP 端口对: 本机用于接收 RTP 的音频/视频端口.
+#[derive(Debug, Clone, Copy)]
+pub struct RtpPorts {
+    pub audio: u16,
+    pub video: u16,
+}
+
+impl RtpPorts {
+    pub const DEFAULT: Self = Self {
+        audio: DEFAULT_AUDIO_RTP_PORT,
+        video: DEFAULT_VIDEO_RTP_PORT,
+    };
+}
 
 /// 来电振铃等待用户接听的最长时间, 超时自动拒接, 避免对端挂死在 ringing
 pub const INCOMING_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// SIP 配置: 服务器账号 + 本机媒体源, 由 UI 入口装配.
 /// `rtp_ports` 允许自定义, 默认 (40000, 40002).
+#[derive(Debug)]
 pub struct GuiSipConfig {
     /// SIP 服务器地址 (注册与呼叫都走它)
     pub server: SocketAddr,
@@ -39,8 +54,8 @@ pub struct GuiSipConfig {
     pub video_src: TrackSource,
     /// 视频限宽 (对端解码能力, 超宽源降采样); 0 = 不限
     pub max_width: u32,
-    /// 被叫侧 RTP 端口 (音频, 视频); 默认 (40000, 40002)
-    pub rtp_ports: Option<(u16, u16)>,
+    /// 被叫侧 RTP 端口 (音频, 视频); 默认 RtpPorts::DEFAULT
+    pub rtp_ports: RtpPorts,
 }
 
 impl Default for GuiSipConfig {
@@ -54,7 +69,7 @@ impl Default for GuiSipConfig {
             audio_src: TrackSource::Mic,
             video_src: TrackSource::LocalCamera { device: None },
             max_width: Default::default(),
-            rtp_ports: Some((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
+            rtp_ports: RtpPorts::DEFAULT,
         }
     }
 }
@@ -64,13 +79,16 @@ pub type CallCtlTx = Arc<Mutex<Option<mpsc::Sender<WorkerCmd>>>>;
 pub type UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>);
 /// 进行中的通话路由表: dialog id -> 通话任务的 re-INVITE 通道
 pub type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
+/// 占位 socket 对: INVITE 完成前占用 RTP 端口, 确保 offer SDP 声明的
+/// 端口一直可用. 通话建立后 drop 释放给媒体层.
+#[derive(Debug)]
+pub struct RtpSocketPair {
+    pub audio: std::net::UdpSocket,
+    pub video: std::net::UdpSocket,
+}
 /// prepare_dial 全过返回的通话资源: (被叫 URI, 占位 socket 对, 控制通道接收端)
 // rtp_ports 在 handle_outgoing 内从 rtp_sockets.local_addr().port() 算出
-pub type DialPrep = (
-    rsip::Uri,
-    (std::net::UdpSocket, std::net::UdpSocket),
-    mpsc::Receiver<WorkerCmd>,
-);
+pub type DialPrep = (rsip::Uri, RtpSocketPair, mpsc::Receiver<WorkerCmd>);
 
 /// 从 INVITE 的 From 头提取主叫号码 (sip:<user>@host 的 user 段)
 pub fn caller_from_request(req: &rsip::Request) -> String {

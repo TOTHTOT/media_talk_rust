@@ -19,7 +19,7 @@ use ipcam_sip::negotiate;
 use ipcam_sip::sdp::{OfferMedias, PeerMedias};
 use tracing::{info, warn};
 
-use crate::session::types::{DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, GuiSipConfig};
+use crate::session::types::GuiSipConfig;
 
 /// 视频发送指纹: (对端收视频地址, pt, 编码). 编码参与比对 — 从 H264
 /// 切成 H265 时发送链建不出来, 指纹变了才触发重启逻辑重新判定
@@ -285,8 +285,7 @@ pub fn start_incoming(
         negotiate::pick_video(offer, video_pred).map(|(_, c, _)| c),
     );
     Some(MediaHandles::new(
-        cfg.rtp_ports
-            .unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
+        (cfg.rtp_ports.audio, cfg.rtp_ports.video),
         cfg,
         tap.clone(),
         recv_fingerprint,
@@ -295,21 +294,21 @@ pub fn start_incoming(
     ))
 }
 
-/// 主叫侧起媒体: peers 是对端 answer 解析结果, rtp_ports 是 offer 里
-/// 声明的本机接收端口 (占位 socket 已由调用方释放). 发送 pt/编码必须
-/// 用 answer 里的值 — answer 收窄成什么就发什么 (RFC 3264, 同 call.rs)
+/// 主叫侧起媒体: peers 是对端 answer 解析结果, rtp_sockets 占位
+/// socket 已由调用方释放. 发送 pt/编码必须用 answer 里的值 — answer
+/// 收窄成什么就发什么 (RFC 3264, 同 call.rs)
 ///
 /// # Arguments
 ///
 /// * `peers`: 对端 answer 解析出的音视频协商结果
-/// * `rtp_ports`: 本机接收端口 (音频, 视频), 与 offer 里声明的一致
+/// * `rtp_sockets`: 占位 socket 对, 通话建立后释放给媒体层
 /// * `cfg`: 本机媒体源与视频限宽配置
 /// * `tap`: 视频帧回调, 接收器视频路经它上屏
 ///
 /// returns: Option<MediaHandles> — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
 pub fn start_outgoing(
     peers: &PeerMedias,
-    rtp_ports: (u16, u16),
+    rtp_sockets: &crate::session::RtpSocketPair,
     cfg: &GuiSipConfig,
     tap: &VideoFrameSink,
 ) -> Option<MediaHandles> {
@@ -345,7 +344,10 @@ pub fn start_outgoing(
         .as_ref()
         .map(|p| (p.addr, p.payload_type, VideoCodec::from_name(&p.codec)));
     Some(MediaHandles::new(
-        rtp_ports,
+        (
+            rtp_sockets.audio.local_addr().unwrap().port(),
+            rtp_sockets.video.local_addr().unwrap().port(),
+        ),
         cfg,
         tap.clone(),
         (recv_audio, recv_video),

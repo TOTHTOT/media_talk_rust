@@ -17,8 +17,7 @@ use tracing::{info, warn};
 
 use super::types::INCOMING_TIMEOUT;
 use super::types::{
-    CallCtlTx, CallRoutes, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, GuiSipConfig, UpdateMsg,
-    WorkerCmd, caller_from_request,
+    CallCtlTx, CallRoutes, GuiSipConfig, RtpPorts, UpdateMsg, WorkerCmd, caller_from_request,
 };
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
@@ -147,7 +146,7 @@ fn accept_with_answer(
     local: Ipv4Addr,
     caller: &str,
     ui: &UiHandle,
-    rtp_ports: (u16, u16),
+    rtp_ports: RtpPorts,
 ) -> Result<(OfferMedias, String)> {
     let offer = match parse_offer_all(dialog.initial_request().body()) {
         Ok(o) => o,
@@ -160,8 +159,8 @@ fn accept_with_answer(
     let (audio_pt, video, answer) = negotiate::build_answer(
         &offer,
         IpAddr::V4(local),
-        rtp_ports.0,
-        rtp_ports.1,
+        rtp_ports.audio,
+        rtp_ports.video,
         media::audio_pred,
         media::video_pred,
     );
@@ -214,15 +213,7 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<
         Decision::Accept => {}
     }
 
-    let (offer, _) = accept_with_answer(
-        dialog,
-        ctx.local,
-        &caller,
-        &ctx.ui,
-        ctx.cfg
-            .rtp_ports
-            .unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
-    )?;
+    let (offer, _) = accept_with_answer(dialog, ctx.local, &caller, &ctx.ui, ctx.cfg.rtp_ports)?;
     let mut media = media::start_incoming(&offer, &ctx.cfg, &ctx.tap);
 
     let reason = incoming_call_loop(
@@ -231,9 +222,7 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<
         &mut ctx.ctl_rx,
         &mut ctx.update_rx,
         ctx.local,
-        ctx.cfg
-            .rtp_ports
-            .unwrap_or((DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT)),
+        ctx.cfg.rtp_ports,
     )
     .await?;
     if let Some(m) = media.take() {
@@ -252,7 +241,7 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<
 /// * `ctl_rx`: 用户操作控制通道
 /// * `update_rx`: re-INVITE 更新消息通道
 /// * `local`: 本机 IPv4
-/// * `rtp_ports`: 本机 RTP 接收端口 (音频, 视频)
+/// * `rtp_ports`: 本机 RTP 接收端口
 ///
 /// returns: Result<String> — 结束原因 (peer hung up / local hung up / route channel closed)
 ///
@@ -267,7 +256,7 @@ async fn incoming_call_loop(
     ctl_rx: &mut mpsc::Receiver<WorkerCmd>,
     update_rx: &mut mpsc::Receiver<UpdateMsg>,
     local: Ipv4Addr,
-    rtp_ports: (u16, u16),
+    rtp_ports: RtpPorts,
 ) -> Result<String> {
     let reason = loop {
         tokio::select! {
@@ -291,8 +280,8 @@ async fn incoming_call_loop(
                         let (_, _, answer) = negotiate::build_answer(
                             &new_offer,
                             IpAddr::V4(local),
-                            rtp_ports.0,
-                            rtp_ports.1,
+                            rtp_ports.audio,
+                            rtp_ports.video,
                             media::audio_pred,
                             media::video_pred,
                         );

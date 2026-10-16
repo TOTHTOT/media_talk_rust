@@ -8,7 +8,7 @@ pub mod session;
 pub mod video;
 pub use app::Phase;
 pub use session::GuiSipConfig;
-use tracing::error;
+use tracing::{error, info};
 
 /// 把 AppState 字段刷到 slint 属性 (UiHandle::post 里也是这段)
 fn sync_props(ui: &MainWindow, app: &app::AppState) {
@@ -89,6 +89,8 @@ fn wire_callbacks(
 ///
 /// ```
 pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
+    info!(gui_cfg = ?cfg,"start gui");
+
     let ui = MainWindow::new()?;
     let app: bridge::SharedApp =
         std::sync::Arc::new(parking_lot::Mutex::new(app::AppState::default()));

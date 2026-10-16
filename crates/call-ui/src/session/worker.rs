@@ -22,7 +22,9 @@ use crate::bridge::{UiHandle, WorkerCmd};
 use super::incoming;
 use super::incoming::IncomingCtx;
 use super::outgoing;
-use super::types::{CallCtlTx, CallRoutes, DialPrep, GuiSipConfig, caller_from_request};
+use super::types::{
+    CallCtlTx, CallRoutes, DialPrep, GuiSipConfig, RtpSocketPair, caller_from_request,
+};
 
 /// 启动 SIP worker 线程: 独立线程跑自己的 tokio runtime, 注册常驻,
 /// UI 命令逐条处理, 事件经 UiHandle 回投主线程.
@@ -428,7 +430,7 @@ fn prepare_dial(
         std::net::UdpSocket::bind((local, 0)),
         std::net::UdpSocket::bind((local, 0)),
     ) {
-        (Ok(a), Ok(v)) => (a, v),
+        (Ok(a), Ok(v)) => RtpSocketPair { audio: a, video: v },
         _ => {
             ui.post(UiEvent::Failed {
                 reason: "RTP 端口绑定失败".into(),

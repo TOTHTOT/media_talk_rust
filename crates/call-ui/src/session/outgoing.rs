@@ -16,7 +16,7 @@ use rsipstack::sip as rsip;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::types::{CallCtlTx, GuiSipConfig, WorkerCmd};
+use super::types::{CallCtlTx, GuiSipConfig, RtpSocketPair, WorkerCmd};
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
 use crate::media;
@@ -68,7 +68,7 @@ pub(crate) struct OutgoingCtx {
     pub(super) number: String,
     pub(super) local: Ipv4Addr,
     // Placeholder sockets: hold offer ports until INVITE completes, released here to media layer
-    pub(super) rtp_sockets: (std::net::UdpSocket, std::net::UdpSocket),
+    pub(super) rtp_sockets: RtpSocketPair,
     pub(super) cfg: Arc<GuiSipConfig>,
     pub(super) ui: UiHandle,
     pub(super) tap: VideoFrameSink,
@@ -97,19 +97,13 @@ async fn outgoing_inner(
     state_sender: DialogStateSender,
     ctx: &mut OutgoingCtx,
 ) -> Result<String> {
-    let rtp_ports = (
-        ctx.rtp_sockets.0.local_addr().unwrap().port(),
-        ctx.rtp_sockets.1.local_addr().unwrap().port(),
-    );
-    let (audio_port, video_port) = rtp_ports;
-
     let offer = build_av_offer(
         IpAddr::V4(ctx.local),
-        audio_port,
-        video_port,
+        ctx.rtp_sockets.audio.local_addr()?.port(),
+        ctx.rtp_sockets.video.local_addr()?.port(),
         &[PT_PCMU, PT_PCMA],
     );
-    info!(%ctx.callee, audio_port, video_port, "calling, SDP offer:\n{offer}");
+    info!(%ctx.callee, ?ctx.rtp_sockets, "calling, SDP offer:\n{offer}");
 
     let invite_option = InviteOption {
         callee: ctx.callee.clone(),
@@ -137,7 +131,7 @@ async fn outgoing_inner(
     });
 
     // sockets dropped when this scope ends (no drop() needed)
-    let media = media::start_outgoing(&peers, rtp_ports, &ctx.cfg, &ctx.tap);
+    let media = media::start_outgoing(&peers, &ctx.rtp_sockets, &ctx.cfg, &ctx.tap);
     info!("call established");
 
     let reason = loop {

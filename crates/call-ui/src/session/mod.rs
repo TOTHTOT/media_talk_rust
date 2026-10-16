@@ -14,5 +14,8 @@ mod outgoing;
 pub(crate) mod types;
 mod worker;
 
-pub use types::{CallCtlTx, CallRoutes, DialPrep, GuiSipConfig, UpdateMsg};
+pub use types::{
+    CallCtlTx, CallRoutes, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, DialPrep, GuiSipConfig,
+    RtpPorts, RtpSocketPair, UpdateMsg,
+};
 pub use worker::{forward_update, handle_cmd, make_incoming_handler, spawn};
