@@ -91,13 +91,13 @@ journalctl -u media_talk_rust -f
 
 ## CLI 子命令
 
-| 子命令 | 作用 |
-| --- | --- |
-| `discover` | WS-Discovery 探活,可带凭据验证 ONVIF 凭据有效性 |
-| `serve` | 启 HTTP/WS 服务器,前端 + 摄像头流聚合 |
-| `decode-bench` | 单文件 H.264 → 解码器 → 吞吐估算 (调试解码器性能用) |
-| `audio list-devices` | ALSA 设备枚举 (仅 Linux) |
-| `v4l2 list` | V4L2 capture 设备能力 (仅 Linux) |
+| 子命令               | 作用                                                |
+| -------------------- | --------------------------------------------------- |
+| `discover`           | WS-Discovery 探活,可带凭据验证 ONVIF 凭据有效性     |
+| `serve`              | 启 HTTP/WS 服务器,前端 + 摄像头流聚合               |
+| `decode-bench`       | 单文件 H.264 → 解码器 → 吞吐估算 (调试解码器性能用) |
+| `audio list-devices` | ALSA 设备枚举 (仅 Linux)                            |
+| `v4l2 list`          | V4L2 capture 设备能力 (仅 Linux)                    |
 
 ```bash
 media_talk_rust discover --timeout-secs 5 --json \
@@ -200,6 +200,14 @@ media_talk_rust serve --rtsp-url "rtsp://..." --audio-out hw:0,0
 4. `/opsx:apply <name>` — 按 tasks 清单逐项实现
 5. `/opsx:archive <name>` — 变更归档
 
+## 常用命令
+
+1. 没有摄像头的情况下用本地视频替代, 发送音视频
+
+```shell
+cargo run --release --bin media_talk_rust gui --video-src file:./assets/oceans.mp4 --audio-src file:./assets/oceans.mp4 --server 192.168.2.113:5060 -u 1003 --local-ip 192.168.2.109
+```
+
 ## 已知问题
 
 1. ~~RTSP Digest 鉴权~~ **已实现** (7.8.1)。`RtspConfig::with_credentials(u,p)`
@@ -219,6 +227,7 @@ media_talk_rust serve --rtsp-url "rtsp://..." --audio-out hw:0,0
 7. **WebRTC / metrics / `/api/sessions` 鉴权** — 列入 8.x stretch,未实现。
 8. 电话拨打一段时间会自动挂断
 9. 接收视频电话正常，拨打不支持对端和本机都没画面和声音
+
 ## License
 
 仓库内尚未声明 license。所有权保留,在补 `LICENSE` 文件前请勿重新分发。
