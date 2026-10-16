@@ -173,6 +173,9 @@ impl SipClient {
     pub fn callee_uri(&self, callee: &str) -> Result<Uri> {
         let text = if callee.starts_with("sip:") || callee.starts_with("sips:") {
             callee.to_owned()
+        } else if callee.contains('.') && !callee.contains('@') && !callee.contains(':') {
+            // Bare IP address: treat as direct SIP URI with default port 5060
+            format!("sip:{}:5060", callee)
         } else {
             format!("sip:{}@{}", callee, self.config.server_addr)
         };
