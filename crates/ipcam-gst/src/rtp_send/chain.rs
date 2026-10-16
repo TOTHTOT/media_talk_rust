@@ -24,7 +24,8 @@ fn audio_encode_elements(codec: AudioCodec) -> Option<(&'static str, &'static st
 }
 
 /// 视频发送链 (所有源共用): 裸流重编码, 参数集周期重发.
-/// dest.max_width 有值时中间插 videoscale + capsfilter 限宽
+/// videoscale + capsfilter 常驻, 编码前统一 I420 方像素;
+/// dest.max_width 有值时限宽 (范围 caps, 保持宽高比)
 pub(super) fn link_video_send_chain(
     pipeline: &gst::Pipeline,
     raw_pad: &gst::Pad,
@@ -33,20 +34,29 @@ pub(super) fn link_video_send_chain(
 ) -> Result<(), GstStreamError> {
     // convert 编码格式转换
     let mut chain = vec![make("queue")?, make("videoconvert")?];
-    if let Some(max_w) = dest.max_width {
-        // 限宽: 1080p 相机直发超出门口机解码上限会黑屏.
-        // caps 用范围而不是定值: videoscale 只在源超宽时降采样, 且保持宽高比
-        let scale = make("videoscale")?;
-        let caps = make("capsfilter")?;
-        caps.set_property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field("width", gst::IntRange::new(1i32, max_w as i32))
-                .build(),
-        );
-        chain.push(scale);
-        chain.push(caps);
-    }
+    // 编码前统一成 I420 方像素偶数尺寸, videoscale 常驻:
+    // - 相机源可能协商出 Y42B (4:2:2), x264enc 会编成 High 4:2:2 profile,
+    //   门口机硬解只认 4:2:0, 解不出来 = 黑屏 (实测 1280x720 YUY2 相机)
+    // - 只限宽时 videoscale 会用 PAR=2/1 代偿高度 (1280x720 → 640x720
+    //   非方像素), 不认 SAR 的对端画面被压扁
+    // - 方像素化后尺寸可能变奇数 (352x288 PAR 108/55 → 352x147), x264 的
+    //   4:2:0 要求偶数宽高, 奇数直接初始化失败, 所以宽高都用步进 2 的范围
+    let scale = make("videoscale")?;
+    let caps = make("capsfilter")?;
+    // 限宽: 1080p 相机直发超出门口机解码上限会黑屏. caps 用范围而不是
+    // 定值: videoscale 只在源超宽时降采样, 且保持宽高比
+    let max_w = dest.max_width.map(|w| w as i32).unwrap_or(i32::MAX - 1);
+    caps.set_property(
+        "caps",
+        gst::Caps::builder("video/x-raw")
+            .field("format", "I420")
+            .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+            .field("width", gst::IntRange::with_step(2, max_w, 2))
+            .field("height", gst::IntRange::with_step(2, i32::MAX - 1, 2))
+            .build(),
+    );
+    chain.push(scale);
+    chain.push(caps);
     let enc = make("x264enc")?;
     enc.set_property_from_str("tune", "zerolatency");
     enc.set_property_from_str("speed-preset", "veryfast");
