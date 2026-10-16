@@ -114,6 +114,7 @@ fn build_shared_file_track(
 ///
 /// ```
 pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError> {
+    info!(send_config = ?cfg);
     ensure_init_internal()?;
     if cfg.audio.is_none() && cfg.video.is_none() {
         return Err(GstStreamError::InvalidConfig(

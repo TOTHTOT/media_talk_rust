@@ -112,6 +112,7 @@ fn make_udpsink(addr: SocketAddr) -> Result<gst::Element, GstStreamError> {
     // sync=true: 按码流时间戳限速发送; async=false: 不等 clock 对齐 preroll
     sink.set_property("sync", true);
     sink.set_property("async", false);
+    info!(host = %addr.ip(), port = addr.port(), "udpsink target");
     Ok(sink)
 }
 

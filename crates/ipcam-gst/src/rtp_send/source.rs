@@ -7,7 +7,7 @@ use crate::gstutil::make;
 use gstreamer::prelude::*;
 use gstreamer::{self as gst};
 use std::path::PathBuf;
-use tracing::warn;
+use tracing::{info, warn};
 
 /// 共享 uridecodebin3 的音视频回调类型: audio_cb / video_cb 各一个 Arc 闭包
 type MediaClusterType =
@@ -136,7 +136,7 @@ pub(super) fn plug_shared_uri_source(
         match try_link_from_caps(pad, pad.current_caps().as_ref(), &video_cb, &audio_cb) {
             Ok(true) => return, // linked successfully, done
             Ok(false) => {
-                warn!("not our type, fall through to notify")
+                warn!(name = ?pad.name(), "not our type, fall through to notify")
             }
             Err(e) => {
                 warn!(error = %e, "shared uridecodebin3: try_link failed");
@@ -148,6 +148,7 @@ pub(super) fn plug_shared_uri_source(
         let video_cb = video_cb.clone();
         let audio_cb = audio_cb.clone();
         pad.connect_notify(Some("caps"), move |p, _spec| {
+            info!("uridecodebin3 caps ready rebuild link");
             on_pad_caps_notified(p, &video_cb, &audio_cb);
         });
     });
@@ -189,6 +190,10 @@ fn dispatch_pad_core(
     video_cb: &MediaClusterType,
     audio_cb: &MediaClusterType,
 ) -> Result<bool, GstStreamError> {
+    // Skip if pad is already linked (avoid double-link when caps notify fires after successful link).
+    if pad.is_linked() {
+        return Ok(true);
+    }
     let Some(s) = caps.structure(0) else {
         return Ok(false);
     };
