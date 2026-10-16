@@ -5,12 +5,13 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ipcam_gst::TrackSource;
+use ipcam_gst::{TrackSource, VideoFrameSink};
 use parking_lot::Mutex;
 use rsipstack::dialog::DialogId;
 use rsipstack::sip as rsip;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::bridge::UiHandle;
 pub use crate::bridge::WorkerCmd;
 
 /// 被叫侧 RTP 端口默认值 (音频, 视频); 可通过 GuiSipConfig.rtp_ports 自定义
@@ -81,6 +82,23 @@ pub type UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>);
 pub type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
 /// prepare_dial 全过返回的通话资源: (被叫 URI, 控制通道接收端)
 pub type DialPrep = (rsip::Uri, mpsc::Receiver<WorkerCmd>);
+
+/// 一路通话的公共上下文: 主叫 (OutgoingCtx 内嵌) 被叫 (直接当作 ctx)
+/// 共用, 在 spawn 通话任务时打包, 整个通话生命周期内共享
+pub(crate) struct CallBase {
+    /// SIP 配置 (服务器/账号/媒体源/RTP 端口)
+    pub cfg: Arc<GuiSipConfig>,
+    /// UI 事件回投句柄
+    pub ui: UiHandle,
+    /// 视频帧回调 (对端画面送 GUI 上屏)
+    pub tap: VideoFrameSink,
+    /// 本机 IPv4
+    pub local: Ipv4Addr,
+    /// 用户操作控制通道 (接听/拒接/挂断)
+    pub ctl_rx: mpsc::Receiver<WorkerCmd>,
+    /// re-INVITE 更新消息通道 (forward_update 按 dialog id 路由过来)
+    pub update_rx: mpsc::Receiver<UpdateMsg>,
+}
 
 /// 从 INVITE 的 From 头提取主叫号码 (sip:<user>@host 的 user 段)
 pub fn caller_from_request(req: &rsip::Request) -> String {

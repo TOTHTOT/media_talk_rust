@@ -2,11 +2,10 @@
 //! media -> call loop (peer BYE / local hangup / re-INVITE renegotiate).
 //! Signalling logic adapted from ipcam-sip examples/call.rs.
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use ipcam_gst::VideoFrameSink;
 use ipcam_sip::sdp::{PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all};
 use rsipstack::dialog::DialogId;
 use rsipstack::dialog::authenticate::Credential;
@@ -15,12 +14,11 @@ use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::dialog::invitation::InviteOption;
 use rsipstack::sip as rsip;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::info;
 
-use super::call_loop::call_loop;
-use super::types::{CallCtlTx, CallRoutes, GuiSipConfig, UpdateMsg, WorkerCmd};
+use super::call_loop::{call_loop, finish_call};
+use super::types::{CallBase, CallCtlTx, CallRoutes, UpdateMsg, WorkerCmd};
 use crate::app::UiEvent;
-use crate::bridge::UiHandle;
 use crate::media;
 
 /// 主叫一路通话: INVITE -> non-200 means failure -> 200 parse answer and start
@@ -47,16 +45,12 @@ pub(super) async fn handle_outgoing(
     mut ctx: OutgoingCtx,
 ) {
     let res = outgoing_inner(dialog_layer, state_sender, &mut ctx).await;
-    match res {
-        Ok(reason) => ctx.ui.post(UiEvent::Terminated { reason }),
-        Err(e) => {
-            warn!(error = %e, %ctx.number, "outgoing call failed");
-            ctx.ui.post(UiEvent::Failed {
-                reason: e.to_string(),
-            });
-        }
-    }
-    *slot.lock() = None;
+    finish_call(
+        &ctx.base.ui,
+        &slot,
+        &format!("outgoing call to {}", ctx.number),
+        res,
+    );
 }
 
 /// Outgoing call context: packed at spawn, shared across the entire call lifecycle.
@@ -66,18 +60,13 @@ pub(crate) struct OutgoingCtx {
     pub(super) contact: rsip::Uri,
     pub(super) credential: Credential,
     pub(super) number: String,
-    pub(super) local: Ipv4Addr,
-    pub(super) cfg: Arc<GuiSipConfig>,
-    pub(super) ui: UiHandle,
-    pub(super) tap: VideoFrameSink,
-    pub(super) ctl_rx: mpsc::Receiver<WorkerCmd>,
     /// re-INVITE 路由表: INVITE 成功后按 dialog id 登记, 对端 (如
     /// Linphone 通话中开视频) 发来的 re-INVITE 才能转进通话 loop
     pub(super) routes: CallRoutes,
     /// re-INVITE 通道发送端 (登记进 routes), forward_update 经它找本任务
     pub(super) update_tx: mpsc::Sender<UpdateMsg>,
-    /// re-INVITE 通道接收端, 通话 loop 里消费
-    pub(super) update_rx: mpsc::Receiver<UpdateMsg>,
+    /// 主被叫公共部分 (配置/UI/tap/本机 IP/控制与更新通道)
+    pub(super) base: CallBase,
 }
 
 /// re-INVITE 路由登记 guard: drop 时自动从路由表摘除, 保证任意退出路径
@@ -116,12 +105,12 @@ async fn outgoing_inner(
     ctx: &mut OutgoingCtx,
 ) -> Result<String> {
     let offer = build_av_offer(
-        IpAddr::V4(ctx.local),
-        ctx.cfg.rtp_ports.audio,
-        ctx.cfg.rtp_ports.video,
+        IpAddr::V4(ctx.base.local),
+        ctx.base.cfg.rtp_ports.audio,
+        ctx.base.cfg.rtp_ports.video,
         &[PT_PCMU, PT_PCMA],
     );
-    info!(%ctx.callee, rtp_ports = ?ctx.cfg.rtp_ports, "calling, SDP offer:\n{offer}");
+    info!(%ctx.callee, rtp_ports = ?ctx.base.cfg.rtp_ports, "calling, SDP offer:\n{offer}");
 
     let invite_option = InviteOption {
         callee: ctx.callee.clone(),
@@ -149,26 +138,31 @@ async fn outgoing_inner(
         }
     };
 
-    if matches!(ctx.ctl_rx.try_recv(), Ok(WorkerCmd::Hangup)) {
+    if matches!(ctx.base.ctl_rx.try_recv(), Ok(WorkerCmd::Hangup)) {
         dialog.bye_with_headers(None).await?;
         return Ok("local cancelled".into());
     }
 
     let peers = parse_answer_all(resp.body())?;
-    ctx.ui.post(UiEvent::Confirmed {
+    ctx.base.ui.post(UiEvent::Confirmed {
         peer: ctx.number.clone(),
     });
 
-    let mut media = media::start_outgoing(&peers, &ctx.cfg.rtp_ports, &ctx.cfg, &ctx.tap);
+    let mut media = media::start_outgoing(
+        &peers,
+        &ctx.base.cfg.rtp_ports,
+        &ctx.base.cfg,
+        &ctx.base.tap,
+    );
     info!("call established");
 
     let reason = call_loop(
         &dialog,
         &mut media,
-        &mut ctx.ctl_rx,
-        &mut ctx.update_rx,
-        ctx.local,
-        ctx.cfg.rtp_ports,
+        &mut ctx.base.ctl_rx,
+        &mut ctx.base.update_rx,
+        ctx.base.local,
+        ctx.base.cfg.rtp_ports,
     )
     .await?;
     if let Some(m) = media {

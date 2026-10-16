@@ -1,14 +1,16 @@
-//! 已接通通话的共享 loop: 主叫被叫接通之后做的事完全一样 — 等对端
-//! BYE / 本地挂断 / re-INVITE 重协商 (do_invite 与来电入口返回的同为
-//! InviteDialog, 无需抽象).
+//! 主被叫共用的通话期逻辑: 已接通通话 loop (对端 BYE / 本地挂断 /
+//! re-INVITE 重协商) 与通话任务收尾 (结果映射 UI 事件 + 清占线槽位).
 
 use std::net::Ipv4Addr;
 
 use anyhow::Result;
 use rsipstack::dialog::invite_dialog::InviteDialog;
 use tokio::sync::mpsc;
+use tracing::warn;
 
-use super::types::{RtpPorts, UpdateMsg, WorkerCmd};
+use super::types::{CallCtlTx, RtpPorts, UpdateMsg, WorkerCmd};
+use crate::app::UiEvent;
+use crate::bridge::UiHandle;
 use crate::media;
 
 /// 通话 loop: 对端 BYE → cancel_token; 本地挂断 → BYE;
@@ -54,4 +56,29 @@ pub(super) async fn call_loop(
         }
     };
     Ok(reason)
+}
+
+/// 通话任务收尾: inner 结果映射成 UI 事件 (Ok → Terminated, Err →
+/// warn 日志 + Failed), 最后清占线槽位释放呼叫能力. 路由摘除由调用
+/// 方自理 (被叫手动 remove, 主叫靠 RouteGuard).
+///
+/// # Arguments
+///
+/// * `ui`: UI 事件回投句柄
+/// * `slot`: 通话占线槽位
+/// * `desc`: 通话描述 (失败日志用, 如 "incoming call" / "outgoing call to 1001")
+/// * `res`: 通话 inner 流程结果, Ok 为正常结束原因, Err 为失败
+///
+/// returns: ()
+pub(super) fn finish_call(ui: &UiHandle, slot: &CallCtlTx, desc: &str, res: Result<String>) {
+    match res {
+        Ok(reason) => ui.post(UiEvent::Terminated { reason }),
+        Err(e) => {
+            warn!(error = %e, "{desc} failed");
+            ui.post(UiEvent::Failed {
+                reason: e.to_string(),
+            });
+        }
+    }
+    *slot.lock() = None;
 }

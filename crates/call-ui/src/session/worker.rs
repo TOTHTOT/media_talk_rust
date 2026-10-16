@@ -20,9 +20,8 @@ use crate::app::UiEvent;
 use crate::bridge::{UiHandle, WorkerCmd};
 
 use super::incoming;
-use super::incoming::IncomingCtx;
 use super::outgoing;
-use super::types::{CallCtlTx, CallRoutes, DialPrep, GuiSipConfig, caller_from_request};
+use super::types::{CallBase, CallCtlTx, CallRoutes, DialPrep, GuiSipConfig, caller_from_request};
 
 /// 启动 SIP worker 线程: 独立线程跑自己的 tokio runtime, 注册常驻,
 /// UI 命令逐条处理, 事件经 UiHandle 回投主线程.
@@ -295,7 +294,7 @@ pub fn make_incoming_handler(
 
             let call_ctl_tx = call_ctl_tx.clone();
             let routes = routes.clone();
-            let ctx = IncomingCtx {
+            let ctx = CallBase {
                 cfg: cfg.clone(),
                 ui: ui.clone(),
                 tap: tap.clone(),
@@ -363,14 +362,16 @@ pub fn handle_cmd(
                     contact: client.contact.clone(),
                     credential: credential.clone(),
                     number,
-                    local,
-                    cfg: cfg.clone(),
-                    ui: ui.clone(),
-                    tap: tap.clone(),
-                    ctl_rx,
                     routes: routes.clone(),
                     update_tx,
-                    update_rx,
+                    base: CallBase {
+                        cfg: cfg.clone(),
+                        ui: ui.clone(),
+                        tap: tap.clone(),
+                        local,
+                        ctl_rx,
+                        update_rx,
+                    },
                 },
             ));
         }

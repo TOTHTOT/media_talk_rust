@@ -3,10 +3,8 @@
 //! 改写自 ipcam-sip 的 examples/answer.rs.
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
 
 use anyhow::Result;
-use ipcam_gst::VideoFrameSink;
 use ipcam_sip::negotiate;
 use ipcam_sip::sdp::{OfferMedias, parse_offer_all};
 use rsipstack::dialog::invite_dialog::InviteDialog;
@@ -15,11 +13,9 @@ use rsipstack::sip::headers::Header;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::call_loop::call_loop;
+use super::call_loop::{call_loop, finish_call};
 use super::types::INCOMING_TIMEOUT;
-use super::types::{
-    CallCtlTx, CallRoutes, GuiSipConfig, RtpPorts, UpdateMsg, WorkerCmd, caller_from_request,
-};
+use super::types::{CallBase, CallCtlTx, CallRoutes, RtpPorts, WorkerCmd, caller_from_request};
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
 use crate::media;
@@ -44,32 +40,13 @@ use crate::media;
 /// ```
 pub(super) async fn handle_incoming(
     dialog: InviteDialog,
-    mut ctx: IncomingCtx,
+    mut ctx: CallBase,
     call_ctl_tx: CallCtlTx,
     routes: CallRoutes,
 ) {
     let res = incoming_inner(&dialog, &mut ctx).await;
-    match res {
-        Ok(reason) => ctx.ui.post(UiEvent::Terminated { reason }),
-        Err(e) => {
-            warn!(error = %e, "incoming call failed");
-            ctx.ui.post(UiEvent::Failed {
-                reason: e.to_string(),
-            });
-        }
-    }
     routes.lock().remove(&dialog.id());
-    *call_ctl_tx.lock() = None;
-}
-
-/// 被叫通话上下文: 在 spawn 时打包, 整个通话生命周期内共享
-pub(crate) struct IncomingCtx {
-    pub(super) cfg: Arc<GuiSipConfig>,
-    pub(super) ui: UiHandle,
-    pub(super) tap: VideoFrameSink,
-    pub(super) local: Ipv4Addr,
-    pub(super) ctl_rx: mpsc::Receiver<WorkerCmd>,
-    pub(super) update_rx: mpsc::Receiver<UpdateMsg>,
+    finish_call(&ctx.ui, &call_ctl_tx, "incoming call", res);
 }
 
 /// 来电等待用户操作的决定: 接听 / 拒接 (带 SIP 状态码) / 对端取消
@@ -197,7 +174,7 @@ fn accept_with_answer(
 /// ```
 ///
 /// ```
-async fn incoming_inner(dialog: &InviteDialog, ctx: &mut IncomingCtx) -> Result<String> {
+async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<String> {
     let caller = caller_from_request(&dialog.initial_request());
     info!(%caller, "incoming call");
 
