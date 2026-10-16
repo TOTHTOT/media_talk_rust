@@ -128,7 +128,7 @@ async fn outgoing_inner(
     let (dialog_id, resp) = loop {
         tokio::select! {
             r = &mut invite => break r??,
-            ctl = ctx.base.ctl_rx.recv() => {
+            ctl = ctx.base.call_answer_ctl_rx.recv() => {
                 match ctl {
                     Some(WorkerCmd::Hangup) | None => {
                         dialog.cancel().await?;
@@ -181,7 +181,7 @@ async fn outgoing_inner(
     let reason = call_loop(
         &dialog,
         &mut media,
-        &mut ctx.base.ctl_rx,
+        &mut ctx.base.call_answer_ctl_rx,
         &mut ctx.base.update_rx,
         ctx.base.local,
         ctx.base.cfg.rtp_ports,

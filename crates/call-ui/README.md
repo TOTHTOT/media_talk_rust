@@ -84,6 +84,102 @@ sequenceDiagram
 - `post()` 把事件塞进 slint 事件循环，保证线程安全
 - `slint::invoke_from_event_loop` 让任意线程可以操作 UI 状态
 
+### 3.3 CallCtlTx / call_answer_ctl_rx（通话控制通道）
+
+```
+worker handle_cmd
+    │
+    ├─ prepare_dial() 创建 mpsc::channel(4) → (call_ctl_tx, call_answer_ctl_rx)
+    │
+    ├─ call_ctl_tx 存入 CallCtlTx 槽位 (Arc<Mutex<Option<Sender>>>)
+    │     ↓
+    │   UI 发 Hangup → handle_cmd → call_ctl_tx.lock() → try_send(Hangup)
+    │
+    └─ call_answer_ctl_rx 传给 OutgoingCtx / CallBase
+          ↓
+        outgoing_inner / wait_user_decision / call_loop 用它监听 Hangup
+```
+
+**类型定义** (`types.rs`):
+```rust
+// 控制通道发送端存入槽位 (Arc<Mutex<Option<Sender>>>)
+pub type CallCtlTx = Arc<Mutex<Option<mpsc::Sender<WorkerCmd>>>>;
+
+// 控制通道接收端传给通话任务
+pub call_answer_ctl_rx: mpsc::Receiver<WorkerCmd>
+```
+
+**流程**:
+1. **拨号时** — `prepare_dial` 创建 channel，`call_ctl_tx` 存入槽位
+2. **挂断时** — `handle_cmd` 从槽位取出 `call_ctl_tx`，发送 `Hangup`
+3. **通话任务监听** — `call_answer_ctl_rx.recv()` 收到后处理
+
+### 3.4 CallRoutes / UpdateMsg（re-INVITE 路由通道）
+
+```
+forward_update (on_update 闭包)
+    │
+    ├─ routes: Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>
+    │     ↓
+    │   key = DialogId, value = update_tx (通话任务持有)
+    │
+    └─ UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>)
+          ↓
+        通话任务从 update_rx 收到后处理 re-INVITE
+```
+
+**类型定义** (`ipcam_sip::call_route`):
+```rust
+// re-INVITE 请求 + 回复通道
+pub type UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>);
+
+// 通话路由表
+pub type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
+```
+
+**流程**:
+1. **来电/拨号成功时** — `routes.lock().insert(dialog_id, update_tx)`
+2. **re-INVITE 到来时** — `forward_update` 经 `routes` 找到 `update_tx`
+3. **通话任务收到** — `update_rx.recv()` → 处理 → `oneshot::Sender` 回 answer SDP
+4. **通话结束时** — `RouteGuard` drop 或手动 `routes.lock().remove(&id)` 摘除
+
+### 3.5 通道总览图
+
+```mermaid
+flowchart LR
+    subgraph worker["SIP worker 线程"]
+        subgraph slot["CallCtlTx 槽位"]
+            CTX[Arc&lt;Mutex&lt;Option&lt;ctl_tx&gt;&gt;&gt;]
+        end
+        subgraph routes["CallRoutes"]
+            RT[HashMap&lt;DialogId, update_tx&gt;]
+        end
+    end
+
+    UI -->|cmd_tx.send| handle_cmd
+    handle_cmd -->|Dial| prepare_dial
+    prepare_dial -->|call_ctl_tx| CTX
+    prepare_dial -->|call_answer_ctl_rx| OutgoingCtx
+
+    handle_cmd -->|Hangup| CTX
+    CTX -->|call_ctl_tx.send| call_answer_ctl_rx
+
+    OutgoingCtx -->|call_answer_ctl_rx| outgoing_inner
+    OutgoingCtx -->|call_answer_ctl_rx| call_loop
+
+    RIL -->|re-INVITE| forward_update
+    forward_update -->|routes.get| RT
+    RT -->|update_tx.send| update_rx
+    update_rx -->|UpdateMsg| call_loop
+```
+
+图例:
+- `CTX` = CallCtlTx 槽位
+- `RT` = CallRoutes 路由表
+- `call_ctl_tx` = 控制通道发送端（存入 CTX 槽位）
+- `call_answer_ctl_rx` = 控制通道接收端（通话任务监听）
+- `update_tx/rx` = re-INVITE UpdateMsg 通道
+
 ---
 
 ## 4. 被叫来电流程
@@ -304,3 +400,4 @@ flowchart TB
 | `UiHandle` 用 Weak | 避免循环引用导致内存泄漏，post() 失败时 warn 而不是 panic |
 | 媒体单路不崩原则 | 接收器或发送器启动失败只 warn，对应路 None，通话不因一路媒体挂掉 |
 | `IncomingCtx` 参数打包 | 消除 8 参数列表的 `#[allow(clippy::too_many_arguments)]`,`slot`/`routes` 只在收尾用,保留独立传参 |
+| CallRoutes/UpdateMsg 下沉 ipcam-sip | re-INVITE 转发逻辑是通用 SIP 逻辑，与 call-ui 业务解耦，可被其他应用复用 |

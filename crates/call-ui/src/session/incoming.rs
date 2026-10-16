@@ -178,7 +178,8 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<Str
     let caller = caller_from_request(&dialog.initial_request());
     info!(%caller, "incoming call");
 
-    let decision = wait_user_decision(dialog, &ctx.ui, &caller, &mut ctx.ctl_rx).await?;
+    let decision =
+        wait_user_decision(dialog, &ctx.ui, &caller, &mut ctx.call_answer_ctl_rx).await?;
     info!(decision_result = ?decision);
     match decision {
         Decision::PeerCancelled => return Ok("peer cancelled".into()),
@@ -197,7 +198,7 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<Str
     let reason = call_loop(
         dialog,
         &mut media,
-        &mut ctx.ctl_rx,
+        &mut ctx.call_answer_ctl_rx,
         &mut ctx.update_rx,
         ctx.local,
         ctx.cfg.rtp_ports,

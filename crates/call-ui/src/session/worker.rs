@@ -251,21 +251,24 @@ async fn shutdown<'a>(
 
 /// 来电入口工厂: 占线直接 486, 否则占槽 + 登记 re-INVITE 路由 + spawn 通话任务
 ///
-/// # Arguments
+/// ```mermaid
+/// sequenceDiagram
+///     participant DL as dialog_layer
+///     participant RSL as run_dialog_state_loop
+///     participant MIH as make_incoming_handler
+///     participant HI as handle_incoming
 ///
-/// * `call_ctl_tx`: 通话槽位
-/// * `routes`: 进行中通话路由表
-/// * `ui`: 事件回投句柄
-/// * `tap`: 视频帧回调
-/// * `cfg`: SIP 配置
-/// * `local`: 本机 IPv4
-///
-/// returns: impl Fn(InviteDialog) + Send + Sync — run_dialog_state_loop 的来电回调
-///
-/// # Examples
-///
-/// ```
-///
+///     DL->>+RSL: DialogState::Calling
+///     RSL->>+MIH: on_incoming_call(dialog)
+///     Note over MIH: 占线检查
+///     MIH->>HI: spawn handle_incoming()
+///     Note over HI: wait_user_decision
+///     alt Accept
+///         HI->>DL: dialog.accept(200 OK)
+///         HI->>+HI: call_loop()
+///     else Reject/Timeout/Cancel
+///         HI->>DL: dialog.reject/repo
+///     end
 /// ```
 pub fn make_incoming_handler(
     call_ctl_tx: CallCtlTx,
@@ -287,7 +290,7 @@ pub fn make_incoming_handler(
                 }
                 return;
             }
-            let (ctl_tx, ctl_rx) = mpsc::channel(4);
+            let (ctl_tx, answer_ctl_rx) = mpsc::channel(4);
             *guard = Some(ctl_tx);
             let (update_tx, update_rx) = mpsc::channel(4);
             routes.lock().unwrap().insert(dialog.id(), update_tx);
@@ -299,7 +302,7 @@ pub fn make_incoming_handler(
                 ui: ui.clone(),
                 tap: tap.clone(),
                 local,
-                ctl_rx,
+                call_answer_ctl_rx: answer_ctl_rx,
                 update_rx,
             };
             tokio::spawn(async move {
@@ -311,28 +314,21 @@ pub fn make_incoming_handler(
 
 /// UI 命令处理: Dial 占线检查 + spawn 主叫任务; 通话三键转发进 ctl 通道.
 ///
-/// # Arguments
+/// ```mermaid
+/// sequenceDiagram
+///     participant UI
+///     participant handle_cmd
+///     participant CTX[CallCtlTx slot]
 ///
-/// * `cmd`: UI 命令 (Dial/Hangup/Accept/Reject)
-/// * `client`: SIP 客户端句柄
-/// * `credential`: Digest 鉴权凭据
-/// * `state_sender`: Dialog 状态发送通道
-/// * `call_ctl_tx`: 当前通话控制槽
-/// * `routes`: 进行中通话路由表 (Dial 时把通道交给主叫任务, 接通后登记)
-/// * `ui`: 事件回投句柄
-/// * `tap`: 视频帧回调
-/// * `cfg`: SIP 配置 (服务器/账号/媒体源)
-/// * `local`: 本机 IPv4
+///     UI->>+handle_cmd: cmd_tx.send(Dial)
+///     handle_cmd->>CTX: slot = Some(call_ctl_tx)
+///     handle_cmd->>handle_cmd: spawn handle_outgoing()
 ///
-/// returns: ()
-///
-/// # Examples
-///
+///     UI->>handle_cmd: cmd_tx.send(Hangup)
+///     handle_cmd->>CTX: slot.get()
+///     CTX-->>handle_cmd: call_ctl_tx
+///     handle_cmd->>call_loop: call_ctl_tx.send(Hangup)
 /// ```
-///
-/// ```
-// reason: 命令处理要触达 worker 全部上下文 (client/槽位/媒体源), 打包成
-// 结构体只有这一个调用点, 反而掩盖各参数的实际用途
 #[allow(clippy::too_many_arguments)]
 pub fn handle_cmd(
     cmd: WorkerCmd,
@@ -348,10 +344,14 @@ pub fn handle_cmd(
 ) {
     info!(?cmd, "current deal");
     match cmd {
+        // Dial: prepare_dial 占槽后 spawn 主叫任务, 把 call_answer_ctl_rx 传入监听 Hangup
         WorkerCmd::Dial(number) => {
-            let Some((callee, ctl_rx)) = prepare_dial(client, &number, call_ctl_tx, ui) else {
+            // prepare_dial: 占线检查 + callee_uri 解析 + 创建 call_answer_ctl_rx 通道
+            let Some((callee, call_answer_ctl_rx)) = prepare_dial(client, &number, call_ctl_tx, ui)
+            else {
                 return;
             };
+            // 创建 re-INVITE 路由通道: update_tx 登记进 routes, update_rx 传通话任务
             let (update_tx, update_rx) = mpsc::channel(4);
             tokio::spawn(crate::session::outgoing::handle_outgoing(
                 client.dialog_layer.clone(),
@@ -369,15 +369,17 @@ pub fn handle_cmd(
                         ui: ui.clone(),
                         tap: tap.clone(),
                         local,
-                        ctl_rx,
-                        update_rx,
+                        call_answer_ctl_rx, // 监听 Hangup
+                        update_rx,          // 监听 re-INVITE
                     },
                 },
             ));
         }
+        // Hangup/Accept/Reject: 从 slot 取出 call_ctl_tx, 转发命令给通话任务
         WorkerCmd::Hangup | WorkerCmd::Accept | WorkerCmd::Reject => {
             let ctl = call_ctl_tx.lock().clone();
             let Some(ctl) = ctl else {
+                warn!("call_ctl_tx is none, no ongoing call");
                 return;
             };
             if let Err(e) = ctl.try_send(cmd) {
@@ -394,22 +396,17 @@ pub fn handle_cmd(
 ///
 /// * `client`: SIP 客户端句柄
 /// * `number`: 拨号号码
-/// * `call_ctl_tx`: 通话槽位 (全过时在此占槽)
+/// * `call_ctl_tx`: 通话槽位 (全过时在此占槽: 把 ctl_tx 存入 Arc<Mutex>)
 /// * `ui`: 事件回投句柄 (失败原因上报)
 ///
-/// returns: Option<DialPrep>
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
+/// returns: Option<DialPrep> — Some 时已占槽, caller 负责 spawn 通话任务
 fn prepare_dial(
     client: &SipClient,
     number: &str,
     call_ctl_tx: &CallCtlTx,
     ui: &UiHandle,
 ) -> Option<DialPrep> {
+    // 占线检查: slot 有值说明有通话或来电响铃中, 拒绝新拨号
     let mut guard = call_ctl_tx.lock();
     if guard.is_some() {
         drop(guard);
@@ -418,6 +415,7 @@ fn prepare_dial(
         });
         return None;
     }
+    // 解析被叫 URI: 用户输入可能是 "1001" 或 "192.168.1.100"
     let callee = match client.callee_uri(number) {
         Ok(u) => u,
         Err(e) => {
@@ -428,8 +426,9 @@ fn prepare_dial(
             return None;
         }
     };
-    let (ctl_tx, ctl_rx) = mpsc::channel(4);
-    *guard = Some(ctl_tx);
+    // 创建控制通道: ctl_tx 存入 slot 供 UI 发 Hangup, ctl_rx 传给通话任务
+    let (call_ctl_tx_to_send, call_answer_ctl_rx) = mpsc::channel(4);
+    *guard = Some(call_ctl_tx_to_send); // 占槽
     drop(guard);
-    Some((callee, ctl_rx))
+    Some((callee, call_answer_ctl_rx))
 }

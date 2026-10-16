@@ -74,13 +74,51 @@ impl Default for GuiSipConfig {
     }
 }
 
-/// 当前通话的控制通道, Some 即占线
+/// 当前通话的控制通道发送端 (存入槽位, UI 发 Hangup 时取出发送).
+/// Some = 通话中/响铃中, None = 空闲. WorkerCmd::Hangup → call_ctl_tx.try_send()
 pub type CallCtlTx = Arc<Mutex<Option<mpsc::Sender<WorkerCmd>>>>;
-/// prepare_dial 全过返回的通话资源: (被叫 URI, 控制通道接收端)
+
+/// Dial 预检查返回: (被叫 URI, 控制通道接收端) 给 handle_outgoing 用.
+/// 被叫 URI 来自 prepare_dial 的 callee_uri() 转换.
+///
+/// ```mermaid
+/// sequenceDiagram
+///     participant UI
+///     participant handle_cmd
+///     participant prepare_dial
+///     participant CTX[CallCtlTx slot]
+///
+///     UI->>+handle_cmd: cmd_tx.send(Dial)
+///     handle_cmd->>+prepare_dial: prepare_dial()
+///     prepare_dial->>CTX: lock()
+///     prepare_dial->>CTX: slot = Some(call_ctl_tx)
+///     prepare_dial-->>-handle_cmd: (callee, call_answer_ctl_rx)
+///     Note over handle_cmd: spawn handle_outgoing(call_answer_ctl_rx)
+/// ```
 pub type DialPrep = (rsip::Uri, mpsc::Receiver<WorkerCmd>);
 
 /// 一路通话的公共上下文: 主叫 (OutgoingCtx 内嵌) 被叫 (直接当作 ctx)
 /// 共用, 在 spawn 通话任务时打包, 整个通话生命周期内共享
+///
+/// ```mermaid
+/// sequenceDiagram
+///     participant handle_cmd
+///     participant CTX[CallCtlTx slot]
+///     participant call_loop
+///     participant RSL[run_dialog_state_loop]
+///
+///     Note over handle_cmd: Dial 时
+///     handle_cmd->>CTX: slot = Some(call_ctl_tx)
+///     handle_cmd->>call_loop: spawn(call_answer_ctl_rx, update_rx)
+///
+///     Note over CTX: Hangup 时
+///     CTX-->>call_loop: call_ctl_tx.send(Hangup)
+///     call_loop->>call_loop: dialog.bye_with_headers()
+///
+///     Note over RSL: re-INVITE 时
+///     RSL->>call_loop: update_rx.send((req, reply_tx))
+///     call_loop->>RSL: reply_tx.send(answer SDP)
+/// ```
 pub(crate) struct CallBase {
     /// SIP 配置 (服务器/账号/媒体源/RTP 端口)
     pub cfg: Arc<GuiSipConfig>,
@@ -88,11 +126,13 @@ pub(crate) struct CallBase {
     pub ui: UiHandle,
     /// 视频帧回调 (对端画面送 GUI 上屏)
     pub tap: VideoFrameSink,
-    /// 本机 IPv4
+    /// 本机 IPv4 (用于 re-INVITE answer 的 c= 行)
     pub local: Ipv4Addr,
-    /// 用户操作控制通道 (接听/拒接/挂断)
-    pub ctl_rx: mpsc::Receiver<WorkerCmd>,
-    /// re-INVITE 更新消息通道 (forward_update 按 dialog id 路由过来)
+    /// 用户操作控制通道接收端: Hangup 时 call_ctl_tx 取出发送, 这里接收.
+    /// 被叫等待时收到 Hangup → Reject; 通话中收到 Hangup → BYE
+    pub call_answer_ctl_rx: mpsc::Receiver<WorkerCmd>,
+    /// re-INVITE 更新消息通道接收端: forward_update 经 CallRoutes 路由,
+    /// 把请求发到 update_rx, 通话任务处理后经 oneshot 回 answer SDP
     pub update_rx: mpsc::Receiver<UpdateMsg>,
 }
 
