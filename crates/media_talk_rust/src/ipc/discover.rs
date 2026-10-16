@@ -14,6 +14,22 @@ fn full_rtsp_url(uri: &str, user: &str, pass: &str) -> String {
     }
 }
 
+/// ONVIF WS-Discovery 设备发现.
+///
+/// # Arguments
+///
+/// * `timeout_secs`: 发现超时时间 (秒)
+/// * `json`: true 则 JSON 输出到 stdout, 否则结构化日志
+/// * `username`: ONVIF 认证用户名 (可无)
+/// * `password`: ONVIF 认证密码 (可无)
+///
+/// returns: anyhow::Result<()>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub async fn run(
     timeout_secs: u64,
     json: bool,

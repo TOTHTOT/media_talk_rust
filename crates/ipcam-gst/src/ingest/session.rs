@@ -51,6 +51,20 @@ struct TrackState {
 
 type SharedPipeline = Arc<Mutex<Option<gst::Pipeline>>>;
 
+/// 起 RTSP 流会话: 建 rtspsrc → webrtcsdk 管线, 进入后台事件循环.
+///
+/// # Arguments
+///
+/// * `cfg`: 流配置
+/// * `taps`: 原始帧回调 (视频/音频解码后 tee 分出)
+///
+/// returns: Result<GstStreamHandle, GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(crate) fn start(
     cfg: GstStreamConfig,
     taps: RawTaps,

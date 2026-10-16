@@ -69,7 +69,7 @@ fn shared_file_info(
 /// * `video_dest`: 视频发送目标 (地址/pt/编码/限宽)
 /// * `stats`: 发包计数器 Arc, 闭包捕获克隆
 ///
-/// returns: Result<()>
+/// returns: Result<(), GstStreamError>
 ///
 /// # Examples
 ///
@@ -99,6 +99,20 @@ fn build_shared_file_track(
     )
 }
 
+/// 起 RTP 发送器: 按 RtpSendConfig 组装管线 (源插拔见 source.rs,
+/// 重编码发送链见 chain.rs), 挂 bus 日志线程和发包计数.
+///
+/// # Arguments
+///
+/// * `cfg`: 发送器配置 (音频/视频源 + 目标地址)
+///
+/// returns: Result<RtpSender, GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError> {
     ensure_init_internal()?;
     if cfg.audio.is_none() && cfg.video.is_none() {

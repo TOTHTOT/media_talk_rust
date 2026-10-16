@@ -10,6 +10,18 @@ use crate::GstStreamError;
 /// Create an element, mapping a missing factory/plugin to `Init` with
 /// the element name in the message (a missing `rtspsrc` usually means
 /// `gstreamer1.0-plugins-good` is not installed on the target).
+///
+/// # Arguments
+///
+/// * `name`: GStreamer 元件名
+///
+/// returns: Result<gst::Element, GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(crate) fn make(name: &str) -> Result<gst::Element, GstStreamError> {
     gst::ElementFactory::make(name)
         .build()
@@ -17,6 +29,19 @@ pub(crate) fn make(name: &str) -> Result<gst::Element, GstStreamError> {
 }
 
 /// Link `elems` into a chain (a ! b ! c ! ...).
+///
+/// # Arguments
+///
+/// * `elems`: 要链接的元件列表
+/// * `what`: 链的描述 (用于错误信息)
+///
+/// returns: Result<(), GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(crate) fn link_chain(elems: &[&gst::Element], what: &str) -> Result<(), GstStreamError> {
     gst::Element::link_many(elems.iter().copied())
         .map_err(|e| GstStreamError::Link(format!("failed to link {what}: {e}")))?;
@@ -24,6 +49,19 @@ pub(crate) fn link_chain(elems: &[&gst::Element], what: &str) -> Result<(), GstS
 }
 
 /// Add `elems` to the pipeline and sync each with the parent state.
+///
+/// # Arguments
+///
+/// * `pipeline`: GStreamer 管线
+/// * `elems`: 要加入的元件列表
+///
+/// returns: Result<(), GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(crate) fn add_and_sync(
     pipeline: &gst::Pipeline,
     elems: &[&gst::Element],
@@ -40,6 +78,19 @@ pub(crate) fn add_and_sync(
 }
 
 /// Static pad lookup with the element name in the error.
+///
+/// # Arguments
+///
+/// * `elem`: 元件
+/// * `name`: pad 名称
+///
+/// returns: Result<gst::Pad, GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(crate) fn static_pad(elem: &gst::Element, name: &str) -> Result<gst::Pad, GstStreamError> {
     elem.static_pad(name).ok_or(GstStreamError::Link(format!(
         "element `{}` has no {name} pad",
@@ -49,6 +100,14 @@ pub(crate) fn static_pad(elem: &gst::Element, name: &str) -> Result<gst::Pad, Gs
 
 /// Queue that drops the oldest buffers when full, so a stalled branch
 /// can never back-pressure the main path through a tee.
+///
+/// returns: Result<gst::Element, GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(crate) fn leaky_queue() -> Result<gst::Element, GstStreamError> {
     let q = make("queue")?;
     q.set_property_from_str("leaky", "downstream");

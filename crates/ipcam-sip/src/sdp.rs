@@ -206,6 +206,18 @@ pub struct OfferMedias {
 
 /// 解析对端 (200 OK 或 18x) 带回的 SDP answer, 只取第一路媒体.
 /// 音视频双路的场景用 `parse_answer_all`.
+///
+/// # Arguments
+///
+/// * `body`: SDP 文本字节
+///
+/// returns: Result<PeerMedia> — 对端媒体地址/pt/编码
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn parse_answer(body: &[u8]) -> Result<PeerMedia> {
     let sdp = parse_sdp(body)?;
     let media = sdp
@@ -255,12 +267,36 @@ pub struct PeerMedias {
 }
 
 /// 解析 answer, 按媒体类型分别提取 audio/video 两路的协商结果.
+///
+/// # Arguments
+///
+/// * `body`: SDP 文本字节
+///
+/// returns: Result<PeerMedias> — 音视频协商结果
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn parse_answer_all(body: &[u8]) -> Result<PeerMedias> {
     let (audio, video) = parse_media_pair(body, "answer", peer_from_media)?;
     Ok(PeerMedias { audio, video })
 }
 
 /// 解析 offer SDP, 按媒体类型提取 audio/video 两路的信息（用于构造 answer）.
+///
+/// # Arguments
+///
+/// * `body`: SDP 文本字节
+///
+/// returns: Result<OfferMedias> — offer 解析结果
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn parse_offer_all(body: &[u8]) -> Result<OfferMedias> {
     let (audio, video) = parse_media_pair(body, "offer", offer_from_media)?;
     Ok(OfferMedias { audio, video })
@@ -343,6 +379,23 @@ fn resolve_fmtp<'a>(media: &'a MediaDescription, pt: &str) -> Option<&'a str> {
 /// 构造音视频通话的 SDP answer.
 /// `selected_video_fmtp` 传对端 offer 里选中视频编码的 fmtp 参数
 /// (回显, 见 `video_media_description`); 对端没带 fmtp 传 None.
+///
+/// # Arguments
+///
+/// * `local_ip`: 本机 IP
+/// * `audio_port`: 本机音频 RTP 接收端口
+/// * `video_port`: 本机视频 RTP 接收端口
+/// * `selected_audio_pt`: 协商选中的音频 payload type
+/// * `selected_video_pt`: 协商选中的视频 payload type
+/// * `selected_video_fmtp`: 视频编码的 fmtp 参数 (可无)
+///
+/// returns: SessionDescription
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn build_av_answer(
     local_ip: IpAddr,
     audio_port: u16,

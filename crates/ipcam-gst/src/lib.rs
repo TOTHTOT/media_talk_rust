@@ -60,6 +60,18 @@ pub enum GstStreamError {
 }
 
 /// Validate a stream configuration without touching the network.
+///
+/// # Arguments
+///
+/// * `cfg`: 流配置
+///
+/// returns: Result<(), GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn validate(cfg: &GstStreamConfig) -> Result<(), GstStreamError> {
     ingest::config::validate(cfg)
 }
@@ -72,6 +84,14 @@ static SIGNALLING_ANCHOR: OnceLock<gst::Pipeline> = OnceLock::new();
 /// held in a static for the process lifetime; every streaming session
 /// then connects to it as a producer via `signalling_host/port`.
 /// Idempotent — safe to call from every server startup.
+///
+/// returns: Result<(), GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn ensure_signalling_server() -> Result<(), GstStreamError> {
     ensure_init_internal()?;
     if SIGNALLING_ANCHOR.get().is_some() {
@@ -99,6 +119,18 @@ pub fn ensure_signalling_server() -> Result<(), GstStreamError> {
 /// Start a streaming session: build the RTSP → webrtcsink pipeline and
 /// enter the background event loop. The stream becomes visible to WebRTC
 /// consumers under `cfg.stream_name` once the pipeline reaches Playing.
+///
+/// # Arguments
+///
+/// * `cfg`: 流配置
+///
+/// returns: Result<GstStreamHandle, GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn start(cfg: GstStreamConfig) -> Result<GstStreamHandle, GstStreamError> {
     start_with_taps(cfg, RawTaps::default())
 }
@@ -106,6 +138,19 @@ pub fn start(cfg: GstStreamConfig) -> Result<GstStreamHandle, GstStreamError> {
 /// Like [`start`], additionally teeing decoded frames into `taps`
 /// (native GUI / analytics). Each set tap adds a decode branch; with no
 /// taps this is identical to [`start`].
+///
+/// # Arguments
+///
+/// * `cfg`: 流配置
+/// * `taps`: 原始帧回调 (视频/音频解码后 tee 分出)
+///
+/// returns: Result<GstStreamHandle, GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn start_with_taps(
     cfg: GstStreamConfig,
     taps: RawTaps,

@@ -95,7 +95,9 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     let app: bridge::SharedApp =
         std::sync::Arc::new(parking_lot::Mutex::new(app::AppState::default()));
     let handle = bridge::UiHandle::new(ui.as_weak(), app.clone());
+    // 前端控件和后端程序通信
     let (cmd_tx, cmd_rx) = bridge::cmd_channel();
+    // 视频接收的闭包
     let tap = video::make_frame_sink(ui.as_weak());
     let worker = session::spawn(cfg, cmd_rx, handle, tap)?;
 

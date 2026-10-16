@@ -41,7 +41,19 @@ impl TrackSource {
     }
 }
 
-/// CLI 源描述解析: file:<路径> | rtsp://<uri> | camera[:<设备>] | mic
+/// CLI 源描述解析: file:<路径> | rtsp://<uri> | camera[:<设备>] | mic.
+///
+/// # Arguments
+///
+/// * `s`: 源描述字符串
+///
+/// returns: Result<TrackSource, String>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn parse_track_source(s: &str) -> Result<TrackSource, String> {
     if let Some(path) = s.strip_prefix("file:") {
         return Ok(TrackSource::File(PathBuf::from(path)));
@@ -205,7 +217,7 @@ fn dispatch_pad_core(
 /// * `video_cb`: 视频发送链回调
 /// * `audio_cb`: 音频发送链回调
 ///
-/// returns: ()
+/// returns: Result<()> — 分派成功 Ok(()), 回调执行失败 Err
 ///
 /// # Examples
 ///
@@ -222,7 +234,22 @@ fn on_pad_caps_notified(pad: &gst::Pad, video_cb: &MediaClusterType, audio_cb: &
 
 /// 文件/RTSP 源: uridecodebin3 解码出裸流, pad-added 里按 TrackKind 匹配,
 /// 命中的 pad 交给 on_raw_pad 接发送链. 源里没有请求的轨 = pad 永远不来,
-/// 不阻塞另一路 (靠 stats 0 包发现)
+/// 不阻塞另一路 (靠 stats 0 包发现).
+///
+/// # Arguments
+///
+/// * `pipeline`: GStreamer 管线
+/// * `uri`: 文件绝对路径或 RTSP URL
+/// * `kind`: 音频或视频
+/// * `on_raw_pad`: 裸流 pad 出现时的发送链回调
+///
+/// returns: Result<(), GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(super) fn plug_uri_source(
     pipeline: &gst::Pipeline,
     uri: &str,
@@ -272,7 +299,23 @@ pub(super) fn mic_src_name() -> &'static str {
     }
 }
 
-/// 设备源出来直接是裸流 (或可被下游 negotiate 成裸流), src pad 静态存在
+/// 设备源 (麦克风/相机) 接管线: 平台分发集中在这, v4l2src/ksvideosrc
+/// 接成后 src pad 静态存在, 直接回调 on_raw_pad 接发送链.
+///
+/// # Arguments
+///
+/// * `pipeline`: GStreamer 管线
+/// * `element_name`: 平台对应的源元件名 (v4l2src/ksvideosrc/alsasrc/wasapisrc)
+/// * `device`: 设备路径或名称, None 表示使用默认设备
+/// * `on_raw_pad`: 裸流 pad 出现时的发送链回调
+///
+/// returns: Result<(), GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(super) fn plug_device_source(
     pipeline: &gst::Pipeline,
     element_name: &str,
@@ -301,6 +344,19 @@ pub(super) fn plug_device_source(
     on_raw_pad(pad)
 }
 
+/// 把本地文件路径转成 `file://` URI 供 uridecodebin3 使用.
+///
+/// # Arguments
+///
+/// * `path`: 本地文件绝对路径
+///
+/// returns: Result<String, GstStreamError> — 绝对路径转成的 file:// URI
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(super) fn file_uri(path: &std::path::Path) -> Result<String, GstStreamError> {
     let abs = path.canonicalize().map_err(|e| {
         GstStreamError::InvalidConfig(format!("media file not found: {}: {e}", path.display()))

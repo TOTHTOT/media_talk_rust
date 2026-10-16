@@ -225,6 +225,8 @@ async fn run(
 /// * `reg_done`: 注册循环是否已完成 (完成再 await 会 double-await panic)
 /// * `call_ctl_tx`: 通话槽位 (有通话则先送 Hangup)
 ///
+/// returns: ()
+///
 /// # Examples
 ///
 /// ```

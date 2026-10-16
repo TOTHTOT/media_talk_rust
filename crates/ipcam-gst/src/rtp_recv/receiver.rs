@@ -87,6 +87,18 @@ impl Drop for RtpReceiver {
 }
 
 /// 启动 RTP 接收器.
+///
+/// # Arguments
+///
+/// * `cfg`: 接收器配置 (监听端口/编码/录像路径/播放开关)
+///
+/// returns: Result<RtpReceiver, GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamError> {
     info!(?cfg, "recveiver start");
     cfg.validate()?;

@@ -242,6 +242,20 @@ pub mod mpp {
     }
 }
 
+/// 根据编码类型构造解码器: Linux aarch64 + hw-decode 时优先 MPP 硬解码,
+/// 其余平台软解码.
+///
+/// # Arguments
+///
+/// * `codec`: 视频编码类型
+///
+/// returns: Box<dyn ipcam_core::Decoder> — 解码器实例
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn build_decoder(codec: VideoCodec) -> Box<dyn ipcam_core::Decoder> {
     #[cfg(all(target_os = "linux", feature = "hw-decode"))]
     {

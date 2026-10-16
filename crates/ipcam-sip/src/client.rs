@@ -137,6 +137,18 @@ impl SipClient {
     /// 标准关停：取消共享 token（注册循环收到后 best-effort 注销），
     /// 再等注册循环把注销流程跑完。reg 就是调用方 Box::pin 住的
     /// process_register() future
+    ///
+    /// # Arguments
+    ///
+    /// * `reg`: 注册循环 future
+    ///
+    /// returns: Result<()>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub async fn shutdown(&self, reg: impl Future<Output = Result<()>>) -> Result<()> {
         self.stop();
         let r = reg.await;
@@ -146,6 +158,18 @@ impl SipClient {
 
     /// 被叫 URI 归一化：裸号码补全成 sip:<号码>@<服务器>，
     /// 完整 sip:/sips: URI 原样解析
+    ///
+    /// # Arguments
+    ///
+    /// * `callee`: 被叫号码或 SIP URI
+    ///
+    /// returns: Result<Uri>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub fn callee_uri(&self, callee: &str) -> Result<Uri> {
         let text = if callee.starts_with("sip:") || callee.starts_with("sips:") {
             callee.to_owned()
@@ -155,6 +179,15 @@ impl SipClient {
         Ok(Uri::try_from(text.as_str())?)
     }
 
+    /// 注册循环: 注册/续期/注销, 由 cancel token 驱动的优雅关停.
+    ///
+    /// returns: Result<()>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub async fn process_register(&self) -> Result<()> {
         let mut registration = Registration::new(
             self.endpoint.inner.clone(),

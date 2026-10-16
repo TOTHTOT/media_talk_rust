@@ -18,6 +18,25 @@ fn local_ip() -> String {
 const DEFAULT_USER: &str = "admin";
 const DEFAULT_PASS: &str = "changeme";
 
+/// Web 显示服务器 (axum + WebSocket + fMP4).
+///
+/// # Arguments
+///
+/// * `bind`: 监听地址 (e.g. "0.0.0.0:8081")
+/// * `discovery_timeout_secs`: ONVIF 设备发现超时 (秒)
+/// * `username`: ONVIF 认证用户名 (可无)
+/// * `password`: ONVIF 认证密码 (可无)
+/// * `rtsp_urls`: 手动注入的 RTSP URL 列表 (绕过 ONVIF 发现)
+/// * `audio_out`: ALSA 播放设备名 (可无)
+/// * `shutdown`: 关停信号
+///
+/// returns: anyhow::Result<()>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub async fn run(
     bind: String,
     discovery_timeout_secs: u64,

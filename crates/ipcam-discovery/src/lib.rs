@@ -117,6 +117,21 @@ pub struct DeviceManagementClient {
 }
 
 impl DeviceManagementClient {
+    /// 构造 ONVIF 设备管理客户端, 同步方法, session 按需延迟创建.
+    ///
+    /// # Arguments
+    ///
+    /// * `base`: 设备 ONVIF base URL (e.g. `http://192.168.1.64/onvif/device_service`)
+    /// * `credentials`: 认证凭据
+    /// * `timeout`: 操作超时时间
+    ///
+    /// returns: Self
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub fn new(base: reqwest::Url, credentials: DiscoveryCredentials, timeout: Duration) -> Self {
         Self {
             xaddr: base,
@@ -139,6 +154,15 @@ impl DeviceManagementClient {
             .await
     }
 
+    /// 获取设备媒体配置列表, 按需初始化 oxvif session.
+    ///
+    /// returns: Result<Vec<VideoProfile>, DiscoveryError>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub async fn list_profiles(&self) -> Result<Vec<VideoProfile>, DiscoveryError> {
         let profiles = self
             .session()
@@ -152,6 +176,19 @@ impl DeviceManagementClient {
             .collect())
     }
 
+    /// 获取指定 profile 的 RTSP 流地址, 按需初始化 oxvif session.
+    ///
+    /// # Arguments
+    ///
+    /// * `profile_token`: 媒体配置令牌
+    ///
+    /// returns: Result<String, DiscoveryError> — RTSP 流地址
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub async fn get_stream_uri(&self, profile_token: &str) -> Result<String, DiscoveryError> {
         let stream_uri = self
             .session()
@@ -162,9 +199,16 @@ impl DeviceManagementClient {
         Ok(stream_uri.uri)
     }
 
-    /// `oxvif::OnvifSession` caches capabilities on first build, so
-    /// capabilities aren't a separate call. This method returns the
-    /// cached xaddr + a hint; we don't expose raw capabilities here.
+    /// 获取设备能力信息. oxvif session 按需初始化; 由于 oxvif 不直接暴露
+    /// 原始能力, 这里返回已连接的 xaddr 作为提示.
+    ///
+    /// returns: Result<String, DiscoveryError> — 设备 ONVIF base URL
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub async fn get_capabilities(&self) -> Result<String, DiscoveryError> {
         // oxvif doesn't expose capabilities directly; the closest equivalent
         // is the xaddr we connected to.
