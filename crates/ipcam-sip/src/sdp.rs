@@ -165,6 +165,9 @@ pub struct PeerMedia {
     pub addr: SocketAddr,
     pub payload_type: u8,
     pub codec: String,
+    /// answer 选中编码的 a=fmtp 参数 (不含 pt 前缀). H264 的
+    /// profile-level-id 在这, 发送端可用它推对端解码上限
+    pub fmtp: Option<String>,
 }
 
 /// offer 里声明的一个候选编码 (pt + 编码名 + 时钟 + 参数 + fmtp).
@@ -432,7 +435,46 @@ fn peer_from_media(
         addr: SocketAddr::new(media_ip(session_conn, media)?, media.media.port),
         payload_type: first.payload_type,
         codec: first.codec,
+        fmtp: first.fmtp,
     })
+}
+
+/// 从 H264 fmtp 的 profile-level-id 推对端解码上限对应的限宽 (像素).
+/// level 字节 → 该 level 覆盖的典型分辨率宽度 (H.264 level 表的最大
+/// 宏块数按常见档位折算: L1.x→QCIF, L2.x→CIF/D1, L3.1→720p, L4.x→1080p).
+/// 没写 fmtp / 解析失败 / level ≥ 5.3 返回 None (不知道就不收紧).
+///
+/// 只用于向下收紧本端配置的发送宽度 (`clamp_max_width`), 永远不要
+/// 用它放大 — 对端声明的能力可能虚标, 放宽的风险由配置项兜底
+pub fn h264_recv_max_width(fmtp: Option<&str>) -> Option<u32> {
+    let pli = fmtp?
+        .split(';')
+        .find_map(|p| p.trim().strip_prefix("profile-level-id="))?;
+    if pli.len() != 6 {
+        return None;
+    }
+    let level = u8::from_str_radix(&pli[4..6], 16).ok()?;
+    Some(match level {
+        10 | 11 => 176,      // QCIF
+        12 | 13 | 20 => 352, // CIF
+        21 => 704,           // 2CIF
+        22 | 30 => 720,      // D1
+        31 | 32 => 1280,     // 720p
+        40..=42 => 1920,     // 1080p
+        50..=52 => 3840,     // 4K
+        _ => return None,    // 更高/未知 level: 不收窄
+    })
+}
+
+/// 发送限宽: 配置上限与对端声明能力取小, 只收紧不放宽.
+/// configured = None 表示配置不限; 对端没声明能力就用配置值
+pub fn clamp_max_width(configured: Option<u32>, peer_fmtp: Option<&str>) -> Option<u32> {
+    match (configured, h264_recv_max_width(peer_fmtp)) {
+        (Some(c), Some(p)) => Some(c.min(p)),
+        (Some(c), None) => Some(c),
+        (None, Some(p)) => Some(p),
+        (None, None) => None,
+    }
 }
 
 /// RFC 3551 静态 payload type 表: (编码名, 时钟 Hz). PCMA/PCMU 走
@@ -544,6 +586,11 @@ mod tests {
         assert_eq!(video.addr.port(), 30002);
         assert_eq!(video.payload_type, 96);
         assert_eq!(video.codec, "H264");
+        // answer 里选中编码的 fmtp 要带上 (推对端解码上限用)
+        assert_eq!(
+            video.fmtp.as_deref(),
+            Some("profile-level-id=42e01f;packetization-mode=1")
+        );
         assert_eq!(audio.addr.ip(), video.addr.ip());
     }
 
@@ -583,8 +630,60 @@ mod tests {
                 addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 17)), 18000),
                 payload_type: 8,
                 codec: "PCMA".into(),
+                fmtp: None,
             }
         );
+    }
+
+    /// profile-level-id 的 level 字节 → 限宽档位: L3.1→720p, L2.2→D1,
+    /// L1.0→QCIF; 带其他参数/畸形/缺省都不收紧
+    #[test]
+    fn h264_recv_max_width_from_level() {
+        assert_eq!(
+            h264_recv_max_width(Some("profile-level-id=42e01f")),
+            Some(1280)
+        );
+        assert_eq!(
+            h264_recv_max_width(Some("profile-level-id=42e01f;packetization-mode=1")),
+            Some(1280)
+        );
+        assert_eq!(
+            h264_recv_max_width(Some("profile-level-id=42c016")),
+            Some(720)
+        );
+        assert_eq!(
+            h264_recv_max_width(Some("profile-level-id=42e00a")),
+            Some(176)
+        );
+        // 4K 档 + 未知/更高 level 不收窄
+        assert_eq!(
+            h264_recv_max_width(Some("profile-level-id=42e033")),
+            Some(3840)
+        );
+        assert_eq!(h264_recv_max_width(Some("profile-level-id=42e03c")), None);
+        assert_eq!(h264_recv_max_width(None), None);
+        assert_eq!(h264_recv_max_width(Some("useinbandfec=1")), None);
+        assert_eq!(h264_recv_max_width(Some("profile-level-id=zz")), None);
+    }
+
+    /// 限宽只收紧不放宽: 配置 640 + 对端 720p → 640; 配置不限 +
+    /// 对端 D1 → 720; 两边都不限 → None
+    #[test]
+    fn clamp_max_width_only_tightens() {
+        assert_eq!(
+            clamp_max_width(Some(640), Some("profile-level-id=42e01f")),
+            Some(640)
+        );
+        assert_eq!(
+            clamp_max_width(None, Some("profile-level-id=42c016")),
+            Some(720)
+        );
+        assert_eq!(
+            clamp_max_width(Some(640), Some("profile-level-id=42c016")),
+            Some(640)
+        );
+        assert_eq!(clamp_max_width(None, None), None);
+        assert_eq!(clamp_max_width(Some(640), None), Some(640));
     }
 
     #[test]

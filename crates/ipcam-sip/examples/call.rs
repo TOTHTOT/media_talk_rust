@@ -229,8 +229,12 @@ async fn call_until_hangup(
                 ipcam_gst::RtpDest {
                     addr: p.addr,
                     payload_type: p.payload_type,
-                    // 0 = 对端不限宽; 门口机按 640 保守发
-                    max_width: (max_width > 0).then_some(max_width),
+                    // 0 = 配置不限宽; 再按对端 answer fmtp 声明的解码
+                    // 上限收紧 (只收不放), 门口机按 640 保守发
+                    max_width: ipcam_sip::sdp::clamp_max_width(
+                        (max_width > 0).then_some(max_width),
+                        p.fmtp.as_deref(),
+                    ),
                 },
             )
         }),

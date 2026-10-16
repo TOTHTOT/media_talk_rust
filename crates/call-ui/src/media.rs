@@ -21,9 +21,11 @@ use tracing::{info, warn};
 
 use crate::session::types::{GuiSipConfig, RtpPorts};
 
-/// 视频发送指纹: (对端收视频地址, pt, 编码). 编码参与比对 — 从 H264
-/// 切成 H265 时发送链建不出来, 指纹变了才触发重启逻辑重新判定
-type VideoDest = (SocketAddr, u8, VideoCodec);
+/// 视频发送指纹: (对端收视频地址, pt, 编码, 限宽). 编码参与比对 — 从 H264
+/// 切成 H265 时发送链建不出来, 指纹变了才触发重启逻辑重新判定.
+/// 限宽 = min(本端配置, 对端 fmtp 声明的解码上限), 只收紧不放宽;
+/// None = 两边都不限
+type VideoDest = (SocketAddr, u8, VideoCodec, Option<u32>);
 
 /// 一路通话的媒体句柄: 接收器 + 发送器 + 协商指纹. re-INVITE 时按指纹
 /// 比对 (recv 指纹 = 编码对; send 指纹 = 地址/pt/编码), 变了才重启
@@ -70,7 +72,6 @@ impl MediaHandles {
         let sender = start_sender(
             &cfg.audio_src,
             &cfg.video_src,
-            cfg.max_width,
             send_audio_fingerprint,
             send_video_fingerprint,
         );
@@ -105,7 +106,7 @@ impl MediaHandles {
             self.recv_fingerprint = new_recv;
         }
         let new_audio = audio_send_params(offer);
-        let new_video = video_send_params(offer);
+        let new_video = video_send_params(offer, self.max_width);
         if new_audio != self.send_audio_fingerprint || new_video != self.send_video_fingerprint {
             info!(
                 audio_changed = new_audio != self.send_audio_fingerprint,
@@ -115,13 +116,7 @@ impl MediaHandles {
             if let Some(s) = self.sender.take() {
                 s.stop();
             }
-            self.sender = start_sender(
-                &self.audio_src,
-                &self.video_src,
-                self.max_width,
-                new_audio,
-                new_video,
-            );
+            self.sender = start_sender(&self.audio_src, &self.video_src, new_audio, new_video);
             self.send_audio_fingerprint = new_audio;
             self.send_video_fingerprint = new_video;
         }
@@ -164,12 +159,24 @@ fn peer_audio_send_params(peer: &PeerMedia) -> Option<AudioDest> {
 }
 
 /// 从 answer 的已选中视频 codec 提取发送参数.
-/// answer 只选了 codec, 地址/pt 取自 PeerMedia.
-fn peer_video_send_params(peer: &ipcam_sip::sdp::PeerMedia) -> Option<VideoDest> {
+/// answer 只选了 codec, 地址/pt 取自 PeerMedia; 限宽取
+/// min(cfg_max_width, 对端 fmtp 声明的解码上限) — 只收紧不放宽
+fn peer_video_send_params(
+    peer: &ipcam_sip::sdp::PeerMedia,
+    cfg_max_width: u32,
+) -> Option<VideoDest> {
     let codec = VideoCodec::from_name(&peer.codec);
     match codec {
         VideoCodec::Unknown => None,
-        _ => Some((peer.addr, peer.payload_type, codec)),
+        _ => Some((
+            peer.addr,
+            peer.payload_type,
+            codec,
+            ipcam_sip::sdp::clamp_max_width(
+                (cfg_max_width > 0).then_some(cfg_max_width),
+                peer.fmtp.as_deref(),
+            ),
+        )),
     }
 }
 
@@ -225,12 +232,22 @@ fn audio_send_params(offer: &OfferMedias) -> Option<AudioDest> {
     })
 }
 
-/// 从 offer 提取视频回传参数 (对端收视频地址, pt, 编码), 同时充当
-/// 发送指纹. 编码取 pick_video 选中的那个 (H264/H265)
-fn video_send_params(offer: &OfferMedias) -> Option<VideoDest> {
+/// 从 offer 提取视频回传参数 (对端收视频地址, pt, 编码, 限宽), 同时充当
+/// 发送指纹. 编码取 pick_video 选中的那个 (H264/H265); 限宽取
+/// min(cfg_max_width, 对端选中编码 fmtp 声明的解码上限) — 只收紧不放宽
+fn video_send_params(offer: &OfferMedias, cfg_max_width: u32) -> Option<VideoDest> {
     let v = offer.video.as_ref()?;
-    negotiate::pick_video(offer, video_pred)
-        .map(|(pt, codec, _)| (SocketAddr::new(v.addr, v.port), pt, codec))
+    negotiate::pick_video(offer, video_pred).map(|(pt, codec, fmtp)| {
+        (
+            SocketAddr::new(v.addr, v.port),
+            pt,
+            codec,
+            ipcam_sip::sdp::clamp_max_width(
+                (cfg_max_width > 0).then_some(cfg_max_width),
+                fmtp.as_deref(),
+            ),
+        )
+    })
 }
 
 /// 起 RTP 接收器: 音频解码后进 autoaudiosink (扬声器), 视频解码后经
@@ -281,25 +298,23 @@ fn start_receiver(
 ///
 /// * `audio_src`: 音频回传源 (麦克风/文件)
 /// * `video_src`: 视频回传源 (相机/文件/RTSP)
-/// * `max_width`: 视频限宽 (对端解码能力); 0 = 不限
 /// * `audio`: 音频发送目标 (地址/pt/编码), None 表示不发音频
-/// * `video`: 视频发送目标 (地址/pt/编码), None 表示不发视频
+/// * `video`: 视频发送目标 (地址/pt/编码/限宽), None 表示不发视频
 ///
 /// returns: Option<RtpSender> — 运行中的发送器句柄, stop 即拆管线
 fn start_sender(
     audio_src: &TrackSource,
     video_src: &TrackSource,
-    max_width: u32,
     audio: Option<AudioDest>,
     video: Option<VideoDest>,
 ) -> Option<RtpSender> {
-    let video = video.and_then(|(addr, payload_type, codec)| match codec {
+    let video = video.and_then(|(addr, payload_type, codec, max_width)| match codec {
         VideoCodec::H264 => Some((
             video_src.clone(),
             RtpDest {
                 addr,
                 payload_type,
-                max_width: (max_width > 0).then_some(max_width),
+                max_width,
             },
         )),
         other => {
@@ -350,7 +365,7 @@ pub fn start_incoming(
         tap.clone(),
         recv_fingerprint,
         audio_send_params(offer),
-        video_send_params(offer),
+        video_send_params(offer, cfg.max_width),
     ))
 }
 
@@ -397,7 +412,10 @@ pub fn start_outgoing(
             }
             None
         });
-    let send_video = peers.video.as_ref().and_then(peer_video_send_params);
+    let send_video = peers
+        .video
+        .as_ref()
+        .and_then(|p| peer_video_send_params(p, cfg.max_width));
     Some(MediaHandles::new(
         *rtp_ports,
         cfg,
@@ -490,23 +508,49 @@ mod tests {
         );
     }
 
-    /// 视频发送指纹: 地址/pt/编码三要素齐全; 无视频路时 None
+    /// 视频发送指纹: 地址/pt/编码三要素 + 限宽 (min(配置, 对端 fmtp 声明));
+    /// 无视频路时 None
     #[test]
     fn video_send_params_from_offer() {
         let offer = OfferMedias {
             audio: None,
             video: Some(offer_media(&[(97, "H264")])),
         };
+        // 对端没写 fmtp → 限宽用配置值
         assert_eq!(
-            video_send_params(&offer),
+            video_send_params(&offer, 640),
             Some((
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 5000),
                 97,
-                VideoCodec::H264
+                VideoCodec::H264,
+                Some(640)
             ))
         );
 
         let offer = OfferMedias::default();
-        assert_eq!(video_send_params(&offer), None);
+        assert_eq!(video_send_params(&offer, 640), None);
+    }
+
+    /// 对端 fmtp 声明低 level (L2.2 → D1 720 宽) 时, 限宽收紧到对端能力;
+    /// 对端声明高 level (L3.1 → 720p) 时保持配置值, 不放宽
+    #[test]
+    fn video_send_params_clamps_to_peer_capability() {
+        let mut media = offer_media(&[(96, "H264")]);
+        media.codecs[0].fmtp = Some("profile-level-id=42c016".into());
+        let offer = OfferMedias {
+            audio: None,
+            video: Some(media),
+        };
+        let (_, _, _, max_width) = video_send_params(&offer, 1280).expect("video picked");
+        assert_eq!(max_width, Some(720), "peer D1 capability must tighten");
+
+        let mut media = offer_media(&[(96, "H264")]);
+        media.codecs[0].fmtp = Some("profile-level-id=42e01f".into());
+        let offer = OfferMedias {
+            audio: None,
+            video: Some(media),
+        };
+        let (_, _, _, max_width) = video_send_params(&offer, 640).expect("video picked");
+        assert_eq!(max_width, Some(640), "peer 720p must not widen config");
     }
 }
