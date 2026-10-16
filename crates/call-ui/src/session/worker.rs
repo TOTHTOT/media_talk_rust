@@ -6,13 +6,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use ipcam_gst::VideoFrameSink;
-use ipcam_sip::{SipClient, SipClientConfig, run_dialog_state_loop};
+use ipcam_sip::{CallRoutes, SipClient, SipClientConfig, forward_update, run_dialog_state_loop};
 use rsipstack::dialog::authenticate::Credential;
 use rsipstack::dialog::dialog::DialogStateReceiver;
 use rsipstack::dialog::invite_dialog::InviteDialog;
 use rsipstack::sip as rsip;
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -21,7 +21,7 @@ use crate::bridge::{UiHandle, WorkerCmd};
 
 use super::incoming;
 use super::outgoing;
-use super::types::{CallBase, CallCtlTx, CallRoutes, DialPrep, GuiSipConfig, caller_from_request};
+use super::types::{CallBase, CallCtlTx, DialPrep, GuiSipConfig, caller_from_request};
 
 /// 启动 SIP worker 线程: 独立线程跑自己的 tokio runtime, 注册常驻,
 /// UI 命令逐条处理, 事件经 UiHandle 回投主线程.
@@ -145,7 +145,7 @@ async fn run(
 ) -> Result<()> {
     let (client, credential, state_sender, state_receiver, local) = setup(&cfg, &ui).await?;
 
-    let routes: CallRoutes = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+    let routes: CallRoutes = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let call_ctl_tx: CallCtlTx = Arc::new(parking_lot::Mutex::new(None));
     let cfg = Arc::new(cfg);
 
@@ -290,7 +290,7 @@ pub fn make_incoming_handler(
             let (ctl_tx, ctl_rx) = mpsc::channel(4);
             *guard = Some(ctl_tx);
             let (update_tx, update_rx) = mpsc::channel(4);
-            routes.lock().insert(dialog.id(), update_tx);
+            routes.lock().unwrap().insert(dialog.id(), update_tx);
 
             let call_ctl_tx = call_ctl_tx.clone();
             let routes = routes.clone();
@@ -432,44 +432,4 @@ fn prepare_dial(
     *guard = Some(ctl_tx);
     drop(guard);
     Some((callee, ctl_rx))
-}
-
-/// re-INVITE/UPDATE 转发 (原样搬自 answer.rs): 按 dialog id 找通话任务
-/// 要 answer SDP; 找不到或 2s 没应答就回不带 SDP 的 200.
-///
-/// # Arguments
-///
-/// * `routes`: 进行中通话路由表
-/// * `id`: dialog id
-/// * `req`: 主叫发来的 re-INVITE/UPDATE 请求
-///
-/// returns: Option<Vec<u8>> — answer SDP body, 超时或任务消失返回 None
-///
-/// # Examples
-///
-/// ```
-///
-/// ```
-pub async fn forward_update(
-    routes: CallRoutes,
-    id: rsipstack::dialog::DialogId,
-    req: rsip::Request,
-) -> Option<Vec<u8>> {
-    let tx = routes.lock().get(&id).cloned();
-    let Some(tx) = tx else {
-        warn!(dialog = %id, "re-INVITE for unknown dialog, reply 200 without SDP");
-        return None;
-    };
-    let (reply_tx, reply_rx) = oneshot::channel();
-    if tx.send((req, reply_tx)).await.is_err() {
-        warn!(dialog = %id, "call task gone, reply 200 without SDP");
-        return None;
-    }
-    match tokio::time::timeout(Duration::from_secs(2), reply_rx).await {
-        Ok(Ok(body)) => body,
-        _ => {
-            warn!(dialog = %id, "call task did not answer re-INVITE in time");
-            None
-        }
-    }
 }

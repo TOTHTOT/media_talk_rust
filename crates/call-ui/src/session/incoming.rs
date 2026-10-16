@@ -45,7 +45,7 @@ pub(super) async fn handle_incoming(
     routes: CallRoutes,
 ) {
     let res = incoming_inner(&dialog, &mut ctx).await;
-    routes.lock().remove(&dialog.id());
+    routes.lock().unwrap().remove(&dialog.id());
     finish_call(&ctx.ui, &call_ctl_tx, "incoming call", res);
 }
 

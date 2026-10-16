@@ -1,15 +1,14 @@
 //! 共享类型与常量: session 模块内跨 worker/incoming/outgoing 共用.
 
-use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
 use ipcam_gst::{TrackSource, VideoFrameSink};
+pub use ipcam_sip::{CallRoutes, UpdateMsg};
 use parking_lot::Mutex;
-use rsipstack::dialog::DialogId;
 use rsipstack::sip as rsip;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 use crate::bridge::UiHandle;
 pub use crate::bridge::WorkerCmd;
@@ -77,9 +76,6 @@ impl Default for GuiSipConfig {
 
 /// 当前通话的控制通道, Some 即占线
 pub type CallCtlTx = Arc<Mutex<Option<mpsc::Sender<WorkerCmd>>>>;
-pub type UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>);
-/// 进行中的通话路由表: dialog id -> 通话任务的 re-INVITE 通道
-pub type CallRoutes = Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>;
 /// prepare_dial 全过返回的通话资源: (被叫 URI, 控制通道接收端)
 pub type DialPrep = (rsip::Uri, mpsc::Receiver<WorkerCmd>);
 

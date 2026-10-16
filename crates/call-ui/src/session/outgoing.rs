@@ -78,7 +78,7 @@ struct RouteGuard {
 
 impl Drop for RouteGuard {
     fn drop(&mut self) {
-        self.routes.lock().remove(&self.id);
+        self.routes.lock().unwrap().remove(&self.id);
     }
 }
 
@@ -131,7 +131,10 @@ async fn outgoing_inner(
     // re-INVITE 才能经 forward_update 转进下面的通话 loop
     let _route = {
         let id = dialog.id();
-        ctx.routes.lock().insert(id.clone(), ctx.update_tx.clone());
+        ctx.routes
+            .lock()
+            .unwrap()
+            .insert(id.clone(), ctx.update_tx.clone());
         RouteGuard {
             routes: ctx.routes.clone(),
             id,
