@@ -19,7 +19,7 @@ use ipcam_sip::negotiate;
 use ipcam_sip::sdp::{OfferMedias, PeerMedias};
 use tracing::{info, warn};
 
-use crate::session::types::GuiSipConfig;
+use crate::session::types::{GuiSipConfig, RtpPorts};
 
 /// 视频发送指纹: (对端收视频地址, pt, 编码). 编码参与比对 — 从 H264
 /// 切成 H265 时发送链建不出来, 指纹变了才触发重启逻辑重新判定
@@ -40,7 +40,7 @@ pub struct MediaHandles {
     send_video_fingerprint: Option<VideoDest>,
     /// 本机接收端口 (音频, 视频): 被叫是固定常量, 主叫是 offer 里
     /// 声明的端口, 接收器重启 (re-INVITE 改编码) 时用
-    recv_ports: (u16, u16),
+    recv_ports: RtpPorts,
     /// 本机回传源配置, renegotiate 重启发送器时用
     audio_src: TrackSource,
     video_src: TrackSource,
@@ -53,7 +53,7 @@ impl MediaHandles {
     /// 按指纹起接收器和发送器. 单路不可用时该路 None (只收不发 /
     /// 只发不收), 不抛错.
     fn new(
-        recv_ports: (u16, u16),
+        recv_ports: RtpPorts,
         cfg: &GuiSipConfig,
         tap: VideoFrameSink,
         recv_fingerprint: (Option<AudioCodec>, Option<VideoCodec>),
@@ -189,7 +189,7 @@ fn video_send_params(offer: &OfferMedias) -> Option<VideoDest> {
 /// returns: Option<RtpReceiver> — 运行中的接收器句柄, stop 即拆管线
 fn start_receiver(
     tap: VideoFrameSink,
-    ports: (u16, u16),
+    ports: RtpPorts,
     audio: Option<AudioCodec>,
     video: Option<VideoCodec>,
 ) -> Option<RtpReceiver> {
@@ -202,8 +202,8 @@ fn start_receiver(
         path: None,
         playback: true,
         video_tap: Some(tap),
-        video: video.map(|c| (ports.1, c)),
-        audio: audio.map(|c| (ports.0, c)),
+        video: video.map(|c| (ports.video, c)),
+        audio: audio.map(|c| (ports.audio, c)),
     }) {
         Ok(r) => Some(r),
         Err(e) => {
@@ -285,7 +285,7 @@ pub fn start_incoming(
         negotiate::pick_video(offer, video_pred).map(|(_, c, _)| c),
     );
     Some(MediaHandles::new(
-        (cfg.rtp_ports.audio, cfg.rtp_ports.video),
+        cfg.rtp_ports,
         cfg,
         tap.clone(),
         recv_fingerprint,
@@ -344,10 +344,7 @@ pub fn start_outgoing(
         .as_ref()
         .map(|p| (p.addr, p.payload_type, VideoCodec::from_name(&p.codec)));
     Some(MediaHandles::new(
-        (
-            rtp_sockets.audio.local_addr().unwrap().port(),
-            rtp_sockets.video.local_addr().unwrap().port(),
-        ),
+        RtpPorts::from(rtp_sockets),
         cfg,
         tap.clone(),
         (recv_audio, recv_video),

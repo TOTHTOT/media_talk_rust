@@ -31,6 +31,15 @@ impl RtpPorts {
     };
 }
 
+impl From<&RtpSocketPair> for RtpPorts {
+    fn from(s: &RtpSocketPair) -> Self {
+        Self {
+            audio: s.audio.local_addr().unwrap().port(),
+            video: s.video.local_addr().unwrap().port(),
+        }
+    }
+}
+
 /// 来电振铃等待用户接听的最长时间, 超时自动拒接, 避免对端挂死在 ringing
 pub const INCOMING_TIMEOUT: Duration = Duration::from_secs(30);
 
