@@ -205,7 +205,7 @@ async fn run(
                     info!("UI command channel closed, worker exiting");
                     break;
                 };
-                handle_cmd(cmd, &client, &credential, &state_sender, &call_ctl_tx, &ui, &tap, &cfg, local);
+                handle_cmd(cmd, &client, &credential, &state_sender, &call_ctl_tx, &routes, &ui, &tap, &cfg, local);
             }
         }
     }
@@ -319,6 +319,7 @@ pub fn make_incoming_handler(
 /// * `credential`: Digest 鉴权凭据
 /// * `state_sender`: Dialog 状态发送通道
 /// * `call_ctl_tx`: 当前通话控制槽
+/// * `routes`: 进行中通话路由表 (Dial 时把通道交给主叫任务, 接通后登记)
 /// * `ui`: 事件回投句柄
 /// * `tap`: 视频帧回调
 /// * `cfg`: SIP 配置 (服务器/账号/媒体源)
@@ -340,6 +341,7 @@ pub fn handle_cmd(
     credential: &Credential,
     state_sender: &rsipstack::dialog::dialog::DialogStateSender,
     call_ctl_tx: &CallCtlTx,
+    routes: &CallRoutes,
     ui: &UiHandle,
     tap: &VideoFrameSink,
     cfg: &Arc<GuiSipConfig>,
@@ -351,6 +353,7 @@ pub fn handle_cmd(
             let Some((callee, ctl_rx)) = prepare_dial(client, &number, call_ctl_tx, ui) else {
                 return;
             };
+            let (update_tx, update_rx) = mpsc::channel(4);
             tokio::spawn(crate::session::outgoing::handle_outgoing(
                 client.dialog_layer.clone(),
                 state_sender.clone(),
@@ -365,6 +368,9 @@ pub fn handle_cmd(
                     ui: ui.clone(),
                     tap: tap.clone(),
                     ctl_rx,
+                    routes: routes.clone(),
+                    update_tx,
+                    update_rx,
                 },
             ));
         }

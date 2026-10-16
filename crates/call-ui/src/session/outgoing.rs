@@ -1,6 +1,6 @@
 //! 主叫一路通话: INVITE -> non-200 means failure -> 200 parse answer and start
-//! media -> call loop (peer BYE / local hangup). Signalling logic adapted from
-//! ipcam-sip examples/call.rs.
+//! media -> call loop (peer BYE / local hangup / re-INVITE renegotiate).
+//! Signalling logic adapted from ipcam-sip examples/call.rs.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use ipcam_gst::VideoFrameSink;
 use ipcam_sip::sdp::{PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all};
+use rsipstack::dialog::DialogId;
 use rsipstack::dialog::authenticate::Credential;
 use rsipstack::dialog::dialog::DialogStateSender;
 use rsipstack::dialog::dialog_layer::DialogLayer;
@@ -16,15 +17,13 @@ use rsipstack::sip as rsip;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::types::{CallCtlTx, GuiSipConfig, WorkerCmd};
+use super::types::{CallCtlTx, CallRoutes, GuiSipConfig, UpdateMsg, WorkerCmd};
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
 use crate::media;
 
 /// 主叫一路通话: INVITE -> non-200 means failure -> 200 parse answer and start
-/// media -> call loop (peer BYE / local hangup). re-INVITE does not go through
-/// the route table (caller does not register), forward_update falls back to 200
-/// without SDP -- local media unchanged, same as call.rs.
+/// media -> call loop (peer BYE / local hangup / re-INVITE renegotiate).
 ///
 /// # Arguments
 ///
@@ -71,6 +70,26 @@ pub(crate) struct OutgoingCtx {
     pub(super) ui: UiHandle,
     pub(super) tap: VideoFrameSink,
     pub(super) ctl_rx: mpsc::Receiver<WorkerCmd>,
+    /// re-INVITE 路由表: INVITE 成功后按 dialog id 登记, 对端 (如
+    /// Linphone 通话中开视频) 发来的 re-INVITE 才能转进通话 loop
+    pub(super) routes: CallRoutes,
+    /// re-INVITE 通道发送端 (登记进 routes), forward_update 经它找本任务
+    pub(super) update_tx: mpsc::Sender<UpdateMsg>,
+    /// re-INVITE 通道接收端, 通话 loop 里消费
+    pub(super) update_rx: mpsc::Receiver<UpdateMsg>,
+}
+
+/// re-INVITE 路由登记 guard: drop 时自动从路由表摘除, 保证任意退出路径
+/// (被拒/失败/BYE/本地挂断) 都不留死路由
+struct RouteGuard {
+    routes: CallRoutes,
+    id: DialogId,
+}
+
+impl Drop for RouteGuard {
+    fn drop(&mut self) {
+        self.routes.lock().remove(&self.id);
+    }
 }
 
 /// 主叫通话内部流程: 构造 SDP offer -> INVITE -> 解析 answer -> 起媒体 -> 通话 loop.
@@ -118,6 +137,17 @@ async fn outgoing_inner(
         return Err(anyhow!("call rejected: {}", resp.status_code));
     }
 
+    // 登记 re-INVITE 路由: 对端 (如 Linphone 接通后开视频) 发来的
+    // re-INVITE 才能经 forward_update 转进下面的通话 loop
+    let _route = {
+        let id = dialog.id();
+        ctx.routes.lock().insert(id.clone(), ctx.update_tx.clone());
+        RouteGuard {
+            routes: ctx.routes.clone(),
+            id,
+        }
+    };
+
     if matches!(ctx.ctl_rx.try_recv(), Ok(WorkerCmd::Hangup)) {
         dialog.bye_with_headers(None).await?;
         return Ok("local cancelled".into());
@@ -128,7 +158,7 @@ async fn outgoing_inner(
         peer: ctx.number.clone(),
     });
 
-    let media = media::start_outgoing(&peers, &ctx.cfg.rtp_ports, &ctx.cfg, &ctx.tap);
+    let mut media = media::start_outgoing(&peers, &ctx.cfg.rtp_ports, &ctx.cfg, &ctx.tap);
     info!("call established");
 
     let reason = loop {
@@ -144,6 +174,15 @@ async fn outgoing_inner(
                     }
                     _ => {}
                 }
+            }
+            msg = ctx.update_rx.recv() => {
+                let Some((req, reply)) = msg else { break "route channel closed".to_string() };
+                let _ = reply.send(media::reinvite_answer(
+                    req.body(),
+                    ctx.local,
+                    ctx.cfg.rtp_ports,
+                    &mut media,
+                ));
             }
         }
     };

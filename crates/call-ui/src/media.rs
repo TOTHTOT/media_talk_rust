@@ -8,7 +8,7 @@
 //! 对端协商成其他编码时该路只收不发. 单路失败只 warn 不抛错,
 //! 通话不因一路媒体挂掉 (同 answer.rs 原则).
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ipcam_core::{AudioCodec, VideoCodec};
 use ipcam_gst::{
@@ -16,7 +16,7 @@ use ipcam_gst::{
     VideoFrameSink, start_rtp_receiver, start_rtp_sender,
 };
 use ipcam_sip::negotiate;
-use ipcam_sip::sdp::{OfferMedias, PeerMedias};
+use ipcam_sip::sdp::{OfferMedias, PeerMedias, parse_offer_all};
 use tracing::{info, warn};
 
 use crate::session::types::{GuiSipConfig, RtpPorts};
@@ -151,6 +151,46 @@ pub(crate) fn video_pred(name: &str) -> Option<VideoCodec> {
         vc @ (VideoCodec::H264 | VideoCodec::H265) => Some(vc),
         _ => None,
     }
+}
+
+/// 处理 re-INVITE 新 offer: 按当前配置重新协商 answer, 并驱动媒体层按
+/// 指纹比对重启管线; 主叫/被叫通话 loop 共用. offer 解析失败返回 None
+/// (调用方回不带 SDP 的 200, 不动本地媒体).
+///
+/// # Arguments
+///
+/// * `offer_body`: re-INVITE 请求体 (SDP offer)
+/// * `local`: 本机 IPv4 (answer 的 c= 行)
+/// * `rtp_ports`: 本机 RTP 接收端口 (音频, 视频), 必须与初始协商一致
+/// * `media`: 媒体句柄, 协商结果变了由它重启对应管线
+///
+/// returns: Option<Vec<u8>> — answer SDP body, 解析失败返回 None
+pub fn reinvite_answer(
+    offer_body: &[u8],
+    local: Ipv4Addr,
+    rtp_ports: RtpPorts,
+    media: &mut Option<MediaHandles>,
+) -> Option<Vec<u8>> {
+    let new_offer = match parse_offer_all(offer_body) {
+        Ok(o) => o,
+        Err(e) => {
+            warn!(error = %e, "failed to parse re-INVITE offer, reply 200 without SDP");
+            return None;
+        }
+    };
+    let (_, _, answer) = negotiate::build_answer(
+        &new_offer,
+        IpAddr::V4(local),
+        rtp_ports.audio,
+        rtp_ports.video,
+        audio_pred,
+        video_pred,
+    );
+    info!("re-INVITE accepted, answer SDP:\n{answer}");
+    if let Some(m) = media.as_mut() {
+        m.renegotiate(&new_offer);
+    }
+    Some(answer.into_bytes())
 }
 
 /// 从 offer 提取音频回传参数 (对端收音频地址, pt, 编码), 同时充当

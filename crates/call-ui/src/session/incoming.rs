@@ -275,28 +275,7 @@ async fn incoming_call_loop(
             }
             msg = update_rx.recv() => {
                 let Some((req, reply)) = msg else { break "route channel closed".to_string() };
-                let body = match parse_offer_all(req.body()) {
-                    Ok(new_offer) => {
-                        let (_, _, answer) = negotiate::build_answer(
-                            &new_offer,
-                            IpAddr::V4(local),
-                            rtp_ports.audio,
-                            rtp_ports.video,
-                            media::audio_pred,
-                            media::video_pred,
-                        );
-                        info!("re-INVITE accepted, answer SDP:\n{answer}");
-                        if let Some(m) = media.as_mut() {
-                            m.renegotiate(&new_offer);
-                        }
-                        Some(answer.into_bytes())
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "failed to parse re-INVITE offer, reply 200 without SDP");
-                        None
-                    }
-                };
-                let _ = reply.send(body);
+                let _ = reply.send(media::reinvite_answer(req.body(), local, rtp_ports, media));
             }
         }
     };
