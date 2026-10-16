@@ -3349,6 +3349,7 @@ dependencies = [
  "ipcam-core",
  "ipcam-gst",
  "local-ip-address",
+ "parking_lot",
  "rsipstack",
  "sdp-rs",
  "tokio",

@@ -217,7 +217,8 @@ media_talk_rust serve --rtsp-url "rtsp://..." --audio-out hw:0,0
    dev 主机上是 stub,无真实 FFI 调用。
 6. **H.265** — fMP4 复用器只写 H.264 路径;HEVC 在 v2 加入。
 7. **WebRTC / metrics / `/api/sessions` 鉴权** — 列入 8.x stretch,未实现。
-
+8. 电话拨打一段时间会自动挂断
+9. 接收视频电话正常，拨打不支持对端和本机都没画面和声音
 ## License
 
 仓库内尚未声明 license。所有权保留,在补 `LICENSE` 文件前请勿重新分发。
