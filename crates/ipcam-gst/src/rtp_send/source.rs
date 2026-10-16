@@ -121,7 +121,7 @@ pub(super) fn plug_shared_uri_source(
 
     dec.connect_pad_added(move |_dec, pad| {
         // 1. Try immediate current_caps first
-        match try_link_from_caps(&pad, pad.current_caps().as_ref(), &video_cb, &audio_cb) {
+        match try_link_from_caps(pad, pad.current_caps().as_ref(), &video_cb, &audio_cb) {
             Ok(true) => return, // linked successfully, done
             Ok(false) => {
                 warn!("not our type, fall through to notify")
@@ -167,7 +167,7 @@ fn try_link_from_caps(
     audio_cb: &MediaClusterType,
 ) -> Result<bool, GstStreamError> {
     let Some(caps) = caps else { return Ok(false) };
-    dispatch_pad_core(pad, &caps, video_cb, audio_cb)
+    dispatch_pad_core(pad, caps, video_cb, audio_cb)
 }
 
 /// 共享分派核心: 根据 caps 结构名走 audio 或 video 回调.
@@ -177,7 +177,9 @@ fn dispatch_pad_core(
     video_cb: &MediaClusterType,
     audio_cb: &MediaClusterType,
 ) -> Result<bool, GstStreamError> {
-    let Some(s) = caps.structure(0) else { return Ok(false) };
+    let Some(s) = caps.structure(0) else {
+        return Ok(false);
+    };
     match s.name().as_str() {
         "video/x-raw" => {
             if let Some(ref cb) = *video_cb {
