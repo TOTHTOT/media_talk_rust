@@ -86,23 +86,28 @@ sequenceDiagram
 
 ### 3.3 CallCtlTx / call_answer_ctl_rx（通话控制通道）
 
-```
-worker handle_cmd
-    │
-    ├─ prepare_dial() 创建 mpsc::channel(4) → (call_ctl_tx, call_answer_ctl_rx)
-    │
-    ├─ call_ctl_tx 存入 CallCtlTx 槽位 (Arc<Mutex<Option<Sender>>>)
-    │     ↓
-    │   UI 发 Hangup → handle_cmd → call_ctl_tx.lock() → try_send(Hangup)
-    │
-    └─ call_answer_ctl_rx 传给 OutgoingCtx / CallBase
-          ↓
-        outgoing_inner / wait_user_decision / call_loop 用它监听 Hangup
+```mermaid
+sequenceDiagram
+    participant UI
+    participant handle_cmd
+    participant CTX[CallCtlTx slot]
+    participant call_loop
+
+    Note over UI,call_loop: 拨号时
+    UI->>+handle_cmd: cmd_tx.send(Dial)
+    handle_cmd->>CTX: slot = Some(call_ctl_tx)
+    handle_cmd->>call_loop: spawn(call_answer_ctl_rx)
+
+    Note over UI,call_loop: 挂断时
+    UI->>+handle_cmd: cmd_tx.send(Hangup)
+    handle_cmd->>CTX: slot.get()
+    CTX-->>call_loop: call_ctl_tx.send(Hangup)
+    call_loop->>call_loop: dialog.bye_with_headers()
 ```
 
 **类型定义** (`types.rs`):
 ```rust
-// 控制通道发送端存入槽位 (Arc<Mutex<Option<Sender>>>)
+// 控制通道发送端存入槽位
 pub type CallCtlTx = Arc<Mutex<Option<mpsc::Sender<WorkerCmd>>>>;
 
 // 控制通道接收端传给通话任务
@@ -116,16 +121,26 @@ pub call_answer_ctl_rx: mpsc::Receiver<WorkerCmd>
 
 ### 3.4 CallRoutes / UpdateMsg（re-INVITE 路由通道）
 
-```
-forward_update (on_update 闭包)
-    │
-    ├─ routes: Arc<Mutex<HashMap<DialogId, mpsc::Sender<UpdateMsg>>>>
-    │     ↓
-    │   key = DialogId, value = update_tx (通话任务持有)
-    │
-    └─ UpdateMsg = (rsip::Request, oneshot::Sender<Option<Vec<u8>>>)
-          ↓
-        通话任务从 update_rx 收到后处理 re-INVITE
+```mermaid
+sequenceDiagram
+    participant RSL as run_dialog_state_loop
+    participant FU as forward_update
+    participant RT[CallRoutes]
+    participant CL as call_loop
+
+    Note over RSL,CL: 来电/拨号成功时
+    CL->>+RT: routes.insert(dialog_id, update_tx)
+
+    Note over RSL,CL: re-INVITE 到来时
+    RSL->>+FU: DialogState::Updated(id, req, handle)
+    FU->>+RT: routes.get(id)
+    RT-->>FU: update_tx
+    FU->>CL: update_tx.send((req, reply_tx))
+
+    Note over RSL,CL: 通话任务处理
+    CL->>CL: parse_offer / renegotiate
+    CL-->>FU: reply_tx.send(answer SDP)
+    FU->>RSL: handle.respond(200 OK)
 ```
 
 **类型定义** (`ipcam_sip::call_route`):
