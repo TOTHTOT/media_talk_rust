@@ -1,7 +1,7 @@
+use call_ui::session::{DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, RtpPorts};
 use clap::{Parser, Subcommand};
 use std::net::{IpAddr, SocketAddr};
 use tracing_subscriber::{EnvFilter, fmt};
-
 mod ipc;
 
 #[derive(Parser, Debug)]
@@ -55,32 +55,38 @@ enum Commands {
         #[command(subcommand)]
         action: V4l2Action,
     },
-    /// 通话 GUI (Slint): 注册 + 拨号 + 接听
+    /// SIP GUI (Slint): register + dial + answer
     Gui {
-        /// SIP 服务器地址
+        /// SIP server address
         #[arg(long, default_value = "192.168.11.17:5062")]
         server: SocketAddr,
-        /// SIP 账号 (同时作为用户名)
+        /// SIP account (also used as username)
         #[arg(short, long, default_value = "9999")]
         username: String,
-        /// 密码
+        /// Password
         #[arg(short, long, default_value = "changeme")]
         password: String,
-        /// 注册有效期 (秒)
+        /// Registration expiry (seconds)
         #[arg(short, long, default_value_t = 60)]
         expires: u32,
-        /// 视频源: file:<路径> | rtsp://<uri> | camera[:<设备>]
+        /// Video source: file:<path> | rtsp://<uri> | camera[:<device>]
         #[arg(long, default_value = "camera")]
         video_src: String,
-        /// 音频源: file:<路径> | mic
+        /// Audio source: file:<path> | mic
         #[arg(long, default_value = "mic")]
         audio_src: String,
-        /// 视频限宽 (对端解码能力); 0 = 不限
+        /// Max video width (peer decode capability); 0 = unlimited
         #[arg(long, default_value_t = 640)]
         max_width: u32,
-        /// 强制绑定的本地 IPv4 网卡 (多网卡/VPN 场景)
+        /// Bind to a specific local IPv4 interface (multi-NIC / VPN scenarios)
         #[arg(long)]
         local_ip: Option<IpAddr>,
+        /// Video RTP port
+        #[arg(long, short, default_value_t = DEFAULT_VIDEO_RTP_PORT)]
+        video_rtp_port: u16,
+        /// Audio RTP port
+        #[arg(long, short, default_value_t = DEFAULT_AUDIO_RTP_PORT)]
+        audio_rtp_port: u16,
     },
 }
 
@@ -149,6 +155,8 @@ async fn main() -> anyhow::Result<()> {
             audio_src,
             max_width,
             local_ip,
+            video_rtp_port,
+            audio_rtp_port,
         } => {
             let local_ip = match local_ip {
                 Some(IpAddr::V4(v4)) => Some(v4),
@@ -164,7 +172,10 @@ async fn main() -> anyhow::Result<()> {
                 audio_src: ipcam_gst::parse_track_source(&audio_src).map_err(anyhow::Error::msg)?,
                 video_src: ipcam_gst::parse_track_source(&video_src).map_err(anyhow::Error::msg)?,
                 max_width,
-                rtp_ports: None,
+                rtp_ports: RtpPorts {
+                    audio: audio_rtp_port,
+                    video: video_rtp_port,
+                },
             };
             call_ui::run(cfg)?;
         }
