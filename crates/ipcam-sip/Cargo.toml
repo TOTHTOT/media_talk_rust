@@ -19,4 +19,5 @@ ipcam-core = { path = "../ipcam-core" }
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
+parking_lot = { workspace = true }
 ipcam-gst = { path = "../ipcam-gst" }
