@@ -669,8 +669,7 @@ fn spawn_session_loop(
             }
             let _ = pipeline.set_state(gst::State::Null);
 
-            // Reconnect attempts: Reconnecting → backoff → Connecting →
-            // rebuild → Playing; exhausted retries or stop end the loop.
+            // Reconnect loop: backoff → rebuild → Playing or retry.
             loop {
                 if cfg.reconnect.exhausted(attempt) {
                     error!(attempt, "reconnect attempts exhausted");
@@ -701,6 +700,7 @@ fn spawn_session_loop(
                         handle.note_error(e.to_string());
                     }
                 }
+                // Non-fatal: will retry or exhaust in next iteration.
             }
         }
         let _ = pipeline.set_state(gst::State::Null);

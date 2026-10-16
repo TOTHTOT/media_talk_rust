@@ -134,13 +134,7 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
         info!("some audio and video path");
         build_shared_file_track(&pipeline, &uri, audio_dest, video_dest, &stats)?;
     } else {
-        let pipeline_ref = &pipeline;
-        if let Some((source, dest)) = &cfg.video {
-            build_video_track(pipeline_ref, source, *dest, stats.clone())?;
-        }
-        if let Some((source, dest)) = &cfg.audio {
-            build_audio_track(pipeline_ref, source, *dest, stats.clone())?;
-        }
+        build_tracks(&pipeline, &cfg, &stats)?;
     }
 
     // bus 线程: 只盯 EOS/Error 打日志, 不负责拆管线.
@@ -208,6 +202,68 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
     })
 }
 
+/// 通用的单路媒体 track 构建: File/Rtsp 走 uridecodebin3, 设备走对应源元件.
+/// kind 决定用 video 还是 audio 的 pad 匹配; chain_fn 是该路的发送链回调.
+///
+/// # Arguments
+///
+/// * `pipeline`: GStreamer 管线
+/// * `source`: 媒体源 (File/Rtsp/LocalCamera/Mic)
+/// * `kind`: 音频或视频
+/// * `chain_fn`: 裸流 pad 出现时的发送链回调
+///
+/// returns: Result<(), GstStreamError>
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
+fn build_track(
+    pipeline: &gst::Pipeline,
+    source: &TrackSource,
+    kind: TrackKind,
+    chain_fn: impl Fn(gst::Pad) -> Result<(), GstStreamError> + Send + Sync + 'static,
+) -> Result<(), GstStreamError> {
+    match source {
+        TrackSource::File(path) => {
+            let uri = file_uri(path)?;
+            let pipeline = pipeline.clone();
+            plug_uri_source(&pipeline, &uri, kind, move |pad| {
+                chain_fn(pad)?;
+                Ok(())
+            })
+        }
+        TrackSource::Rtsp { uri } => {
+            let uri = uri.clone();
+            let pipeline = pipeline.clone();
+            plug_uri_source(&pipeline, &uri, kind, move |pad| {
+                chain_fn(pad)?;
+                Ok(())
+            })
+        }
+        TrackSource::LocalCamera { device } => {
+            let pipeline = pipeline.clone();
+            plug_device_source(
+                &pipeline,
+                camera_src_name(),
+                device.as_deref(),
+                move |pad| {
+                    chain_fn(pad)?;
+                    Ok(())
+                },
+            )
+        }
+        TrackSource::Mic => {
+            let pipeline = pipeline.clone();
+            plug_device_source(&pipeline, mic_src_name(), None, move |pad| {
+                chain_fn(pad)?;
+                Ok(())
+            })
+        }
+    }
+}
+
 fn build_video_track(
     pipeline: &gst::Pipeline,
     source: &TrackSource,
@@ -215,38 +271,10 @@ fn build_video_track(
     stats: Arc<crate::PktStats>,
 ) -> Result<(), GstStreamError> {
     info!(?source, "building video track");
-    match source {
-        TrackSource::File(path) => {
-            let uri = file_uri(path)?;
-            let pipeline = pipeline.clone();
-            let chain_pipeline = pipeline.clone();
-            plug_uri_source(&pipeline, &uri, TrackKind::Video, move |pad| {
-                link_video_send_chain(&chain_pipeline, &pad, dest, stats.clone())
-            })
-        }
-        TrackSource::Rtsp { uri } => {
-            let uri = uri.clone();
-            let pipeline = pipeline.clone();
-            let chain_pipeline = pipeline.clone();
-            plug_uri_source(&pipeline, &uri, TrackKind::Video, move |pad| {
-                link_video_send_chain(&chain_pipeline, &pad, dest, stats.clone())
-            })
-        }
-        TrackSource::LocalCamera { device } => {
-            let pipeline = pipeline.clone();
-            let chain_pipeline = pipeline.clone();
-            let device = device.clone();
-            plug_device_source(
-                &pipeline,
-                camera_src_name(),
-                device.as_deref(),
-                move |pad| link_video_send_chain(&chain_pipeline, &pad, dest, stats.clone()),
-            )
-        }
-        other => Err(GstStreamError::InvalidConfig(format!(
-            "unsupported source for video track: {other:?}"
-        ))),
-    }
+    let pipeline_for_chain = pipeline.clone();
+    let pipeline_for_build = pipeline.clone();
+    let chain_fn = move |pad| link_video_send_chain(&pipeline_for_chain, &pad, dest, stats.clone());
+    build_track(&pipeline_for_build, source, TrackKind::Video, chain_fn)
 }
 
 fn build_audio_track(
@@ -256,34 +284,26 @@ fn build_audio_track(
     stats: Arc<crate::PktStats>,
 ) -> Result<(), GstStreamError> {
     info!(?source, "building audio track");
-    match source {
-        TrackSource::File(path) => {
-            let uri = file_uri(path)?;
-            let pipeline = pipeline.clone();
-            let chain_pipeline = pipeline.clone();
-            plug_uri_source(&pipeline, &uri, TrackKind::Audio, move |pad| {
-                link_audio_send_chain(&chain_pipeline, &pad, dest, stats.clone())
-            })
-        }
-        TrackSource::Rtsp { uri } => {
-            let uri = uri.clone();
-            let pipeline = pipeline.clone();
-            let chain_pipeline = pipeline.clone();
-            plug_uri_source(&pipeline, &uri, TrackKind::Audio, move |pad| {
-                link_audio_send_chain(&chain_pipeline, &pad, dest, stats.clone())
-            })
-        }
-        TrackSource::Mic => {
-            let pipeline = pipeline.clone();
-            let chain_pipeline = pipeline.clone();
-            plug_device_source(&pipeline, mic_src_name(), None, move |pad| {
-                link_audio_send_chain(&chain_pipeline, &pad, dest, stats.clone())
-            })
-        }
-        other => Err(GstStreamError::InvalidConfig(format!(
-            "unsupported source for audio track: {other:?}"
-        ))),
+    let pipeline_for_chain = pipeline.clone();
+    let pipeline_for_build = pipeline.clone();
+    let chain_fn = move |pad| link_audio_send_chain(&pipeline_for_chain, &pad, dest, stats.clone());
+    build_track(&pipeline_for_build, source, TrackKind::Audio, chain_fn)
+}
+
+/// Build video and/or audio tracks based on config.
+/// Centralized track building to avoid duplication between shared-file and separate paths.
+fn build_tracks(
+    pipeline: &Arc<gst::Pipeline>,
+    cfg: &RtpSendConfig,
+    stats: &Arc<crate::PktStats>,
+) -> Result<(), GstStreamError> {
+    if let Some((source, dest)) = &cfg.video {
+        build_video_track(pipeline, source, *dest, stats.clone())?;
     }
+    if let Some((source, dest)) = &cfg.audio {
+        build_audio_track(pipeline, source, *dest, stats.clone())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

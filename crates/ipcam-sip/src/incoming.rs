@@ -38,8 +38,6 @@ impl SipClient {
         let mut incoming = self.endpoint.incoming_transactions()?;
         while let Some(mut tx) = incoming.recv().await {
             info!(key = ?tx.key, method = %tx.original.method, "received transaction");
-
-            // to_header().and_then(h.tag()) 返回 Some(None) 时 flatten 后是 None
             let has_to_tag = tx
                 .original
                 .to_header()
@@ -49,14 +47,9 @@ impl SipClient {
                 .is_some();
 
             if has_to_tag {
+                // In-dialog request: find existing dialog and delegate.
                 match self.dialog_layer.match_dialog(&tx) {
                     Some(mut dialog) => {
-                        // in-dialog 请求 (re-INVITE/BYE/ACK...) 全部交给
-                        // dialog.handle 路由. re-INVITE 会走 handle_reinvite:
-                        // 状态切 Updated 并等应用层回 200 (见
-                        // run_dialog_state_loop), 别在这里调 accept() —
-                        // accept 只认初始 INVITE 的事务通道, 对 re-INVITE
-                        // 必报 "channel closed"
                         tokio::spawn(async move {
                             if let Err(e) = dialog.handle(&mut tx).await {
                                 warn!(error = %e, "dialog handle failed");
@@ -73,26 +66,27 @@ impl SipClient {
                 continue;
             }
 
+            // New request: route by method.
             match tx.original.method {
                 rsip::Method::Invite => {
-                    let mut dialog = match self.dialog_layer.get_or_create_server_invite(
+                    match self.dialog_layer.get_or_create_server_invite(
                         &tx,
                         state_sender.clone(),
                         None,
                         Some(self.contact.clone()),
                     ) {
-                        Ok(d) => d,
+                        Ok(mut dialog) => {
+                            tokio::spawn(async move {
+                                if let Err(e) = dialog.handle(&mut tx).await {
+                                    warn!(error = %e, "dialog handle failed");
+                                }
+                            });
+                        }
                         Err(e) => {
                             warn!(error = %e, "failed to create server invite dialog");
                             let _ = tx.reply(rsip::StatusCode::BusyHere).await;
-                            continue;
                         }
-                    };
-                    tokio::spawn(async move {
-                        if let Err(e) = dialog.handle(&mut tx).await {
-                            warn!(error = %e, "dialog handle failed");
-                        }
-                    });
+                    }
                 }
                 _ => {
                     let _ = tx.reply(rsip::StatusCode::OK).await;
