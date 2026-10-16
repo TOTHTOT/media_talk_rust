@@ -16,7 +16,7 @@ use ipcam_gst::{
     VideoFrameSink, start_rtp_receiver, start_rtp_sender,
 };
 use ipcam_sip::negotiate;
-use ipcam_sip::sdp::{OfferMedias, PeerMedias, parse_offer_all};
+use ipcam_sip::sdp::{OfferMedias, PeerMedia, PeerMedias, parse_offer_all};
 use tracing::{info, warn};
 
 use crate::session::types::{GuiSipConfig, RtpPorts};
@@ -150,6 +150,26 @@ pub(crate) fn video_pred(name: &str) -> Option<VideoCodec> {
     match VideoCodec::from_name(name) {
         vc @ (VideoCodec::H264 | VideoCodec::H265) => Some(vc),
         _ => None,
+    }
+}
+
+/// 从 answer 的已选中音频 codec 提取发送参数.
+/// 只在 answer 的 codec 属于本机可发送白名单时返回 Some, 否则 None.
+fn peer_audio_send_params(peer: &PeerMedia) -> Option<AudioDest> {
+    ipcam_gst::sendable_audio_codec(&peer.codec).map(|codec| AudioDest {
+        addr: peer.addr,
+        payload_type: peer.payload_type,
+        codec,
+    })
+}
+
+/// 从 answer 的已选中视频 codec 提取发送参数.
+/// answer 只选了 codec, 地址/pt 取自 PeerMedia.
+fn peer_video_send_params(peer: &ipcam_sip::sdp::PeerMedia) -> Option<VideoDest> {
+    let codec = VideoCodec::from_name(&peer.codec);
+    match codec {
+        VideoCodec::Unknown => None,
+        _ => Some((peer.addr, peer.payload_type, codec)),
     }
 }
 
@@ -366,22 +386,18 @@ pub fn start_outgoing(
                 None
             }
         });
-    let send_audio = peers.audio.as_ref().and_then(|p| {
-        ipcam_gst::sendable_audio_codec(&p.codec)
-            .map(|codec| AudioDest {
-                addr: p.addr,
-                payload_type: p.payload_type,
-                codec,
-            })
-            .or_else(|| {
-                warn!(codec = %p.codec, "answer picked an audio codec we cannot send, skip audio");
-                None
-            })
-    });
-    let send_video = peers
-        .video
+    // 发端参数: answer 选中的 codec 必须在白名单, 否则跳过该路
+    let send_audio = peers
+        .audio
         .as_ref()
-        .map(|p| (p.addr, p.payload_type, VideoCodec::from_name(&p.codec)));
+        .and_then(peer_audio_send_params)
+        .or_else(|| {
+            if let Some(p) = peers.audio.as_ref() {
+                warn!(codec = %p.codec, "answer picked an audio codec we cannot send, skip audio");
+            }
+            None
+        });
+    let send_video = peers.video.as_ref().and_then(peer_video_send_params);
     Some(MediaHandles::new(
         *rtp_ports,
         cfg,
