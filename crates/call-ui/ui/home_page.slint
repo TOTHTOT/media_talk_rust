@@ -1,0 +1,163 @@
+// 主页: 左侧时钟卡片 + 右侧 4x2 应用网格 + 底部最近通话
+import { AppIcon, Dot, CallLogEntry } from "components.slint";
+
+export component HomePage inherits Rectangle {
+    in property <bool> sip-registered;
+    in property <string> clock-text;
+    in property <string> date-text;
+    in property <int> unread-messages;
+    in property <int> today-visitors;
+    in property <[CallLogEntry]> call-log;
+    callback show-toast(string);
+    callback open-page(int); // 1=拨号 2=设置
+
+    HorizontalLayout {
+        padding: 16px;
+        spacing: 16px;
+        // 左侧时钟卡片
+        Rectangle {
+            horizontal-stretch: 4;
+            background: #1f232e;
+            border-radius: 20px;
+            VerticalLayout {
+                padding-left: 32px;
+                padding-right: 32px;
+                padding-top: 20px;
+                padding-bottom: 16px;
+                spacing: 6px;
+                Text {
+                    text: root.clock-text;
+                    color: #ebeef5;
+                    // 窗口变窄时缩字号, 避免时钟溢出卡片
+                    font-size: min(84px, root.width / 12);
+                    font-weight: 700;
+                }
+                Text { text: root.date-text; color: #8c92a0; font-size: 20px; }
+                Rectangle { height: 6px; }
+                Rectangle { height: 1px; background: #343946; }
+                Rectangle { height: 6px; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    Dot { tint: root.sip-registered ? #4ade80 : #eb4646; width: 12px; height: 12px; border-radius: 6px; }
+                    Text {
+                        font-size: 17px;
+                        color: #c8cedc;
+                        vertical-alignment: center;
+                        text: root.sip-registered ? @tr("通话服务正常") : @tr("通话服务未注册");
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    Dot { tint: #fab43c; width: 12px; height: 12px; border-radius: 6px; }
+                    Text { font-size: 17px; color: #c8cedc; vertical-alignment: center; text: @tr("未读消息 {} 条", root.unread-messages); }
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    Dot { tint: #60c8ff; width: 12px; height: 12px; border-radius: 6px; }
+                    Text { font-size: 17px; color: #c8cedc; vertical-alignment: center; text: @tr("今日访客 {} 人", root.today-visitors); }
+                }
+                // 弹簧: 把开锁按钮压到底部
+                Rectangle { vertical-stretch: 1; }
+                // 一键开锁 (DTMF 未接入, 气泡提示)
+                Rectangle {
+                    height: 40px;
+                    border-radius: 16px;
+                    background: #c83c3c;
+                    TouchArea { clicked => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); } }
+                    Text {
+                        width: 100%;
+                        height: 100%;
+                        text: @tr("一键开锁");
+                        color: white;
+                        font-size: 20px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // 右侧: 应用网格 4x2 + 最近通话
+        VerticalLayout {
+            horizontal-stretch: 6;
+            spacing: 12px;
+            GridLayout {
+                spacing: 12px;
+                vertical-stretch: 1;
+                Row {
+                    AppIcon { icon: @image-url("icons/phone.svg"); tint: #42af64; label: @tr("通话");
+                        clicked => { root.open-page(1); } }
+                    AppIcon { icon: @image-url("icons/video.svg"); tint: #3a82dc; label: @tr("监视");
+                        clicked => { root.show-toast(@tr("门口机监视功能开发中")); } }
+                    AppIcon { icon: @image-url("icons/mail.svg"); tint: #eb9b37; label: @tr("消息"); badge: root.unread-messages;
+                        clicked => { root.show-toast(@tr("消息功能开发中")); } }
+                    AppIcon { icon: @image-url("icons/image.svg"); tint: #965fdc; label: @tr("访客留影");
+                        clicked => { root.show-toast(@tr("访客留影功能开发中")); } }
+                }
+                Row {
+                    AppIcon { icon: @image-url("icons/shield-check.svg"); tint: #1eaaa0; label: @tr("安防报警");
+                        clicked => { root.show-toast(@tr("安防报警功能开发中")); } }
+                    AppIcon { icon: @image-url("icons/bell.svg"); tint: #e1b937; label: @tr("物业通知");
+                        clicked => { root.show-toast(@tr("物业通知功能开发中")); } }
+                    AppIcon { icon: @image-url("icons/building.svg"); tint: #5a78c8; label: @tr("管理中心");
+                        clicked => { root.show-toast(@tr("管理中心直通功能开发中")); } }
+                    AppIcon { icon: @image-url("icons/settings.svg"); tint: #6e7687; label: @tr("设置");
+                        clicked => { root.open-page(2); } }
+                }
+            }
+
+            // 最近通话
+            Rectangle {
+                height: 76px;
+                vertical-stretch: 0;
+                background: #1f232e;
+                border-radius: 16px;
+                Text { x: 20px; y: 10px; text: @tr("最近通话"); color: #8c92a0; font-size: 15px; font-weight: 700; }
+                if root.call-log.length == 0: Text {
+                    y: 34px;
+                    width: 100%;
+                    text: @tr("暂无通话记录");
+                    color: #565c6a;
+                    font-size: 15px;
+                    horizontal-alignment: center;
+                }
+                for entry[i] in root.call-log: Rectangle {
+                    x: 20px + i * (parent.width - 40px) / 2;
+                    y: 34px;
+                    width: (parent.width - 40px) / 2 - 8px;
+                    height: 32px;
+                    // 文案在 UI 侧组合, @tr 可翻译; Rust 只传结构化字段
+                    property <string> kind-text: entry.missed ? @tr("未接") : entry.outgoing ? @tr("呼出") : @tr("呼入");
+                    property <string> dur-text: entry.duration-s >= 60
+                        ? @tr("{} 分 {} 秒", Math.floor(entry.duration-s / 60), Math.mod(entry.duration-s, 60))
+                        : @tr("{} 秒", entry.duration-s);
+                    Rectangle {
+                        y: 2px;
+                        width: 30px;
+                        height: 30px;
+                        border-radius: 15px;
+                        border-width: 2px;
+                        border-color: entry.missed ? #eb4646 : #4ade80;
+                        Text {
+                            width: 100%;
+                            height: 100%;
+                            text: entry.outgoing ? "↗" : "↙";
+                            color: entry.missed ? #eb4646 : #4ade80;
+                            font-size: 15px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Text { x: 40px; y: -2px; width: parent.width - 40px; text: kind-text + " · " + entry.peer; color: #ebeef5; font-size: 16px; font-weight: 700; overflow: elide; }
+                    Text { x: 40px; y: 18px; width: parent.width - 40px; color: #8c92a0; font-size: 13px; overflow: elide;
+                        text: entry.missed ? entry.time
+                            : entry.connected ? entry.time + " · " + dur-text
+                            : @tr("{} · 未接通", entry.time);
+                    }
+                }
+            }
+        }
+    }
+}

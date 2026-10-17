@@ -1,0 +1,132 @@
+// 通用小组件与共享类型
+// 图标: lucide (https://lucide.dev), 编译期内嵌, 白描边风格统一 colorize
+
+export struct CallLogEntry {
+    outgoing: bool,    // true=呼出 false=呼入 (未接必为呼入)
+    missed: bool,      // 未接来电
+    connected: bool,   // 是否接通
+    peer: string,
+    time: string,      // 结束时刻 "10:12"
+    duration-s: int,   // 接通秒数, connected 时有效
+}
+
+// 状态行小圆点 (纵向居中)
+export component Dot inherits Rectangle {
+    in property <brush> tint;
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    background: root.tint;
+}
+
+// 应用图标卡片: 彩色圆角底 + 白色 lucide 图标 + 名称 + 可选角标
+// 尺寸由外层 GridLayout 格子拉伸决定, 内部元素按格子尺寸缩放
+export component AppIcon inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <brush> tint;
+    in property <int> badge: 0;
+    callback clicked();
+
+    background: #1f232e;
+    border-radius: 16px;
+
+    // 图标盒随格子尺寸缩放, 上限 76px
+    property <length> box: min(min(76px, root.width * 0.52), root.height * 0.42);
+
+    TouchArea { clicked => { root.clicked(); } }
+
+    Rectangle {
+        x: (parent.width - root.box) / 2;
+        y: (parent.height - root.box - 40px) / 2;
+        width: root.box;
+        height: root.box;
+        background: root.tint;
+        border-radius: root.box * 0.24;
+        Image {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: root.box * 0.55;
+            height: root.box * 0.55;
+            source: root.icon;
+            colorize: #ffffff;
+        }
+    }
+    Text {
+        y: parent.height - 44px;
+        width: 100%;
+        height: 28px;
+        text: root.label;
+        color: #ebeef5;
+        font-size: 18px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    if root.badge > 0: Rectangle {
+        x: parent.width - 40px;
+        y: 6px;
+        width: 28px;
+        height: 28px;
+        border-radius: 14px;
+        background: #eb4646;
+        Text {
+            width: 100%;
+            height: 100%;
+            text: root.badge;
+            color: white;
+            font-size: 14px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// 页面左上角的返回按钮
+export component BackButton inherits Rectangle {
+    callback clicked();
+    width: 104px;
+    height: 40px;
+    background: #1f232e;
+    border-radius: 12px;
+    TouchArea { clicked => { root.clicked(); } }
+    Image {
+        x: 12px;
+        y: 9px;
+        width: 22px;
+        height: 22px;
+        source: @image-url("icons/arrow-left.svg");
+        colorize: #c8cedc;
+    }
+    Text {
+        x: 42px;
+        width: 56px;
+        height: 100%;
+        text: @tr("返回");
+        color: #c8cedc;
+        font-size: 16px;
+        vertical-alignment: center;
+    }
+}
+
+// 拨号盘按键
+export component NumKey inherits Rectangle {
+    in property <string> key;
+    callback pressed(string);
+    width: 64px;
+    height: 56px;
+    background: #1f232e;
+    border-radius: 14px;
+    TouchArea { clicked => { root.pressed(root.key); } }
+    Text {
+        width: 100%;
+        height: 100%;
+        text: root.key;
+        color: #ebeef5;
+        font-size: 24px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

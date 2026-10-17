@@ -1,0 +1,34 @@
+// 通话中: 视频铺满 + 开锁/挂断
+export component InCallPage inherits Rectangle {
+    in property <image> video-frame;
+    callback hangup();
+    callback show-toast(string);
+
+    background: black;
+    Image {
+        source: root.video-frame;
+        width: 100%;
+        height: 100%;
+        image-fit: contain;
+    }
+    Rectangle {
+        x: parent.width - 240px;
+        y: parent.height - 76px;
+        width: 104px;
+        height: 48px;
+        border-radius: 14px;
+        background: #c83c3ccc;
+        TouchArea { clicked => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); } }
+        Text { width: 100%; height: 100%; text: @tr("开锁"); color: white; font-size: 18px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+    }
+    Rectangle {
+        x: parent.width - 120px;
+        y: parent.height - 76px;
+        width: 104px;
+        height: 48px;
+        border-radius: 14px;
+        background: #3a4152cc;
+        TouchArea { clicked => { root.hangup(); } }
+        Text { width: 100%; height: 100%; text: @tr("挂断"); color: white; font-size: 18px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+    }
+}

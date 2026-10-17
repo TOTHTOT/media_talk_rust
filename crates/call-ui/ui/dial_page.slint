@@ -1,0 +1,82 @@
+// 拨号页: 号码输入 + 3x4 键盘 + 清除/拨打
+import { LineEdit } from "std-widgets.slint";
+import { BackButton, NumKey } from "components.slint";
+
+export component DialPage inherits Rectangle {
+    callback back();
+    callback dial(string);
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        HorizontalLayout {
+            alignment: start;
+            BackButton { clicked => { root.back(); } }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 16px;
+                    width: min(600px, root.width - 160px);
+                    number := LineEdit {
+                        height: 64px;
+                        placeholder-text: @tr("输入号码");
+                        font-size: 30px;
+                        horizontal-alignment: center;
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 12px;
+                        NumKey { key: "1"; pressed(k) => { number.text += k; } }
+                        NumKey { key: "2"; pressed(k) => { number.text += k; } }
+                        NumKey { key: "3"; pressed(k) => { number.text += k; } }
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 12px;
+                        NumKey { key: "4"; pressed(k) => { number.text += k; } }
+                        NumKey { key: "5"; pressed(k) => { number.text += k; } }
+                        NumKey { key: "6"; pressed(k) => { number.text += k; } }
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 12px;
+                        NumKey { key: "7"; pressed(k) => { number.text += k; } }
+                        NumKey { key: "8"; pressed(k) => { number.text += k; } }
+                        NumKey { key: "9"; pressed(k) => { number.text += k; } }
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 12px;
+                        NumKey { key: "*"; pressed(k) => { number.text += k; } }
+                        NumKey { key: "0"; pressed(k) => { number.text += k; } }
+                        NumKey { key: "#"; pressed(k) => { number.text += k; } }
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 16px;
+                        Rectangle {
+                            width: 104px;
+                            height: 48px;
+                            border-radius: 14px;
+                            background: #3a4152;
+                            TouchArea { clicked => { number.text = ""; } }
+                            Text { width: 100%; height: 100%; text: @tr("清除"); color: #c8cedc; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        Rectangle {
+                            width: 104px;
+                            height: 48px;
+                            border-radius: 14px;
+                            background: number.text == "" ? #2a3a30 : #42af64;
+                            TouchArea { clicked => { if (number.text != "") { root.dial(number.text); } } }
+                            Text { width: 100%; height: 100%; text: @tr("拨打"); color: white; font-size: 18px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

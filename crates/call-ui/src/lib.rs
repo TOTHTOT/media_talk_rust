@@ -23,10 +23,12 @@ pub(crate) fn sync_props(ui: &MainWindow, app: &app::AppState) {
         .iter()
         .take(2)
         .map(|r| CallLogEntry {
-            kind: r.kind.into(),
-            peer: r.peer.as_str().into(),
-            detail: r.detail.as_str().into(),
+            outgoing: r.outgoing,
             missed: r.missed,
+            connected: r.connected,
+            peer: r.peer.as_str().into(),
+            time: r.time.as_str().into(),
+            duration_s: r.duration_secs as i32,
         })
         .collect();
     ui.set_call_log(slint::ModelRc::new(slint::VecModel::from(entries)));

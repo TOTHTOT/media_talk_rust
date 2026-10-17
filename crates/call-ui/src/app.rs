@@ -22,23 +22,20 @@ enum CallDir {
 }
 
 /// 一条最近通话记录 (主页"最近通话"条)
+/// 只存结构化字段, 展示文案由 Slint 侧 @tr 组合, 便于 i18n
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallRecord {
-    /// "呼出" / "呼入" / "未接"
-    pub kind: &'static str,
-    pub peer: String,
-    /// "10:12 · 42 秒" / "10:12 · 未接通" / "09:47"
-    pub detail: String,
+    /// true=呼出 false=呼入 (未接必然是呼入)
+    pub outgoing: bool,
+    /// 未接来电
     pub missed: bool,
-}
-
-/// 通话时长可读格式: 90 → "1 分 30 秒"
-fn fmt_duration(secs: i64) -> String {
-    if secs >= 60 {
-        format!("{} 分 {} 秒", secs / 60, secs % 60)
-    } else {
-        format!("{} 秒", secs.max(0))
-    }
+    /// 是否接通 (收到过 Confirmed)
+    pub connected: bool,
+    pub peer: String,
+    /// 结束时刻 "10:12"
+    pub time: String,
+    /// 接通时长 (秒), connected=true 时有意义
+    pub duration_secs: i64,
 }
 
 /// SIP 后台 → UI 的事件
@@ -87,30 +84,29 @@ impl AppState {
     /// 未接. 本地挂断/拒接在 UI 动作里已记过 (阶段已回 Idle), 这里跳过
     fn push_call_record(&mut self) {
         let now = Local::now();
-        let hm = now.format("%H:%M");
-        let (kind, detail, missed) = match (self.phase, self.call_dir, self.confirmed_at) {
-            (Phase::InCall, Some(CallDir::Outgoing), Some(t0)) => (
-                "呼出",
-                format!("{hm} · {}", fmt_duration((now - t0).num_seconds())),
-                false,
-            ),
-            (Phase::InCall, Some(CallDir::Incoming), Some(t0)) => (
-                "呼入",
-                format!("{hm} · {}", fmt_duration((now - t0).num_seconds())),
-                false,
-            ),
-            (Phase::InCall, _, _) => ("呼出", format!("{hm}"), false),
-            (Phase::Outgoing, _, _) => ("呼出", format!("{hm} · 未接通"), false),
-            (Phase::Incoming, _, _) => ("未接", format!("{hm}"), true),
-            (Phase::Idle, _, _) => return,
-        };
+        let time = now.format("%H:%M").to_string();
+        let (outgoing, missed, connected, duration_secs) =
+            match (self.phase, self.call_dir, self.confirmed_at) {
+                (Phase::InCall, dir, Some(t0)) => (
+                    dir != Some(CallDir::Incoming),
+                    false,
+                    true,
+                    (now - t0).num_seconds(),
+                ),
+                (Phase::InCall, _, None) => (true, false, false, 0),
+                (Phase::Outgoing, _, _) => (true, false, false, 0),
+                (Phase::Incoming, _, _) => (false, true, false, 0),
+                (Phase::Idle, _, _) => return,
+            };
         self.call_log.insert(
             0,
             CallRecord {
-                kind,
-                peer: self.peer.clone(),
-                detail,
+                outgoing,
                 missed,
+                connected,
+                peer: self.peer.clone(),
+                time,
+                duration_secs,
             },
         );
         self.call_log.truncate(20);
@@ -354,9 +350,9 @@ mod tests {
             reason: "peer cancel".into(),
         });
         assert_eq!(app.call_log.len(), 1);
-        assert_eq!(app.call_log[0].kind, "未接");
-        assert_eq!(app.call_log[0].peer, "1001");
         assert!(app.call_log[0].missed);
+        assert!(!app.call_log[0].outgoing);
+        assert_eq!(app.call_log[0].peer, "1001");
     }
 
     #[test]
@@ -371,7 +367,7 @@ mod tests {
             reason: "486 sent".into(),
         });
         assert_eq!(app.call_log.len(), 1);
-        assert_eq!(app.call_log[0].kind, "未接");
+        assert!(app.call_log[0].missed);
     }
 
     #[test]
@@ -380,8 +376,8 @@ mod tests {
         app.dial("1002".into());
         app.hangup();
         assert_eq!(app.call_log.len(), 1);
-        assert_eq!(app.call_log[0].kind, "呼出");
-        assert!(app.call_log[0].detail.contains("未接通"));
+        assert!(app.call_log[0].outgoing);
+        assert!(!app.call_log[0].connected);
         assert!(!app.call_log[0].missed);
         // 挂断后迟到的 Terminated 不得重复记账
         app.on_event(UiEvent::Terminated {
@@ -401,7 +397,8 @@ mod tests {
             reason: "peer bye".into(),
         });
         assert_eq!(app.call_log.len(), 1);
-        assert_eq!(app.call_log[0].kind, "呼出");
-        assert!(app.call_log[0].detail.contains("秒"));
+        assert!(app.call_log[0].outgoing);
+        assert!(app.call_log[0].connected);
+        assert!(app.call_log[0].duration_secs >= 0);
     }
 }
