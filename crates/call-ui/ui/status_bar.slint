@@ -1,23 +1,77 @@
-// 顶部状态栏: 官方 SmallAppBar — title 放 SIP 状态 + 时间,
-// 尾部图标按钮: 布防 (点击气泡提示) + wifi 装饰
-import { SmallAppBar } from "../material-1.1.0/material.slint";
+// 顶部状态栏: 自定义 HorizontalLayout.
+// 布局: [SIP图标+账号] [时间(居中)] [布防+wifi图标]
+import { IconButton } from "../material-1.1.0/ui/components/icon_button.slint";
+import { MaterialStyleMetrics } from "../material-1.1.0/ui/styling/material_style_metrics.slint";
+import { MaterialTypography } from "../material-1.1.0/ui/styling/material_typography.slint";
+import { MaterialPalette } from "../material-1.1.0/ui/styling/material_palette.slint";
+import { MaterialText } from "../material-1.1.0/ui/components/material_text.slint";
 
-export component StatusBar inherits SmallAppBar {
+export component StatusBar inherits HorizontalLayout {
     in property <bool> sip-registered;
     in property <string> account;
     in property <string> status-time-text;
     callback show-toast(string);
 
-    show_background: true;
-    title: (root.sip-registered ? @tr("SIP 已注册 · {}", root.account) : @tr("SIP 未注册"))
-        + "  ·  " + root.status-time-text;
-    trailing_buttons: [
-        { icon: @image-url("icons/shield-check.svg"), tooltip: @tr("布防中") },
-        { icon: @image-url("icons/wifi.svg"), tooltip: @tr("网络") },
-    ];
-    trailing_button_clicked(index) => {
-        if (index == 0) {
-            root.show-toast(@tr("安防功能开发中"));
+    padding-left: MaterialStyleMetrics.padding_12;
+    padding-right: MaterialStyleMetrics.padding_12;
+    spacing: MaterialStyleMetrics.spacing_8;
+    height: 40px;
+
+    // 左区: SIP 图标 + 账号
+    VerticalLayout {
+        alignment: center;
+        spacing: 4px;
+
+        HorizontalLayout {
+            spacing: 4px;
+
+            Image {
+                width: 16px;
+                height: 16px;
+                source: root.sip-registered
+                    ? @image-url("icons/phone.svg")
+                    : @image-url("icons/bell.svg");
+                colorize: root.sip-registered
+                    ? MaterialPalette.primary
+                    : MaterialPalette.error;
+            }
+            MaterialText {
+                text: root.account;
+                style: MaterialTypography.label_small;
+                color: MaterialPalette.on_surface_variant;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // 中区: 时间 (stretch 撑满，中间对齐)
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: center;
+        padding-left: MaterialStyleMetrics.spacing_16;
+        padding-right: MaterialStyleMetrics.spacing_16;
+
+        MaterialText {
+            text: root.status-time-text;
+            style: MaterialTypography.title_large;
+            color: MaterialPalette.on_surface;
+            horizontal-alignment: center;
+        }
+    }
+
+    // 右区: 布防 + wifi 图标
+    HorizontalLayout {
+        spacing: MaterialStyleMetrics.spacing_4;
+
+        IconButton {
+            icon: @image-url("icons/shield-check.svg");
+            tooltip: @tr("布防");
+            clicked => { root.show-toast(@tr("安防功能开发中")); }
+        }
+        IconButton {
+            icon: @image-url("icons/wifi.svg");
+            tooltip: @tr("网络");
+            clicked => { root.show-toast(@tr("网络状态")); }
         }
     }
 }
