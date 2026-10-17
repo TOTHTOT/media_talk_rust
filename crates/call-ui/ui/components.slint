@@ -34,7 +34,26 @@ export component AppIcon inherits FilledCard {
     in property <brush> tint;
     in property <int> badge: 0;
 
-    clickable: true;
+    // 不用 FilledCard 自带 clickable: 其 StateLayerArea 的 color 官方没接线 (透明),
+    // 悬停/按压反馈不可见; 这里自绘反馈层 + 自己的 TouchArea
+    clickable: false;
+
+    // 悬停/按压反馈 (压在图标盒和文字下面, 只染卡片底色)
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 12px;
+        background: MaterialPalette.on_surface;
+        opacity: touch.pressed ? 0.12 : touch.has-hover ? 0.08 : 0;
+        animate opacity { duration: 120ms; }
+    }
+
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
 
     // 图标盒随格子尺寸缩放, 上限 88px; 注意不能放进 Layout 里:
     // 盒子尺寸依赖卡片尺寸, 进 Layout 会造成绑定循环, 用绝对定位手动组居中

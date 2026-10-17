@@ -23,7 +23,9 @@ fn fetch_icons() {
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'));
-    let version = lines.next().expect("icons.txt 第一行须为 lucide-static 版本号");
+    let version = lines
+        .next()
+        .expect("icons.txt 第一行须为 lucide-static 版本号");
     let dir = Path::new("ui/icons");
     std::fs::create_dir_all(dir).expect("create ui/icons failed");
     for name in lines {
@@ -31,8 +33,7 @@ fn fetch_icons() {
         if file.exists() {
             continue;
         }
-        let url =
-            format!("https://cdn.jsdelivr.net/npm/lucide-static@{version}/icons/{name}.svg");
+        let url = format!("https://cdn.jsdelivr.net/npm/lucide-static@{version}/icons/{name}.svg");
         download(&url, &file, "离线构建请先手动放图标到 ui/icons/");
         println!("cargo:warning=fetched icon {name}.svg @ lucide-static {version}");
     }
@@ -66,7 +67,10 @@ fn main() {
     fetch_material();
     // i18n: 打包 lang/<语言>/LC_MESSAGES/call-ui.po, 运行时按系统 locale 自动选择,
     // UI 侧可用 slint::select_bundled_translation 切换; 文案以中文为源串, zh.po 留空做回退
-    for po in ["lang/zh/LC_MESSAGES/call-ui.po", "lang/en/LC_MESSAGES/call-ui.po"] {
+    for po in [
+        "lang/zh/LC_MESSAGES/call-ui.po",
+        "lang/en/LC_MESSAGES/call-ui.po",
+    ] {
         println!("cargo:rerun-if-changed={po}");
     }
     let config = slint_build::CompilerConfiguration::new()
