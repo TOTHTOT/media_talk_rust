@@ -76,7 +76,7 @@ enum Commands {
         #[arg(long, default_value = "mic")]
         audio_src: String,
         /// Max video width (peer decode capability); 0 = unlimited
-        #[arg(long, default_value_t = 640)]
+        #[arg(long, default_value_t = 1920)]
         max_width: u32,
         /// Bind to a specific local IPv4 interface (multi-NIC / VPN scenarios)
         #[arg(long)]

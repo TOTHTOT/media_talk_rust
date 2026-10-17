@@ -469,7 +469,9 @@ pub fn h264_recv_max_width(fmtp: Option<&str>) -> Option<u32> {
 /// 发送限宽: 配置上限与对端声明能力取小, 只收紧不放宽.
 /// configured = None 表示配置不限; 对端没声明能力就用配置值
 pub fn clamp_max_width(configured: Option<u32>, peer_fmtp: Option<&str>) -> Option<u32> {
-    match (configured, h264_recv_max_width(peer_fmtp)) {
+    let max_width = h264_recv_max_width(peer_fmtp);
+    info!(cfg_width = ?configured, width = ?max_width, ?peer_fmtp, "clamp ");
+    match (configured, max_width) {
         (Some(c), Some(p)) => Some(c.min(p)),
         (Some(c), None) => Some(c),
         (None, Some(p)) => Some(p),
