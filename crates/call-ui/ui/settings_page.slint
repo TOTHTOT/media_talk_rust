@@ -1,5 +1,5 @@
 // 设置页 (只读配置信息)
-import { BackButton } from "components.slint";
+import { FilledCard, TextButton, MaterialText, MaterialTypography, MaterialPalette } from "@material";
 
 export component SettingsPage inherits Rectangle {
     in property <string> settings-text;
@@ -10,24 +10,26 @@ export component SettingsPage inherits Rectangle {
         spacing: 12px;
         HorizontalLayout {
             alignment: start;
-            BackButton { clicked => { root.back(); } }
+            TextButton {
+                icon: @image-url("icons/arrow-left.svg");
+                text: @tr("返回");
+                clicked => { root.back(); }
+            }
         }
         HorizontalLayout {
             alignment: center;
             vertical-stretch: 1;
-            Rectangle {
+            FilledCard {
                 width: min(640px, root.width - 160px);
-                background: #1f232e;
-                border-radius: 20px;
-                Text { x: 32px; y: 24px; text: @tr("设置"); color: #ebeef5; font-size: 22px; font-weight: 700; }
-                Text { x: 32px; y: 76px; width: parent.width - 64px; text: root.settings-text; color: #c8cedc; font-size: 19px; }
-                Text {
+                MaterialText { x: 32px; y: 24px; text: @tr("设置"); style: MaterialTypography.headline_small; }
+                MaterialText { x: 32px; y: 76px; width: parent.width - 64px; text: root.settings-text; style: MaterialTypography.body_large; color: MaterialPalette.on_surface_variant; }
+                MaterialText {
                     x: 32px;
                     y: parent.height - 52px;
                     width: parent.width - 64px;
                     text: @tr("更多设置项开发中, 当前为只读配置信息");
-                    color: #565c6a;
-                    font-size: 14px;
+                    style: MaterialTypography.body_small;
+                    color: MaterialPalette.outline;
                 }
             }
         }

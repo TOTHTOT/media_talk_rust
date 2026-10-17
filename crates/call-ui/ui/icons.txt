@@ -4,6 +4,8 @@
 # 加图标 = 加一行; 升级版本 = 改第一行后删掉 icons/ 重建
 0.544.0
 arrow-left
+arrow-up-right
+arrow-down-left
 bell
 building
 image

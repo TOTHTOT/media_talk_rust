@@ -1,4 +1,8 @@
 // 主页: 左侧时钟卡片 + 右侧 4x2 应用网格 + 底部最近通话
+import {
+    FilledCard, FilledButton, HorizontalDivider, ListTile,
+    MaterialText, MaterialTypography, MaterialPalette
+} from "@material";
 import { AppIcon, Dot, CallLogEntry } from "components.slint";
 
 export component HomePage inherits Rectangle {
@@ -10,38 +14,39 @@ export component HomePage inherits Rectangle {
     in property <[CallLogEntry]> call-log;
     callback show-toast(string);
     callback open-page(int); // 1=拨号 2=设置
+    callback redial(string); // 最近通话点击回拨
 
     HorizontalLayout {
         padding: 16px;
         spacing: 16px;
-        // 左侧时钟卡片
-        Rectangle {
-            horizontal-stretch: 4;
-            background: #1f232e;
-            border-radius: 20px;
+        // 左侧时钟卡片 (6:14 比例, 内容垂直居中)
+        FilledCard {
+            horizontal-stretch: 6;
             VerticalLayout {
-                padding-left: 32px;
-                padding-right: 32px;
-                padding-top: 20px;
-                padding-bottom: 16px;
-                spacing: 6px;
-                Text {
+                alignment: center;
+                padding-left: 28px;
+                padding-right: 28px;
+                spacing: 8px;
+                MaterialText {
                     text: root.clock-text;
-                    color: #ebeef5;
+                    style: MaterialTypography.display_large;
                     // 窗口变窄时缩字号, 避免时钟溢出卡片
-                    font-size: min(84px, root.width / 12);
-                    font-weight: 700;
+                    font-size: min(64px, root.width / 16);
                 }
-                Text { text: root.date-text; color: #8c92a0; font-size: 20px; }
-                Rectangle { height: 6px; }
-                Rectangle { height: 1px; background: #343946; }
-                Rectangle { height: 6px; }
+                MaterialText {
+                    text: root.date-text;
+                    style: MaterialTypography.title_medium;
+                    color: MaterialPalette.on_surface_variant;
+                }
+                Rectangle { height: 4px; }
+                HorizontalDivider {}
+                Rectangle { height: 4px; }
                 HorizontalLayout {
                     spacing: 12px;
-                    Dot { tint: root.sip-registered ? #4ade80 : #eb4646; width: 12px; height: 12px; border-radius: 6px; }
-                    Text {
-                        font-size: 17px;
-                        color: #c8cedc;
+                    Dot { tint: root.sip-registered ? #4ade80 : MaterialPalette.error; width: 12px; height: 12px; border-radius: 6px; }
+                    MaterialText {
+                        style: MaterialTypography.body_large;
+                        color: MaterialPalette.on_surface_variant;
                         vertical-alignment: center;
                         text: root.sip-registered ? @tr("通话服务正常") : @tr("通话服务未注册");
                     }
@@ -49,30 +54,21 @@ export component HomePage inherits Rectangle {
                 HorizontalLayout {
                     spacing: 12px;
                     Dot { tint: #fab43c; width: 12px; height: 12px; border-radius: 6px; }
-                    Text { font-size: 17px; color: #c8cedc; vertical-alignment: center; text: @tr("未读消息 {} 条", root.unread-messages); }
+                    MaterialText { style: MaterialTypography.body_large; color: MaterialPalette.on_surface_variant; vertical-alignment: center; text: @tr("未读消息 {} 条", root.unread-messages); }
                 }
                 HorizontalLayout {
                     spacing: 12px;
                     Dot { tint: #60c8ff; width: 12px; height: 12px; border-radius: 6px; }
-                    Text { font-size: 17px; color: #c8cedc; vertical-alignment: center; text: @tr("今日访客 {} 人", root.today-visitors); }
+                    MaterialText { style: MaterialTypography.body_large; color: MaterialPalette.on_surface_variant; vertical-alignment: center; text: @tr("今日访客 {} 人", root.today-visitors); }
                 }
-                // 弹簧: 把开锁按钮压到底部
-                Rectangle { vertical-stretch: 1; }
-                // 一键开锁 (DTMF 未接入, 气泡提示)
-                Rectangle {
-                    height: 40px;
-                    border-radius: 16px;
-                    background: #c83c3c;
-                    TouchArea { clicked => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); } }
-                    Text {
-                        width: 100%;
-                        height: 100%;
+                Rectangle { height: 8px; }
+                // 一键开锁 (DTMF 未接入, 气泡提示); 居中不满宽
+                HorizontalLayout {
+                    alignment: center;
+                    FilledButton {
+                        horizontal-stretch: 0;
                         text: @tr("一键开锁");
-                        color: white;
-                        font-size: 20px;
-                        font-weight: 700;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        clicked => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); }
                     }
                 }
             }
@@ -80,7 +76,7 @@ export component HomePage inherits Rectangle {
 
         // 右侧: 应用网格 4x2 + 最近通话
         VerticalLayout {
-            horizontal-stretch: 6;
+            horizontal-stretch: 14;
             spacing: 12px;
             GridLayout {
                 spacing: 12px;
@@ -107,55 +103,37 @@ export component HomePage inherits Rectangle {
                 }
             }
 
-            // 最近通话
-            Rectangle {
-                height: 76px;
+            // 最近通话: ListTile 纵向列表, 点击条目回拨
+            // 固定高度 (头部 36 + 两条 ListTile 72x2), 有无记录都不挤压上网格
+            FilledCard {
+                height: 180px;
                 vertical-stretch: 0;
-                background: #1f232e;
-                border-radius: 16px;
-                Text { x: 20px; y: 10px; text: @tr("最近通话"); color: #8c92a0; font-size: 15px; font-weight: 700; }
-                if root.call-log.length == 0: Text {
-                    y: 34px;
+                MaterialText { x: 20px; y: 10px; text: @tr("最近通话"); style: MaterialTypography.label_large; color: MaterialPalette.on_surface_variant; }
+                if root.call-log.length == 0: MaterialText {
+                    y: 36px;
                     width: 100%;
+                    height: 144px;
                     text: @tr("暂无通话记录");
-                    color: #565c6a;
-                    font-size: 15px;
+                    style: MaterialTypography.body_medium;
+                    color: MaterialPalette.outline;
                     horizontal-alignment: center;
+                    vertical-alignment: center;
                 }
-                for entry[i] in root.call-log: Rectangle {
-                    x: 20px + i * (parent.width - 40px) / 2;
-                    y: 34px;
-                    width: (parent.width - 40px) / 2 - 8px;
-                    height: 32px;
+                for entry[i] in root.call-log: ListTile {
+                    y: 36px + i * 72px;
+                    width: 100%;
                     // 文案在 UI 侧组合, @tr 可翻译; Rust 只传结构化字段
-                    property <string> kind-text: entry.missed ? @tr("未接") : entry.outgoing ? @tr("呼出") : @tr("呼入");
                     property <string> dur-text: entry.duration-s >= 60
                         ? @tr("{} 分 {} 秒", Math.floor(entry.duration-s / 60), Math.mod(entry.duration-s, 60))
                         : @tr("{} 秒", entry.duration-s);
-                    Rectangle {
-                        y: 2px;
-                        width: 30px;
-                        height: 30px;
-                        border-radius: 15px;
-                        border-width: 2px;
-                        border-color: entry.missed ? #eb4646 : #4ade80;
-                        Text {
-                            width: 100%;
-                            height: 100%;
-                            text: entry.outgoing ? "↗" : "↙";
-                            color: entry.missed ? #eb4646 : #4ade80;
-                            font-size: 15px;
-                            font-weight: 700;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                    Text { x: 40px; y: -2px; width: parent.width - 40px; text: kind-text + " · " + entry.peer; color: #ebeef5; font-size: 16px; font-weight: 700; overflow: elide; }
-                    Text { x: 40px; y: 18px; width: parent.width - 40px; color: #8c92a0; font-size: 13px; overflow: elide;
-                        text: entry.missed ? entry.time
-                            : entry.connected ? entry.time + " · " + dur-text
-                            : @tr("{} · 未接通", entry.time);
-                    }
+                    avatar_icon: entry.outgoing ? @image-url("icons/arrow-up-right.svg") : @image-url("icons/arrow-down-left.svg");
+                    avatar_background: entry.missed ? MaterialPalette.error_container : MaterialPalette.primary_container;
+                    avatar_foreground: entry.missed ? MaterialPalette.on_error_container : MaterialPalette.on_primary_container;
+                    text: (entry.missed ? @tr("未接") : entry.outgoing ? @tr("呼出") : @tr("呼入")) + " · " + entry.peer;
+                    supporting_text: entry.missed ? entry.time
+                        : entry.connected ? entry.time + " · " + dur-text
+                        : @tr("{} · 未接通", entry.time);
+                    clicked => { root.redial(entry.peer); }
                 }
             }
         }

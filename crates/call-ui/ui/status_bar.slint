@@ -1,81 +1,23 @@
-// 顶部状态栏: SIP 注册状态 + 布防 pill + 信号/wifi/时间
-import { Dot } from "components.slint";
+// 顶部状态栏: 官方 SmallAppBar — title 放 SIP 状态 + 时间,
+// 尾部图标按钮: 布防 (点击气泡提示) + wifi 装饰
+import { SmallAppBar } from "@material";
 
-export component StatusBar inherits Rectangle {
+export component StatusBar inherits SmallAppBar {
     in property <bool> sip-registered;
     in property <string> account;
     in property <string> status-time-text;
     callback show-toast(string);
 
-    height: 48px;
-    background: #12141a;
-    Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: #2c303a; }
-    HorizontalLayout {
-        padding-left: 24px;
-        padding-right: 24px;
-        alignment: space-between;
-        // 左: SIP 注册状态 + 布防 pill
-        HorizontalLayout {
-            spacing: 12px;
-            alignment: start;
-            Dot { tint: root.sip-registered ? #4ade80 : #eb4646; }
-            Text {
-                font-size: 17px;
-                color: #bec4d2;
-                vertical-alignment: center;
-                text: root.sip-registered ? @tr("SIP 已注册 · {}", root.account) : @tr("SIP 未注册");
-            }
-            // 布防 pill (安防功能未接入, 点击气泡提示)
-            Rectangle {
-                width: 96px;
-                height: 28px;
-                border-radius: 14px;
-                background: #182c38;
-                TouchArea { clicked => { root.show-toast(@tr("安防功能开发中")); } }
-                Image {
-                    x: 10px;
-                    y: 6px;
-                    width: 16px;
-                    height: 16px;
-                    source: @image-url("icons/shield-check.svg");
-                    colorize: #60c8ff;
-                }
-                Text {
-                    x: 32px;
-                    width: 60px;
-                    height: 100%;
-                    text: @tr("布防中");
-                    font-size: 15px;
-                    color: #60c8ff;
-                    vertical-alignment: center;
-                }
-            }
-        }
-        // 右: 信号格 + wifi + 时间
-        HorizontalLayout {
-            spacing: 10px;
-            alignment: end;
-            Rectangle {
-                width: 33px;
-                height: 21px;
-                Rectangle { x: 0; y: 15px; width: 6px; height: 6px; background: #ebeef5; }
-                Rectangle { x: 9px; y: 10px; width: 6px; height: 11px; background: #ebeef5; }
-                Rectangle { x: 18px; y: 5px; width: 6px; height: 16px; background: #ebeef5; }
-                Rectangle { x: 27px; y: 0; width: 6px; height: 21px; background: #ebeef5; }
-            }
-            Image {
-                width: 22px;
-                height: 22px;
-                source: @image-url("icons/wifi.svg");
-                colorize: #ebeef5;
-            }
-            Text {
-                font-size: 19px;
-                font-weight: 700;
-                color: #ebeef5;
-                vertical-alignment: center;
-                text: root.status-time-text;
-            }
+    show_background: true;
+    title: (root.sip-registered ? @tr("SIP 已注册 · {}", root.account) : @tr("SIP 未注册"))
+        + "  ·  " + root.status-time-text;
+    trailing_buttons: [
+        { icon: @image-url("icons/shield-check.svg"), tooltip: @tr("布防中") },
+        { icon: @image-url("icons/wifi.svg"), tooltip: @tr("网络") },
+    ];
+    trailing_button_clicked(index) => {
+        if (index == 0) {
+            root.show-toast(@tr("安防功能开发中"));
         }
     }
 }
