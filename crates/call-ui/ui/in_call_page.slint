@@ -13,6 +13,7 @@ export component InCallPage inherits Rectangle {
         height: 100%;
         image-fit: contain;
     }
+
     HorizontalLayout {
         x: parent.width - self.width - 24px;
         y: parent.height - self.height - 24px;
@@ -21,6 +22,7 @@ export component InCallPage inherits Rectangle {
             text: @tr("开锁");
             clicked => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); }
         }
+
         FilledButton {
             text: @tr("挂断");
             clicked => { root.hangup(); }

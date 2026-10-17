@@ -1,7 +1,11 @@
 // 主页左侧时钟卡片: 时钟/日期 + 状态点列表 + 一键开锁
 import {
-    FilledCard, FilledButton, HorizontalDivider,
-    MaterialText, MaterialTypography, MaterialPalette
+    FilledCard,
+    FilledButton,
+    HorizontalDivider,
+    MaterialText,
+    MaterialTypography,
+    MaterialPalette,
 } from "../../material-1.1.0/material.slint";
 import { Dot } from "../components.slint";
 
@@ -26,17 +30,32 @@ export component ClockCard inherits FilledCard {
             // 窗口变窄时缩字号, 避免时钟溢出卡片
             font-size: min(64px, root.page-width / 16);
         }
+
         MaterialText {
             text: root.date-text;
             style: MaterialTypography.title_medium;
             color: MaterialPalette.on_surface_variant;
         }
-        Rectangle { height: 4px; }
-        HorizontalDivider {}
-        Rectangle { height: 4px; }
+
+        Rectangle {
+            height: 4px;
+        }
+
+        HorizontalDivider { }
+
+        Rectangle {
+            height: 4px;
+        }
+
         HorizontalLayout {
             spacing: 12px;
-            Dot { tint: root.sip-registered ? #4ade80 : MaterialPalette.error; width: 12px; height: 12px; border-radius: 6px; }
+            Dot {
+                tint: root.sip-registered ? #4ade80 : MaterialPalette.error;
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+            }
+
             MaterialText {
                 style: MaterialTypography.body_large;
                 color: MaterialPalette.on_surface_variant;
@@ -44,17 +63,44 @@ export component ClockCard inherits FilledCard {
                 text: root.sip-registered ? @tr("通话服务正常") : @tr("通话服务未注册");
             }
         }
+
         HorizontalLayout {
             spacing: 12px;
-            Dot { tint: #fab43c; width: 12px; height: 12px; border-radius: 6px; }
-            MaterialText { style: MaterialTypography.body_large; color: MaterialPalette.on_surface_variant; vertical-alignment: center; text: @tr("未读消息 {} 条", root.unread-messages); }
+            Dot {
+                tint: #fab43c;
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+            }
+
+            MaterialText {
+                style: MaterialTypography.body_large;
+                color: MaterialPalette.on_surface_variant;
+                vertical-alignment: center;
+                text: @tr("未读消息 {} 条", root.unread-messages);
+            }
         }
+
         HorizontalLayout {
             spacing: 12px;
-            Dot { tint: #60c8ff; width: 12px; height: 12px; border-radius: 6px; }
-            MaterialText { style: MaterialTypography.body_large; color: MaterialPalette.on_surface_variant; vertical-alignment: center; text: @tr("今日访客 {} 人", root.today-visitors); }
+            Dot {
+                tint: #60c8ff;
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+            }
+
+            MaterialText {
+                style: MaterialTypography.body_large;
+                color: MaterialPalette.on_surface_variant;
+                vertical-alignment: center;
+                text: @tr("今日访客 {} 人", root.today-visitors);
+            }
         }
-        Rectangle { height: 8px; }
+
+        Rectangle {
+            height: 8px;
+        }
         // 一键开锁 (DTMF 未接入, 气泡提示); 居中不满宽
         HorizontalLayout {
             alignment: center;

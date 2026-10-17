@@ -8,23 +8,63 @@ export component AppGrid inherits GridLayout {
 
     spacing: 12px;
     Row {
-        AppIcon { icon: @image-url("../icons/phone.svg"); tint: #42af64; label: @tr("通话");
-            clicked => { root.open-page(1); } }
-        AppIcon { icon: @image-url("../icons/video.svg"); tint: #3a82dc; label: @tr("监视");
-            clicked => { root.show-toast(@tr("门口机监视功能开发中")); } }
-        AppIcon { icon: @image-url("../icons/mail.svg"); tint: #eb9b37; label: @tr("消息"); badge: root.unread-messages;
-            clicked => { root.show-toast(@tr("消息功能开发中")); } }
-        AppIcon { icon: @image-url("../icons/image.svg"); tint: #965fdc; label: @tr("访客留影");
-            clicked => { root.show-toast(@tr("访客留影功能开发中")); } }
+        AppIcon {
+            icon: @image-url("../icons/phone.svg");
+            tint: #42af64;
+            label: @tr("通话");
+            clicked => { root.open-page(1); }
+        }
+
+        AppIcon {
+            icon: @image-url("../icons/video.svg");
+            tint: #3a82dc;
+            label: @tr("监视");
+            clicked => { root.show-toast(@tr("门口机监视功能开发中")); }
+        }
+
+        AppIcon {
+            icon: @image-url("../icons/mail.svg");
+            tint: #eb9b37;
+            label: @tr("消息");
+            badge: root.unread-messages;
+            clicked => { root.show-toast(@tr("消息功能开发中")); }
+        }
+
+        AppIcon {
+            icon: @image-url("../icons/image.svg");
+            tint: #965fdc;
+            label: @tr("访客留影");
+            clicked => { root.show-toast(@tr("访客留影功能开发中")); }
+        }
     }
+
     Row {
-        AppIcon { icon: @image-url("../icons/shield-check.svg"); tint: #1eaaa0; label: @tr("安防报警");
-            clicked => { root.show-toast(@tr("安防报警功能开发中")); } }
-        AppIcon { icon: @image-url("../icons/bell.svg"); tint: #e1b937; label: @tr("物业通知");
-            clicked => { root.show-toast(@tr("物业通知功能开发中")); } }
-        AppIcon { icon: @image-url("../icons/building.svg"); tint: #5a78c8; label: @tr("管理中心");
-            clicked => { root.show-toast(@tr("管理中心直通功能开发中")); } }
-        AppIcon { icon: @image-url("../icons/settings.svg"); tint: #6e7687; label: @tr("设置");
-            clicked => { root.open-page(2); } }
+        AppIcon {
+            icon: @image-url("../icons/shield-check.svg");
+            tint: #1eaaa0;
+            label: @tr("安防报警");
+            clicked => { root.show-toast(@tr("安防报警功能开发中")); }
+        }
+
+        AppIcon {
+            icon: @image-url("../icons/bell.svg");
+            tint: #e1b937;
+            label: @tr("物业通知");
+            clicked => { root.show-toast(@tr("物业通知功能开发中")); }
+        }
+
+        AppIcon {
+            icon: @image-url("../icons/building.svg");
+            tint: #5a78c8;
+            label: @tr("管理中心");
+            clicked => { root.show-toast(@tr("管理中心直通功能开发中")); }
+        }
+
+        AppIcon {
+            icon: @image-url("../icons/settings.svg");
+            tint: #6e7687;
+            label: @tr("设置");
+            clicked => { root.open-page(2); }
+        }
     }
 }

@@ -1,5 +1,11 @@
 // 设置页 (只读配置信息)
-import { FilledCard, TextButton, MaterialText, MaterialTypography, MaterialPalette } from "../material-1.1.0/material.slint";
+import {
+    FilledCard,
+    TextButton,
+    MaterialText,
+    MaterialTypography,
+    MaterialPalette,
+} from "../material-1.1.0/material.slint";
 
 export component SettingsPage inherits Rectangle {
     in property <string> settings-text;
@@ -16,13 +22,28 @@ export component SettingsPage inherits Rectangle {
                 clicked => { root.back(); }
             }
         }
+
         HorizontalLayout {
             alignment: center;
             vertical-stretch: 1;
             FilledCard {
                 width: min(640px, root.width - 160px);
-                MaterialText { x: 32px; y: 24px; text: @tr("设置"); style: MaterialTypography.headline_small; }
-                MaterialText { x: 32px; y: 76px; width: parent.width - 64px; text: root.settings-text; style: MaterialTypography.body_large; color: MaterialPalette.on_surface_variant; }
+                MaterialText {
+                    x: 32px;
+                    y: 24px;
+                    text: @tr("设置");
+                    style: MaterialTypography.headline_small;
+                }
+
+                MaterialText {
+                    x: 32px;
+                    y: 76px;
+                    width: parent.width - 64px;
+                    text: root.settings-text;
+                    style: MaterialTypography.body_large;
+                    color: MaterialPalette.on_surface_variant;
+                }
+
                 MaterialText {
                     x: 32px;
                     y: parent.height - 52px;

@@ -1,6 +1,12 @@
 // 通用小组件与共享类型 (基于 Slint 官方 Material 组件集)
 // 图标: lucide (https://lucide.dev), 编译期内嵌, 白描边风格统一 colorize
-import { FilledCard, Badge, MaterialText, MaterialTypography, MaterialPalette } from "../material-1.1.0/material.slint";
+import {
+    FilledCard,
+    Badge,
+    MaterialText,
+    MaterialTypography,
+    MaterialPalette,
+} from "../material-1.1.0/material.slint";
 
 export struct CallLogEntry {
     outgoing: bool,    // true=呼出 false=呼入 (未接必为呼入)
@@ -52,6 +58,7 @@ export component AppIcon inherits FilledCard {
             colorize: #ffffff;
         }
     }
+
     MaterialText {
         y: (parent.height - root.group-h) / 2 + root.box + 10px;
         width: 100%;
@@ -61,9 +68,51 @@ export component AppIcon inherits FilledCard {
         horizontal-alignment: center;
         vertical-alignment: center;
     }
+
     if root.badge > 0: Badge {
         x: parent.width - self.width - 12px;
         y: 12px;
         text: root.badge;
+    }
+}
+
+// 气泡提示: 底部居中浮条, 视觉复刻 Material SnackBar
+// 不用官方 SnackBar (PopupWindow): 弹层需铺满窗口来定位, 会吃掉所有鼠标事件,
+// toast 期间整窗不可点; 纯 Rectangle 无 TouchArea 事件穿透, 不挡界面
+export component AppToast inherits Rectangle {
+    in property <string> text;
+    in property <bool> shown;
+
+    // 本体: shown 时滑入到底部, 隐藏时停在窗口底缘外
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: root.shown ? parent.height - self.height - 30px : parent.height + 8px;
+
+        // 自适应宽度
+        width: Math.clamp(inner.preferred-width, 100px, Math.min(344px, parent.width - 32px));
+        height: inner.preferred-height;
+        background: MaterialPalette.inverse_surface;
+        border-radius: 4px;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: #00000060;
+        animate y {
+            duration: 250ms;
+            easing: ease-out;
+        }
+
+        inner := HorizontalLayout {
+            padding-left: 26px;
+            padding-right: 26px;
+            padding-top: 12px;
+            padding-bottom: 12px;
+            MaterialText {
+                horizontal-alignment: center;
+                text: root.text;
+                wrap: word-wrap;
+                style: MaterialTypography.body_medium;
+                color: MaterialPalette.inverse_on_surface;
+                vertical-alignment: center;
+            }
+        }
     }
 }

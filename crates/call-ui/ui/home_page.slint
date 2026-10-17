@@ -21,7 +21,7 @@ export component HomePage inherits Rectangle {
         spacing: 16px;
         // 左侧时钟卡片 (6:14 比例)
         ClockCard {
-            horizontal-stretch: 6;
+            horizontal-stretch: 3;
             sip-registered: root.sip-registered;
             clock-text: root.clock-text;
             date-text: root.date-text;
@@ -33,7 +33,7 @@ export component HomePage inherits Rectangle {
 
         // 右侧: 应用网格 + 最近通话
         VerticalLayout {
-            horizontal-stretch: 14;
+            horizontal-stretch: 17;
             spacing: 12px;
             AppGrid {
                 vertical-stretch: 1;

@@ -1,5 +1,11 @@
 // 拨号页: 号码输入 + 3x4 键盘 + 清除/拨打
-import { TextField, TextButton, TonalButton, OutlineButton, FilledButton } from "../material-1.1.0/material.slint";
+import {
+    TextField,
+    TextButton,
+    TonalButton,
+    OutlineButton,
+    FilledButton,
+} from "../material-1.1.0/material.slint";
 
 export component DialPage inherits Rectangle {
     callback back();
@@ -16,6 +22,7 @@ export component DialPage inherits Rectangle {
                 clicked => { root.back(); }
             }
         }
+
         Rectangle {
             vertical-stretch: 1;
             HorizontalLayout {
@@ -27,34 +34,107 @@ export component DialPage inherits Rectangle {
                     number := TextField {
                         placeholder-text: @tr("输入号码");
                     }
+
                     HorizontalLayout {
                         alignment: center;
                         spacing: 12px;
-                        TonalButton { width: 96px; height: 56px; text: "1"; clicked => { number.text += "1"; } }
-                        TonalButton { width: 96px; height: 56px; text: "2"; clicked => { number.text += "2"; } }
-                        TonalButton { width: 96px; height: 56px; text: "3"; clicked => { number.text += "3"; } }
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "1";
+                            clicked => { number.text += "1"; }
+                        }
+
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "2";
+                            clicked => { number.text += "2"; }
+                        }
+
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "3";
+                            clicked => { number.text += "3"; }
+                        }
                     }
+
                     HorizontalLayout {
                         alignment: center;
                         spacing: 12px;
-                        TonalButton { width: 96px; height: 56px; text: "4"; clicked => { number.text += "4"; } }
-                        TonalButton { width: 96px; height: 56px; text: "5"; clicked => { number.text += "5"; } }
-                        TonalButton { width: 96px; height: 56px; text: "6"; clicked => { number.text += "6"; } }
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "4";
+                            clicked => { number.text += "4"; }
+                        }
+
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "5";
+                            clicked => { number.text += "5"; }
+                        }
+
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "6";
+                            clicked => { number.text += "6"; }
+                        }
                     }
+
                     HorizontalLayout {
                         alignment: center;
                         spacing: 12px;
-                        TonalButton { width: 96px; height: 56px; text: "7"; clicked => { number.text += "7"; } }
-                        TonalButton { width: 96px; height: 56px; text: "8"; clicked => { number.text += "8"; } }
-                        TonalButton { width: 96px; height: 56px; text: "9"; clicked => { number.text += "9"; } }
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "7";
+                            clicked => { number.text += "7"; }
+                        }
+
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "8";
+                            clicked => { number.text += "8"; }
+                        }
+
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "9";
+                            clicked => { number.text += "9"; }
+                        }
                     }
+
                     HorizontalLayout {
                         alignment: center;
                         spacing: 12px;
-                        TonalButton { width: 96px; height: 56px; text: "*"; clicked => { number.text += "*"; } }
-                        TonalButton { width: 96px; height: 56px; text: "0"; clicked => { number.text += "0"; } }
-                        TonalButton { width: 96px; height: 56px; text: "#"; clicked => { number.text += "#"; } }
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "*";
+                            clicked => { number.text += "*"; }
+                        }
+
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "0";
+                            clicked => { number.text += "0"; }
+                        }
+
+                        TonalButton {
+                            width: 96px;
+                            height: 56px;
+                            text: "#";
+                            clicked => { number.text += "#"; }
+                        }
                     }
+
                     HorizontalLayout {
                         alignment: center;
                         spacing: 16px;
@@ -62,6 +142,7 @@ export component DialPage inherits Rectangle {
                             text: @tr("清除");
                             clicked => { number.text = ""; }
                         }
+
                         FilledButton {
                             text: @tr("拨打");
                             enabled: number.text != "";

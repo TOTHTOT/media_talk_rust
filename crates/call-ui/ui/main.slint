@@ -4,12 +4,17 @@
 // phase: 0=Idle 1=Outgoing 2=Incoming 3=InCall (与 app.rs Phase 一一对应)
 // Idle 下再分子页面 page: 0=主页 1=拨号 2=设置 (纯 UI 状态, 不进状态机)
 import {
-    MaterialWindow, MaterialText, MaterialTypography, MaterialPalette,
-    FilledButton, TextButton, OutlineButton, SnackBar
+    MaterialWindow,
+    MaterialText,
+    MaterialTypography,
+    MaterialPalette,
+    FilledButton,
+    TextButton,
+    OutlineButton,
 } from "../material-1.1.0/material.slint";
 // Material 主题全局状态需要链接进二进制, 模板同款写法
 export { MaterialWindowAdapter } from "../material-1.1.0/material.slint";
-import { CallLogEntry } from "components.slint";
+import { CallLogEntry, AppToast } from "components.slint";
 import { StatusBar } from "status_bar.slint";
 import { HomePage } from "home_page.slint";
 import { DialPage } from "dial_page.slint";
@@ -44,7 +49,6 @@ export component MainWindow inherits MaterialWindow {
     function show-toast(t: string) {
         if (root.toast == "") {
             root.toast = t;
-            toast-popup.show();
         } else if (toast-queue.length < 5) {
             // 连点防爆: 积压超过 5 条直接丢弃
             toast-queue.push(t);
@@ -60,19 +64,8 @@ export component MainWindow inherits MaterialWindow {
                 root.toast-queue.remove(0);
             } else {
                 root.toast = "";
-                toast-popup.close();
             }
         }
-    }
-    toast-popup := SnackBar {
-        // PopupWindow 必须显式铺满窗口: 组件内部按 root.height 定位到底部,
-        // 不给宽高时弹窗收缩成内容大小导致定位计算出错 (官方 gallery 同款写法)
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-        text: root.toast;
-        has_close_button: true;
     }
 
     title: "media_talk";
@@ -138,10 +131,18 @@ export component MainWindow inherits MaterialWindow {
     if root.phase == 1: VerticalLayout {
         alignment: center;
         spacing: 24px;
-        MaterialText { text: @tr("呼叫 {} ...", root.peer); style: MaterialTypography.headline_medium; horizontal-alignment: center; }
+        MaterialText {
+            text: @tr("呼叫 {} ...", root.peer);
+            style: MaterialTypography.headline_medium;
+            horizontal-alignment: center;
+        }
+
         HorizontalLayout {
             alignment: center;
-            OutlineButton { text: @tr("取消"); clicked => { root.hangup(); } }
+            OutlineButton {
+                text: @tr("取消");
+                clicked => { root.hangup(); }
+            }
         }
     }
 
@@ -149,12 +150,24 @@ export component MainWindow inherits MaterialWindow {
     if root.phase == 2: VerticalLayout {
         alignment: center;
         spacing: 24px;
-        MaterialText { text: @tr("来电: {}", root.peer); style: MaterialTypography.headline_medium; horizontal-alignment: center; }
+        MaterialText {
+            text: @tr("来电: {}", root.peer);
+            style: MaterialTypography.headline_medium;
+            horizontal-alignment: center;
+        }
+
         HorizontalLayout {
             alignment: center;
             spacing: 24px;
-            FilledButton { text: @tr("接听"); clicked => { root.accept-call(); } }
-            OutlineButton { text: @tr("拒接"); clicked => { root.reject-call(); } }
+            FilledButton {
+                text: @tr("接听");
+                clicked => { root.accept-call(); }
+            }
+
+            OutlineButton {
+                text: @tr("拒接");
+                clicked => { root.reject-call(); }
+            }
         }
     }
 
@@ -172,5 +185,13 @@ export component MainWindow inherits MaterialWindow {
             vertical-alignment: center;
             horizontal-alignment: center;
         }
+    }
+
+    // ===== toast 浮条 (最后声明, 绘制在最上层; 纯 Rectangle 不挡点击) =====
+    AppToast {
+        width: 100%;
+        height: 100%;
+        text: root.toast;
+        shown: root.toast != "";
     }
 }
