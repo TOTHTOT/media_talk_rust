@@ -1,0 +1,68 @@
+// 主页左侧时钟卡片: 时钟/日期 + 状态点列表 + 一键开锁
+import {
+    FilledCard, FilledButton, HorizontalDivider,
+    MaterialText, MaterialTypography, MaterialPalette
+} from "../../material-1.1.0/material.slint";
+import { Dot } from "../components.slint";
+
+export component ClockCard inherits FilledCard {
+    in property <bool> sip-registered;
+    in property <string> clock-text;
+    in property <string> date-text;
+    in property <int> unread-messages;
+    in property <int> today-visitors;
+    // 页面宽度, 用于时钟缩字号; 不能直接用卡片自身宽度 (布局环: 宽度←布局←文字偏好尺寸←字号←宽度)
+    in property <length> page-width;
+    callback show-toast(string);
+
+    VerticalLayout {
+        alignment: center;
+        padding-left: 28px;
+        padding-right: 28px;
+        spacing: 8px;
+        MaterialText {
+            text: root.clock-text;
+            style: MaterialTypography.display_large;
+            // 窗口变窄时缩字号, 避免时钟溢出卡片
+            font-size: min(64px, root.page-width / 16);
+        }
+        MaterialText {
+            text: root.date-text;
+            style: MaterialTypography.title_medium;
+            color: MaterialPalette.on_surface_variant;
+        }
+        Rectangle { height: 4px; }
+        HorizontalDivider {}
+        Rectangle { height: 4px; }
+        HorizontalLayout {
+            spacing: 12px;
+            Dot { tint: root.sip-registered ? #4ade80 : MaterialPalette.error; width: 12px; height: 12px; border-radius: 6px; }
+            MaterialText {
+                style: MaterialTypography.body_large;
+                color: MaterialPalette.on_surface_variant;
+                vertical-alignment: center;
+                text: root.sip-registered ? @tr("通话服务正常") : @tr("通话服务未注册");
+            }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            Dot { tint: #fab43c; width: 12px; height: 12px; border-radius: 6px; }
+            MaterialText { style: MaterialTypography.body_large; color: MaterialPalette.on_surface_variant; vertical-alignment: center; text: @tr("未读消息 {} 条", root.unread-messages); }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            Dot { tint: #60c8ff; width: 12px; height: 12px; border-radius: 6px; }
+            MaterialText { style: MaterialTypography.body_large; color: MaterialPalette.on_surface_variant; vertical-alignment: center; text: @tr("今日访客 {} 人", root.today-visitors); }
+        }
+        Rectangle { height: 8px; }
+        // 一键开锁 (DTMF 未接入, 气泡提示); 居中不满宽
+        HorizontalLayout {
+            alignment: center;
+            FilledButton {
+                horizontal-stretch: 0;
+                text: @tr("一键开锁");
+                clicked => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); }
+            }
+        }
+    }
+}

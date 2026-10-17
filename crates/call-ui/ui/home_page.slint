@@ -1,9 +1,9 @@
-// 主页: 左侧时钟卡片 + 右侧 4x2 应用网格 + 底部最近通话
-import {
-    FilledCard, FilledButton, HorizontalDivider, ListTile,
-    MaterialText, MaterialTypography, MaterialPalette
-} from "../material-1.1.0/material.slint";
-import { AppIcon, Dot, CallLogEntry } from "components.slint";
+// 主页: 组装左侧时钟卡片 + 右侧 4x2 应用网格 + 底部最近通话
+// 子组件在 home/ 目录: ClockCard / AppGrid / RecentCalls
+import { CallLogEntry } from "components.slint";
+import { ClockCard } from "home/clock_card.slint";
+import { AppGrid } from "home/app_grid.slint";
+import { RecentCalls } from "home/recent_calls.slint";
 
 export component HomePage inherits Rectangle {
     in property <bool> sip-registered;
@@ -19,122 +19,35 @@ export component HomePage inherits Rectangle {
     HorizontalLayout {
         padding: 16px;
         spacing: 16px;
-        // 左侧时钟卡片 (6:14 比例, 内容垂直居中)
-        FilledCard {
+        // 左侧时钟卡片 (6:14 比例)
+        ClockCard {
             horizontal-stretch: 6;
-            VerticalLayout {
-                alignment: center;
-                padding-left: 28px;
-                padding-right: 28px;
-                spacing: 8px;
-                MaterialText {
-                    text: root.clock-text;
-                    style: MaterialTypography.display_large;
-                    // 窗口变窄时缩字号, 避免时钟溢出卡片
-                    font-size: min(64px, root.width / 16);
-                }
-                MaterialText {
-                    text: root.date-text;
-                    style: MaterialTypography.title_medium;
-                    color: MaterialPalette.on_surface_variant;
-                }
-                Rectangle { height: 4px; }
-                HorizontalDivider {}
-                Rectangle { height: 4px; }
-                HorizontalLayout {
-                    spacing: 12px;
-                    Dot { tint: root.sip-registered ? #4ade80 : MaterialPalette.error; width: 12px; height: 12px; border-radius: 6px; }
-                    MaterialText {
-                        style: MaterialTypography.body_large;
-                        color: MaterialPalette.on_surface_variant;
-                        vertical-alignment: center;
-                        text: root.sip-registered ? @tr("通话服务正常") : @tr("通话服务未注册");
-                    }
-                }
-                HorizontalLayout {
-                    spacing: 12px;
-                    Dot { tint: #fab43c; width: 12px; height: 12px; border-radius: 6px; }
-                    MaterialText { style: MaterialTypography.body_large; color: MaterialPalette.on_surface_variant; vertical-alignment: center; text: @tr("未读消息 {} 条", root.unread-messages); }
-                }
-                HorizontalLayout {
-                    spacing: 12px;
-                    Dot { tint: #60c8ff; width: 12px; height: 12px; border-radius: 6px; }
-                    MaterialText { style: MaterialTypography.body_large; color: MaterialPalette.on_surface_variant; vertical-alignment: center; text: @tr("今日访客 {} 人", root.today-visitors); }
-                }
-                Rectangle { height: 8px; }
-                // 一键开锁 (DTMF 未接入, 气泡提示); 居中不满宽
-                HorizontalLayout {
-                    alignment: center;
-                    FilledButton {
-                        horizontal-stretch: 0;
-                        text: @tr("一键开锁");
-                        clicked => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); }
-                    }
-                }
-            }
+            sip-registered: root.sip-registered;
+            clock-text: root.clock-text;
+            date-text: root.date-text;
+            unread-messages: root.unread-messages;
+            today-visitors: root.today-visitors;
+            page-width: root.width;
+            show-toast(t) => { root.show-toast(t); }
         }
 
-        // 右侧: 应用网格 4x2 + 最近通话
+        // 右侧: 应用网格 + 最近通话
         VerticalLayout {
             horizontal-stretch: 14;
             spacing: 12px;
-            GridLayout {
-                spacing: 12px;
+            AppGrid {
                 vertical-stretch: 1;
-                Row {
-                    AppIcon { icon: @image-url("icons/phone.svg"); tint: #42af64; label: @tr("通话");
-                        clicked => { root.open-page(1); } }
-                    AppIcon { icon: @image-url("icons/video.svg"); tint: #3a82dc; label: @tr("监视");
-                        clicked => { root.show-toast(@tr("门口机监视功能开发中")); } }
-                    AppIcon { icon: @image-url("icons/mail.svg"); tint: #eb9b37; label: @tr("消息"); badge: root.unread-messages;
-                        clicked => { root.show-toast(@tr("消息功能开发中")); } }
-                    AppIcon { icon: @image-url("icons/image.svg"); tint: #965fdc; label: @tr("访客留影");
-                        clicked => { root.show-toast(@tr("访客留影功能开发中")); } }
-                }
-                Row {
-                    AppIcon { icon: @image-url("icons/shield-check.svg"); tint: #1eaaa0; label: @tr("安防报警");
-                        clicked => { root.show-toast(@tr("安防报警功能开发中")); } }
-                    AppIcon { icon: @image-url("icons/bell.svg"); tint: #e1b937; label: @tr("物业通知");
-                        clicked => { root.show-toast(@tr("物业通知功能开发中")); } }
-                    AppIcon { icon: @image-url("icons/building.svg"); tint: #5a78c8; label: @tr("管理中心");
-                        clicked => { root.show-toast(@tr("管理中心直通功能开发中")); } }
-                    AppIcon { icon: @image-url("icons/settings.svg"); tint: #6e7687; label: @tr("设置");
-                        clicked => { root.open-page(2); } }
-                }
+                unread-messages: root.unread-messages;
+                show-toast(t) => { root.show-toast(t); }
+                open-page(p) => { root.open-page(p); }
             }
 
-            // 最近通话: ListTile 纵向列表, 点击条目回拨
             // 固定高度 (头部 36 + 两条 ListTile 72x2), 有无记录都不挤压上网格
-            FilledCard {
+            RecentCalls {
                 height: 180px;
                 vertical-stretch: 0;
-                MaterialText { x: 20px; y: 10px; text: @tr("最近通话"); style: MaterialTypography.label_large; color: MaterialPalette.on_surface_variant; }
-                if root.call-log.length == 0: MaterialText {
-                    y: 36px;
-                    width: 100%;
-                    height: 144px;
-                    text: @tr("暂无通话记录");
-                    style: MaterialTypography.body_medium;
-                    color: MaterialPalette.outline;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-                for entry[i] in root.call-log: ListTile {
-                    y: 36px + i * 72px;
-                    width: 100%;
-                    // 文案在 UI 侧组合, @tr 可翻译; Rust 只传结构化字段
-                    property <string> dur-text: entry.duration-s >= 60
-                        ? @tr("{} 分 {} 秒", Math.floor(entry.duration-s / 60), Math.mod(entry.duration-s, 60))
-                        : @tr("{} 秒", entry.duration-s);
-                    avatar_icon: entry.outgoing ? @image-url("icons/arrow-up-right.svg") : @image-url("icons/arrow-down-left.svg");
-                    avatar_background: entry.missed ? MaterialPalette.error_container : MaterialPalette.primary_container;
-                    avatar_foreground: entry.missed ? MaterialPalette.on_error_container : MaterialPalette.on_primary_container;
-                    text: (entry.missed ? @tr("未接") : entry.outgoing ? @tr("呼出") : @tr("呼入")) + " · " + entry.peer;
-                    supporting_text: entry.missed ? entry.time
-                        : entry.connected ? entry.time + " · " + dur-text
-                        : @tr("{} · 未接通", entry.time);
-                    clicked => { root.redial(entry.peer); }
-                }
+                call-log: root.call-log;
+                redial(num) => { root.redial(num); }
             }
         }
     }

@@ -1,0 +1,38 @@
+// 主页右下最近通话卡片: ListTile 纵向列表, 点击条目回拨
+import {
+    FilledCard, ListTile, MaterialText, MaterialTypography, MaterialPalette
+} from "../../material-1.1.0/material.slint";
+import { CallLogEntry } from "../components.slint";
+
+export component RecentCalls inherits FilledCard {
+    in property <[CallLogEntry]> call-log;
+    callback redial(string);
+
+    MaterialText { x: 20px; y: 10px; text: @tr("最近通话"); style: MaterialTypography.label_large; color: MaterialPalette.on_surface_variant; }
+    if root.call-log.length == 0: MaterialText {
+        y: 36px;
+        width: 100%;
+        height: root.height - 36px;
+        text: @tr("暂无通话记录");
+        style: MaterialTypography.body_medium;
+        color: MaterialPalette.outline;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    for entry[i] in root.call-log: ListTile {
+        y: 36px + i * 72px;
+        width: 100%;
+        // 文案在 UI 侧组合, @tr 可翻译; Rust 只传结构化字段
+        property <string> dur-text: entry.duration-s >= 60
+            ? @tr("{} 分 {} 秒", Math.floor(entry.duration-s / 60), Math.mod(entry.duration-s, 60))
+            : @tr("{} 秒", entry.duration-s);
+        avatar_icon: entry.outgoing ? @image-url("../icons/arrow-up-right.svg") : @image-url("../icons/arrow-down-left.svg");
+        avatar_background: entry.missed ? MaterialPalette.error_container : MaterialPalette.primary_container;
+        avatar_foreground: entry.missed ? MaterialPalette.on_error_container : MaterialPalette.on_primary_container;
+        text: (entry.missed ? @tr("未接") : entry.outgoing ? @tr("呼出") : @tr("呼入")) + " · " + entry.peer;
+        supporting_text: entry.missed ? entry.time
+            : entry.connected ? entry.time + " · " + dur-text
+            : @tr("{} · 未接通", entry.time);
+        clicked => { root.redial(entry.peer); }
+    }
+}
