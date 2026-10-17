@@ -38,8 +38,9 @@ fn fetch_icons() {
     }
 }
 
-/// 下载解压 Slint 官方 Material 组件集 (不入库, 已存在则跳过), 返回入口文件路径.
-fn fetch_material() -> PathBuf {
+/// 下载解压 Slint 官方 Material 组件集 (不入库, 已存在则跳过).
+/// ui/*.slint 用相对路径 ../material-1.1.0/material.slint 引用.
+fn fetch_material() {
     const VERSION: &str = "1.1.0";
     let entry = PathBuf::from(format!("material-{VERSION}/material.slint"));
     if !entry.exists() {
@@ -58,14 +59,10 @@ fn fetch_material() -> PathBuf {
             .expect("解压 material 组件集失败");
         println!("cargo:warning=fetched material components {VERSION}");
     }
-    entry
 }
 
 fn main() {
     fetch_icons();
-    let material = fetch_material();
-    let config = slint_build::CompilerConfiguration::new().with_library_paths(
-        std::collections::HashMap::from([("material".to_string(), material)]),
-    );
-    slint_build::compile_with_config("ui/main.slint", config).expect("slint compile failed");
+    fetch_material();
+    slint_build::compile("ui/main.slint").expect("slint compile failed");
 }
