@@ -15,6 +15,9 @@ export component InCallPage inherits Rectangle {
     }
 
     HorizontalLayout {
+        // Layout 默认铺满父级, 必须显式收缩到内容尺寸, 否则按钮被拉伸成半屏
+        width: self.preferred-width;
+        height: self.preferred-height;
         x: parent.width - self.width - 24px;
         y: parent.height - self.height - 24px;
         spacing: 12px;
