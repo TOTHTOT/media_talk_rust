@@ -1,0 +1,143 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "SIP 已注册 · {}"
+msgstr "SIP Registered · {}"
+
+msgid "SIP 未注册"
+msgstr "SIP Not Registered"
+
+msgid "{} · 未接通"
+msgstr "{} · Not Connected"
+
+msgid "{} 分 {} 秒"
+msgstr "{} min {} s"
+
+msgid "{} 秒"
+msgstr "{} s"
+
+msgid "一键开锁"
+msgstr "Unlock"
+
+msgid "今日访客 {} 人"
+msgstr "{} Visitors Today"
+
+msgid "取消"
+msgstr "Cancel"
+
+msgid "呼入"
+msgstr "Incoming"
+
+msgid "呼出"
+msgstr "Outgoing"
+
+msgid "呼叫 {} ..."
+msgstr "Calling {} ..."
+
+msgid "安防功能开发中"
+msgstr "Security feature under development"
+
+msgid "安防报警"
+msgstr "Security Alarm"
+
+msgid "安防报警功能开发中"
+msgstr "Security alarm feature under development"
+
+msgid "布防中"
+msgstr "Armed"
+
+msgid "开锁"
+msgstr "Unlock"
+
+msgid "开锁功能开发中 (需 DTMF 支持)"
+msgstr "Unlock feature under development (requires DTMF)"
+
+msgid "拒接"
+msgstr "Decline"
+
+msgid "拨打"
+msgstr "Call"
+
+msgid "挂断"
+msgstr "Hang Up"
+
+msgid "接听"
+msgstr "Answer"
+
+msgid "暂无通话记录"
+msgstr "No call history"
+
+msgid "更多设置项开发中, 当前为只读配置信息"
+msgstr "More settings under development; read-only for now"
+
+msgid "最近通话"
+msgstr "Recent Calls"
+
+msgid "未接"
+msgstr "Missed"
+
+msgid "未读消息 {} 条"
+msgstr "{} unread messages"
+
+msgid "来电: {}"
+msgstr "Incoming call: {}"
+
+msgid "消息"
+msgstr "Messages"
+
+msgid "消息功能开发中"
+msgstr "Messages feature under development"
+
+msgid "清除"
+msgstr "Clear"
+
+msgid "物业通知"
+msgstr "Property Notices"
+
+msgid "物业通知功能开发中"
+msgstr "Property notices feature under development"
+
+msgid "监视"
+msgstr "Monitor"
+
+msgid "管理中心"
+msgstr "Management Center"
+
+msgid "管理中心直通功能开发中"
+msgstr "Direct line to management center under development"
+
+msgid "网络"
+msgstr "Network"
+
+msgid "设置"
+msgstr "Settings"
+
+msgid "访客留影"
+msgstr "Visitor Snapshots"
+
+msgid "访客留影功能开发中"
+msgstr "Visitor snapshots feature under development"
+
+msgid "语言"
+msgstr "Language"
+
+msgid "输入号码"
+msgstr "Enter number"
+
+msgid "返回"
+msgstr "Back"
+
+msgid "通话"
+msgstr "Call"
+
+msgid "通话服务未注册"
+msgstr "Call service not registered"
+
+msgid "通话服务正常"
+msgstr "Call service OK"
+
+msgid "门口机监视功能开发中"
+msgstr "Door station monitoring under development"
+

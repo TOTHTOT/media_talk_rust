@@ -1,0 +1,143 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "SIP 已注册 · {}"
+msgstr ""
+
+msgid "SIP 未注册"
+msgstr ""
+
+msgid "{} · 未接通"
+msgstr ""
+
+msgid "{} 分 {} 秒"
+msgstr ""
+
+msgid "{} 秒"
+msgstr ""
+
+msgid "一键开锁"
+msgstr ""
+
+msgid "今日访客 {} 人"
+msgstr ""
+
+msgid "取消"
+msgstr ""
+
+msgid "呼入"
+msgstr ""
+
+msgid "呼出"
+msgstr ""
+
+msgid "呼叫 {} ..."
+msgstr ""
+
+msgid "安防功能开发中"
+msgstr ""
+
+msgid "安防报警"
+msgstr ""
+
+msgid "安防报警功能开发中"
+msgstr ""
+
+msgid "布防中"
+msgstr ""
+
+msgid "开锁"
+msgstr ""
+
+msgid "开锁功能开发中 (需 DTMF 支持)"
+msgstr ""
+
+msgid "拒接"
+msgstr ""
+
+msgid "拨打"
+msgstr ""
+
+msgid "挂断"
+msgstr ""
+
+msgid "接听"
+msgstr ""
+
+msgid "暂无通话记录"
+msgstr ""
+
+msgid "更多设置项开发中, 当前为只读配置信息"
+msgstr ""
+
+msgid "最近通话"
+msgstr ""
+
+msgid "未接"
+msgstr ""
+
+msgid "未读消息 {} 条"
+msgstr ""
+
+msgid "来电: {}"
+msgstr ""
+
+msgid "消息"
+msgstr ""
+
+msgid "消息功能开发中"
+msgstr ""
+
+msgid "清除"
+msgstr ""
+
+msgid "物业通知"
+msgstr ""
+
+msgid "物业通知功能开发中"
+msgstr ""
+
+msgid "监视"
+msgstr ""
+
+msgid "管理中心"
+msgstr ""
+
+msgid "管理中心直通功能开发中"
+msgstr ""
+
+msgid "网络"
+msgstr ""
+
+msgid "设置"
+msgstr ""
+
+msgid "访客留影"
+msgstr ""
+
+msgid "访客留影功能开发中"
+msgstr ""
+
+msgid "语言"
+msgstr ""
+
+msgid "输入号码"
+msgstr ""
+
+msgid "返回"
+msgstr ""
+
+msgid "通话"
+msgstr ""
+
+msgid "通话服务未注册"
+msgstr ""
+
+msgid "通话服务正常"
+msgstr ""
+
+msgid "门口机监视功能开发中"
+msgstr ""
+

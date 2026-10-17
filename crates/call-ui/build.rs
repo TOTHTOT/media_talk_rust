@@ -64,5 +64,14 @@ fn fetch_material() {
 fn main() {
     fetch_icons();
     fetch_material();
-    slint_build::compile("ui/main.slint").expect("slint compile failed");
+    // i18n: 打包 lang/<语言>/LC_MESSAGES/call-ui.po, 运行时按系统 locale 自动选择,
+    // UI 侧可用 slint::select_bundled_translation 切换; 文案以中文为源串, zh.po 留空做回退
+    for po in ["lang/zh/LC_MESSAGES/call-ui.po", "lang/en/LC_MESSAGES/call-ui.po"] {
+        println!("cargo:rerun-if-changed={po}");
+    }
+    let config = slint_build::CompilerConfiguration::new()
+        .with_bundled_translations("lang")
+        // 不用默认 msgctxt (组件名), po 里不写 context, 同串合并翻译
+        .with_default_translation_context(slint_build::DefaultTranslationContext::None);
+    slint_build::compile_with_config("ui/main.slint", config).expect("slint compile failed");
 }

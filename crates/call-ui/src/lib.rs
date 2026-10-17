@@ -114,6 +114,12 @@ fn wire_callbacks(
             apply(&weak, &app, &cmd_tx, cmd);
         });
     }
+    // 语言切换: 纯 UI 关注点, 不进状态机; 切换后 Slint 自动重算所有 @tr
+    ui.on_set_language(move |lang| {
+        if let Err(e) = slint::select_bundled_translation(&lang) {
+            error!(lang = %lang, err = %e, "set language failed");
+        }
+    });
 }
 
 /// 启动通话 GUI: 主线程跑 slint 事件循环, SIP worker 在后台线程.

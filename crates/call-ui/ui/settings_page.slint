@@ -10,6 +10,7 @@ import {
 export component SettingsPage inherits Rectangle {
     in property <string> settings-text;
     callback back();
+    callback set-language(string); // "zh" | "en"
 
     VerticalLayout {
         padding: 24px;
@@ -35,9 +36,32 @@ export component SettingsPage inherits Rectangle {
                     style: MaterialTypography.headline_small;
                 }
 
+                // 语言切换: 立即生效 (bundled translations), 重启后回系统 locale
+                HorizontalLayout {
+                    x: 32px;
+                    y: 60px;
+                    spacing: 8px;
+                    MaterialText {
+                        text: @tr("语言");
+                        style: MaterialTypography.body_large;
+                        color: MaterialPalette.on_surface_variant;
+                        vertical-alignment: center;
+                    }
+
+                    TextButton {
+                        text: "中文";
+                        clicked => { root.set-language("zh"); }
+                    }
+
+                    TextButton {
+                        text: "English";
+                        clicked => { root.set-language("en"); }
+                    }
+                }
+
                 MaterialText {
                     x: 32px;
-                    y: 76px;
+                    y: 108px;
                     width: parent.width - 64px;
                     text: root.settings-text;
                     style: MaterialTypography.body_large;
