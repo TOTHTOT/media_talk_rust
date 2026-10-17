@@ -38,3 +38,8 @@ crates/ipcam-gst/.repowise
 
 # lucide 图标由 call-ui/build.rs 按 ui/icons.txt 构建时下载, 不入库
 /crates/call-ui/ui/icons/
+/crates/call-ui/material-1.1.0/
+
+# Local sccache config (do not commit)
+
+.cargo/config.toml

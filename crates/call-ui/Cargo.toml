@@ -15,7 +15,7 @@ slint = { version = "1", default-features = false, features = [
 # SVG 图标渲染 (lucide 图标): slint 顶层 crate 不导出 svg 开关, 直接钉
 # 内部 crate 的 feature 靠 cargo feature 统一生效; 版本必须等于 slint
 # 锁定的内部版本 (slint 对内部 crate 是 = 钉版)
-i-slint-core = { version = "=1.17.1", features = ["svg"] }
+i-slint-core = { version = "=1.18.1", features = ["svg"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 rsipstack = { workspace = true }
@@ -29,6 +29,8 @@ parking_lot = { workspace = true }
 
 [build-dependencies]
 slint-build = "1"
+# build.rs 解压 material 组件集 zip (纯 Rust, 不依赖系统 tar)
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [features]
 # 板子 (Armbian 无桌面) 用 KMS 直显: 编译时 --features kms,
