@@ -1,4 +1,3 @@
-// 主页右下最近通话卡片: ListTile 纵向列表, 点击条目回拨
 import {
     FilledCard,
     ListTile,
@@ -6,12 +5,14 @@ import {
     MaterialTypography,
     MaterialPalette,
 } from "../../material-1.1.0/material.slint";
+import { ScrollView } from "std-widgets.slint";
 import { CallLogEntry } from "../components.slint";
 
 export component RecentCalls inherits FilledCard {
     in property <[CallLogEntry]> call-log;
     callback redial(string);
 
+    // 固定在卡片顶部的标题
     MaterialText {
         x: 20px;
         y: 10px;
@@ -30,20 +31,39 @@ export component RecentCalls inherits FilledCard {
         horizontal-alignment: center;
         vertical-alignment: center;
     }
-    for entry[i] in root.call-log: ListTile {
-        y: 36px + i * 72px;
+
+    // 有记录时 ScrollView 包裹列表，溢出自动滚动
+    if root.call-log.length > 0: ScrollView {
+        x: 0;
+        y: 36px;
         width: 100%;
-        // 文案在 UI 侧组合, @tr 可翻译; Rust 只传结构化字段
-        property <string> dur-text: entry.duration-s >= 60
-            ? @tr("{} 分 {} 秒", Math.floor(entry.duration-s / 60), Math.mod(entry.duration-s, 60))
-            : @tr("{} 秒", entry.duration-s);
-        avatar_icon: entry.outgoing ? @image-url("../icons/arrow-up-right.svg") : @image-url("../icons/arrow-down-left.svg");
-        avatar_background: entry.missed ? MaterialPalette.error_container : MaterialPalette.primary_container;
-        avatar_foreground: entry.missed ? MaterialPalette.on_error_container : MaterialPalette.on_primary_container;
-        text: (entry.missed ? @tr("未接") : entry.outgoing ? @tr("呼出") : @tr("呼入")) + " · " + entry.peer;
-        supporting_text: entry.missed ? entry.time
-            : entry.connected ? entry.time + " · " + dur-text
-            : @tr("{} · 未接通", entry.time);
-        clicked => { root.redial(entry.peer); }
+        height: parent.height - 46px;
+
+        VerticalLayout {
+            padding-left: 4px;
+            padding-right: 4px;
+            spacing: 2px;
+
+            for entry[i] in root.call-log: ListTile {
+                width: 100%;
+                // ListTile.min_height = max(72, layout.min_height)，内部头像盒
+                // width: self.height 回依赖布局高度，高度不定死会成环 panic
+                height: 72px;
+
+                property <string> dur-text: entry.duration-s >= 60
+                    ? @tr("{} 分 {} 秒", Math.floor(entry.duration-s / 60), Math.mod(entry.duration-s, 60))
+                    : @tr("{} 秒", entry.duration-s);
+
+                avatar_icon: entry.outgoing ? @image-url("../icons/arrow-up-right.svg") : @image-url("../icons/arrow-down-left.svg");
+                avatar_background: entry.missed ? MaterialPalette.error_container : MaterialPalette.primary_container;
+                avatar_foreground: entry.missed ? MaterialPalette.on_error_container : MaterialPalette.on_primary_container;
+                text: (entry.missed ? @tr("未接") : entry.outgoing ? @tr("呼出") : @tr("呼入")) + " · " + entry.peer;
+                supporting_text: entry.missed ? entry.time
+                    : entry.connected ? entry.time + " · " + dur-text
+                    : @tr("{} · 未接通", entry.time);
+
+                clicked => { root.redial(entry.peer); }
+            }
+        }
     }
 }

@@ -17,11 +17,10 @@ pub(crate) fn sync_props(ui: &MainWindow, app: &app::AppState) {
     ui.set_error_text(app.error.as_str().into());
     ui.set_sip_registered(app.registered);
     ui.set_today_visitors(app.today_visitors as i32);
-    // 主页"最近通话"条只显示最近 2 条
+    // 主页"最近通话": 全量传给 ScrollView 渲染, 每条 72px, 溢出自动滚动
     let entries: Vec<CallLogEntry> = app
         .call_log
         .iter()
-        .take(2)
         .map(|r| CallLogEntry {
             outgoing: r.outgoing,
             missed: r.missed,
