@@ -35,3 +35,6 @@ target/build-*/out
 /assets/test_800x480_call.mp4
 /temp
 crates/ipcam-gst/.repowise
+
+# lucide 图标由 call-ui/build.rs 按 ui/icons.txt 构建时下载, 不入库
+/crates/call-ui/ui/icons/

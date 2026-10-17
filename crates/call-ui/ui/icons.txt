@@ -1,0 +1,16 @@
+# lucide 图标清单: 构建时由 build.rs 按此下载到本目录 (不入库)
+# 第一行: lucide-static 版本号 (jsdelivr 上已验证可用)
+# 其余每行一个图标名, 对应 https://lucide.dev/icons/<name>
+# 加图标 = 加一行; 升级版本 = 改第一行后删掉 icons/ 重建
+0.544.0
+arrow-left
+bell
+building
+image
+lock-open
+mail
+phone
+settings
+shield-check
+video
+wifi
