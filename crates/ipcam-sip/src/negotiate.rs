@@ -23,6 +23,13 @@ pub type NegotiatedAnswer = (
     String,
 );
 
+/// 编码协商 picks: 只含选中的编码, 用于 fingerprint 比对决定是否重启管线.
+/// 不含 answer body — 调用方按需自行 build_answer.
+pub type NegotiatePicks = (
+    Option<(u8, AudioCodec)>,
+    Option<(u8, VideoCodec, Option<String>)>,
+);
+
 /// 音频按对端 offer 的偏好序挑第一个谓词接受的编码; 全不匹配返回 None.
 ///
 /// # Arguments
@@ -81,6 +88,15 @@ pub fn pick_video(
     picked
 }
 
+/// pick_audio + pick_video 的组合, 用于 fingerprint 比对.
+pub fn picks(
+    offer: &OfferMedias,
+    audio_pred: impl Fn(&str) -> Option<AudioCodec>,
+    video_pred: impl Fn(&str) -> Option<VideoCodec>,
+) -> NegotiatePicks {
+    (pick_audio(offer, audio_pred), pick_video(offer, video_pred))
+}
+
 /// 从 offer 协商编码并构建 answer SDP (初始 accept 和 re-INVITE 共用).
 /// 按 offer 裁剪 m-line: offer 没有的媒体路 answer 不带; offer 有但
 /// 谓词全不匹配的路端口置 0 (RFC 3264 拒路, 明确告知拒收); 两路都
@@ -111,8 +127,7 @@ pub fn build_answer(
     audio_pred: impl Fn(&str) -> Option<AudioCodec>,
     video_pred: impl Fn(&str) -> Option<VideoCodec>,
 ) -> NegotiatedAnswer {
-    let audio = pick_audio(offer, audio_pred);
-    let video = pick_video(offer, video_pred);
+    let (audio, video) = picks(offer, &audio_pred, &video_pred);
     // answer 的 sess_version 要大于 offer 的 ("1"), 同 build_audio_answer
     let mut sdp = session_skeleton(local_ip, "2");
     if let Some(oa) = &offer.audio {

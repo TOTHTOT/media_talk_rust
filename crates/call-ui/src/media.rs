@@ -97,10 +97,8 @@ impl MediaHandles {
     /// re-INVITE 重新协商 (照 answer.rs CallMedia::renegotiate): 编码
     /// 变了重启接收器 (tap 复用); 对端收包地址/pt/编码变了重启发送器
     pub fn renegotiate(&mut self, offer: &OfferMedias) {
-        let new_recv = (
-            negotiate::pick_audio(offer, audio_pred).map(|(_, c)| c),
-            negotiate::pick_video(offer, video_pred).map(|(_, c, _)| c),
-        );
+        let (audio, video) = negotiate::picks(offer, audio_pred, video_pred);
+        let new_recv = (audio.map(|(_, c)| c), video.map(|(_, c, _)| c));
         if new_recv != self.recv_fingerprint {
             info!(old = ?self.recv_fingerprint, new = ?new_recv, "codec changed, restarting receiver");
             if let Some(r) = self.receiver.take() {
@@ -551,7 +549,9 @@ mod tests {
             audio: None,
             video: Some(media),
         };
-        let max_width = video_send_params(&offer, 1280).expect("video picked").max_width;
+        let max_width = video_send_params(&offer, 1280)
+            .expect("video picked")
+            .max_width;
         assert_eq!(max_width, Some(720), "peer D1 capability must tighten");
 
         let mut media = offer_media(&[(96, "H264")]);
@@ -560,7 +560,9 @@ mod tests {
             audio: None,
             video: Some(media),
         };
-        let max_width = video_send_params(&offer, 640).expect("video picked").max_width;
+        let max_width = video_send_params(&offer, 640)
+            .expect("video picked")
+            .max_width;
         assert_eq!(max_width, Some(640), "peer 720p must not widen config");
     }
 }

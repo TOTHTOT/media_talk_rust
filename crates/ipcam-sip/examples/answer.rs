@@ -341,6 +341,7 @@ fn start_receiver(
 /// re-INVITE 来了按指纹比对, 变了才重启对应管线, 没变只回 answer.
 struct CallMedia {
     output_dir: PathBuf,
+    local_ip: IpAddr,
     mic: bool,
     receiver: Option<RtpReceiver>,
     sender: Option<RtpSender>,
@@ -371,6 +372,7 @@ impl CallMedia {
     /// ```
     fn new(
         output_dir: PathBuf,
+        local_ip: IpAddr,
         mic: bool,
         recv_fingerprint: (Option<AudioCodec>, Option<VideoCodec>),
         send_fingerprint: Option<ipcam_gst::AudioDest>,
@@ -387,6 +389,7 @@ impl CallMedia {
         };
         Self {
             output_dir,
+            local_ip,
             mic,
             receiver,
             sender,
@@ -398,10 +401,15 @@ impl CallMedia {
     /// re-INVITE 重新协商: 编码变了重启接收器 (会重新落一个新的 ts
     /// 文件); 对端收音频地址/pt/编码变了重启麦克风回传.
     fn renegotiate(&mut self, offer: &OfferMedias) {
-        let new_recv = (
-            ipcam_sip::negotiate::pick_audio(offer, audio_pred).map(|(_, c)| c),
-            ipcam_sip::negotiate::pick_video(offer, video_pred).map(|(_, c, _)| c),
+        let (audio, video, _) = ipcam_sip::negotiate::build_answer(
+            offer,
+            self.local_ip,
+            AUDIO_RTP_PORT,
+            VIDEO_RTP_PORT,
+            audio_pred,
+            video_pred,
         );
+        let new_recv = (audio.map(|(_, c)| c), video.map(|(_, c, _)| c));
         if new_recv != self.recv_fingerprint {
             info!(old = ?self.recv_fingerprint, new = ?new_recv, "codec changed, restarting receiver");
             if let Some(r) = self.receiver.take() {
@@ -490,6 +498,7 @@ async fn process_call(
 
     let mut media = CallMedia::new(
         output_dir,
+        local_ip,
         mic,
         (audio_pt.map(|(_, c)| c), video.map(|(_, c, _)| c)),
         mic_params(&offer),
