@@ -59,10 +59,7 @@ impl UiHandle {
         if let Err(e) = slint::invoke_from_event_loop(move || {
             app.lock().on_event(ev);
             if let Some(ui) = weak.upgrade() {
-                let app = app.lock();
-                ui.set_phase(app.phase as i32);
-                ui.set_peer(app.peer.as_str().into());
-                ui.set_error_text(app.error.as_str().into());
+                crate::sync_props(&ui, &app.lock());
             }
         }) {
             // 事件循环已停 (窗口关闭流程中): 事件丢弃即可

@@ -1,55 +1,454 @@
 import { Button, LineEdit } from "std-widgets.slint";
 
 // phase: 0=Idle 1=Outgoing 2=Incoming 3=InCall (与 app.rs Phase 一一对应)
+// Idle 下再分子页面 page: 0=主页 1=拨号 2=设置 (纯 UI 状态, 不进状态机)
+// 图标: lucide (https://lucide.dev), 编译期内嵌, 白描边风格统一 colorize
+
+export struct CallLogEntry {
+    kind: string,   // 呼出 / 呼入 / 未接
+    peer: string,
+    detail: string, // "10:12 · 42 秒" / "09:47 · 未接通"
+    missed: bool,
+}
+
+// 应用图标卡片: 彩色圆角底 + 白色 lucide 图标 + 名称 + 可选角标
+component AppIcon inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <brush> tint;
+    in property <int> badge: 0;
+    callback clicked();
+
+    width: 128px;
+    height: 172px;
+    background: #1f232e;
+    border-radius: 20px;
+
+    TouchArea { clicked => { root.clicked(); } }
+
+    Rectangle {
+        x: (parent.width - 76px) / 2;
+        y: 18px;
+        width: 76px;
+        height: 76px;
+        background: root.tint;
+        border-radius: 18px;
+        Image {
+            x: (parent.width - 42px) / 2;
+            y: (parent.height - 42px) / 2;
+            width: 42px;
+            height: 42px;
+            source: root.icon;
+            colorize: #ffffff;
+        }
+    }
+    Text {
+        y: parent.height - 52px;
+        width: 100%;
+        height: 30px;
+        text: root.label;
+        color: #ebeef5;
+        font-size: 20px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.badge > 0: Rectangle {
+        x: parent.width - 40px;
+        y: 6px;
+        width: 28px;
+        height: 28px;
+        border-radius: 14px;
+        background: #eb4646;
+        Text {
+            width: 100%;
+            height: 100%;
+            text: root.badge;
+            color: white;
+            font-size: 14px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// 页面左上角的返回按钮
+component BackButton inherits Rectangle {
+    callback clicked();
+    width: 104px;
+    height: 40px;
+    background: #1f232e;
+    border-radius: 12px;
+    TouchArea { clicked => { root.clicked(); } }
+    Image {
+        x: 12px;
+        y: 9px;
+        width: 22px;
+        height: 22px;
+        source: @image-url("icons/arrow-left.svg");
+        colorize: #c8cedc;
+    }
+    Text {
+        x: 42px;
+        width: 56px;
+        height: 100%;
+        text: "返回";
+        color: #c8cedc;
+        font-size: 16px;
+        vertical-alignment: center;
+    }
+}
+
+// 拨号盘按键
+component NumKey inherits Rectangle {
+    in property <string> key;
+    callback pressed(string);
+    width: 64px;
+    height: 56px;
+    background: #1f232e;
+    border-radius: 14px;
+    TouchArea { clicked => { root.pressed(root.key); } }
+    Text {
+        width: 100%;
+        height: 100%;
+        text: root.key;
+        color: #ebeef5;
+        font-size: 24px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
 export component MainWindow inherits Window {
     in property <int> phase: 0;
     in property <string> peer: "";
     in property <string> error-text: "";
     in property <image> video-frame;
+    // 主页状态 (Rust 侧驱动)
+    in property <bool> sip-registered: false;
+    in property <string> account: "";
+    in property <string> clock-text: "--:--";
+    in property <string> date-text: "";
+    in property <string> status-time-text: "";
+    in property <int> today-visitors: 0;
+    in property <int> unread-messages: 0;
+    in property <[CallLogEntry]> call-log: [];
+    in property <string> settings-text: "";
     callback dial(string);
     callback accept-call();
     callback reject-call();
     callback hangup();
 
-    title: "media_talk";
-    preferred-width: 800px;
-    preferred-height: 480px;
-    background: #101418;
+    // 纯 UI 状态: 子页面与气泡提示, 不进 Rust 状态机
+    property <int> page: 0;
+    property <string> toast: "";
+    function show-toast(t: string) {
+        toast = t;
+        toast-timer.restart();
+    }
+    toast-timer := Timer {
+        interval: 2.5s;
+        running: false;
+        triggered => {
+            root.toast = "";
+            self.running = false;
+        }
+    }
 
-    // 通话中: 视频铺满 + 挂断
+    title: "media_talk";
+    preferred-width: 1024px;
+    preferred-height: 600px;
+    background: @linear-gradient(180deg, #1a1d26, #0d0f14);
+
+    // ===== 状态栏 (通话视频全屏时隐藏) =====
+    if root.phase != 3: Rectangle {
+        y: 0;
+        width: 100%;
+        height: 56px;
+        background: #12141a;
+        Rectangle { y: 55px; width: 100%; height: 1px; background: #2c303a; }
+        // SIP 注册状态
+        Rectangle {
+            x: 24px;
+            y: 23px;
+            width: 10px;
+            height: 10px;
+            border-radius: 5px;
+            background: root.sip-registered ? #4ade80 : #eb4646;
+        }
+        Text {
+            x: 44px;
+            height: 56px;
+            vertical-alignment: center;
+            font-size: 17px;
+            color: #bec4d2;
+            text: root.sip-registered ? "SIP 已注册 · " + root.account : "SIP 未注册";
+        }
+        // 布防 pill (安防功能未接入, 点击气泡提示)
+        Rectangle {
+            x: 360px;
+            y: 14px;
+            width: 96px;
+            height: 28px;
+            border-radius: 14px;
+            background: #182c38;
+            TouchArea { clicked => { root.show-toast("安防功能开发中"); } }
+            Image {
+                x: 10px;
+                y: 6px;
+                width: 16px;
+                height: 16px;
+                source: @image-url("icons/shield-check.svg");
+                colorize: #60c8ff;
+            }
+            Text {
+                x: 32px;
+                width: 60px;
+                height: 100%;
+                text: "布防中";
+                font-size: 15px;
+                color: #60c8ff;
+                vertical-alignment: center;
+            }
+        }
+        // 右侧: 信号格 + wifi + 时间
+        Rectangle { x: 724px; y: 36px; width: 6px; height: 6px; background: #ebeef5; }
+        Rectangle { x: 733px; y: 31px; width: 6px; height: 11px; background: #ebeef5; }
+        Rectangle { x: 742px; y: 26px; width: 6px; height: 16px; background: #ebeef5; }
+        Rectangle { x: 751px; y: 21px; width: 6px; height: 21px; background: #ebeef5; }
+        Image {
+            x: 766px;
+            y: 17px;
+            width: 22px;
+            height: 22px;
+            source: @image-url("icons/wifi.svg");
+            colorize: #ebeef5;
+        }
+        Text {
+            x: parent.width - 174px;
+            width: 150px;
+            height: 56px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            font-size: 19px;
+            font-weight: 700;
+            color: #ebeef5;
+            text: root.status-time-text;
+        }
+    }
+
+    // ===== 主页 =====
+    if root.phase == 0 && root.page == 0: Rectangle {
+        // 左侧时钟卡片
+        Rectangle {
+            x: 40px;
+            y: 88px;
+            width: 360px;
+            height: 472px;
+            background: #1f232e;
+            border-radius: 24px;
+            Text { x: 72px; y: 128px; text: root.clock-text; color: #ebeef5; font-size: 84px; font-weight: 700; }
+            Text { x: 76px; y: 246px; text: root.date-text; color: #8c92a0; font-size: 23px; }
+            Rectangle { x: 64px; y: 336px; width: 312px; height: 1px; background: #343946; }
+            Rectangle {
+                x: 76px; y: 368px; width: 12px; height: 12px; border-radius: 6px;
+                background: root.sip-registered ? #4ade80 : #eb4646;
+            }
+            Text {
+                x: 100px; y: 360px; font-size: 19px; color: #c8cedc;
+                text: root.sip-registered ? "通话服务正常" : "通话服务未注册";
+            }
+            Rectangle { x: 76px; y: 414px; width: 12px; height: 12px; border-radius: 6px; background: #fab43c; }
+            Text { x: 100px; y: 406px; font-size: 19px; color: #c8cedc; text: "未读消息 " + root.unread-messages + " 条"; }
+            Rectangle { x: 76px; y: 460px; width: 12px; height: 12px; border-radius: 6px; background: #60c8ff; }
+            Text { x: 100px; y: 452px; font-size: 19px; color: #c8cedc; text: "今日访客 " + root.today-visitors + " 人"; }
+            // 一键开锁 (DTMF 未接入, 气泡提示)
+            Rectangle {
+                x: 64px;
+                y: 504px;
+                width: 312px;
+                height: 40px;
+                border-radius: 18px;
+                background: #c83c3c;
+                TouchArea { clicked => { root.show-toast("开锁功能开发中 (需 DTMF 支持)"); } }
+                Text {
+                    width: 100%;
+                    height: 100%;
+                    text: "一键开锁";
+                    color: white;
+                    font-size: 20px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // 应用网格 4x2
+        AppIcon { x: 424px; y: 92px; icon: @image-url("icons/phone.svg"); tint: #42af64; label: "通话";
+            clicked => { root.page = 1; } }
+        AppIcon { x: 568px; y: 92px; icon: @image-url("icons/video.svg"); tint: #3a82dc; label: "监视";
+            clicked => { root.show-toast("门口机监视功能开发中"); } }
+        AppIcon { x: 712px; y: 92px; icon: @image-url("icons/mail.svg"); tint: #eb9b37; label: "消息"; badge: root.unread-messages;
+            clicked => { root.show-toast("消息功能开发中"); } }
+        AppIcon { x: 856px; y: 92px; icon: @image-url("icons/image.svg"); tint: #965fdc; label: "访客留影";
+            clicked => { root.show-toast("访客留影功能开发中"); } }
+        AppIcon { x: 424px; y: 280px; icon: @image-url("icons/shield-check.svg"); tint: #1eaaa0; label: "安防报警";
+            clicked => { root.show-toast("安防报警功能开发中"); } }
+        AppIcon { x: 568px; y: 280px; icon: @image-url("icons/bell.svg"); tint: #e1b937; label: "物业通知";
+            clicked => { root.show-toast("物业通知功能开发中"); } }
+        AppIcon { x: 712px; y: 280px; icon: @image-url("icons/building.svg"); tint: #5a78c8; label: "管理中心";
+            clicked => { root.show-toast("管理中心直通功能开发中"); } }
+        AppIcon { x: 856px; y: 280px; icon: @image-url("icons/settings.svg"); tint: #6e7687; label: "设置";
+            clicked => { root.page = 2; } }
+
+        // 最近通话
+        Rectangle {
+            x: 424px;
+            y: 480px;
+            width: 560px;
+            height: 80px;
+            background: #1f232e;
+            border-radius: 20px;
+            Text { x: 24px; y: 12px; text: "最近通话"; color: #8c92a0; font-size: 16px; font-weight: 700; }
+            if root.call-log.length == 0: Text {
+                y: 34px;
+                width: 100%;
+                text: "暂无通话记录";
+                color: #565c6a;
+                font-size: 16px;
+                horizontal-alignment: center;
+            }
+            for entry[i] in root.call-log: Rectangle {
+                x: 24px + i * 280px;
+                y: 38px;
+                height: 34px;
+                Rectangle {
+                    y: 2px;
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 15px;
+                    border-width: 2px;
+                    border-color: entry.missed ? #eb4646 : #4ade80;
+                    Text {
+                        width: 100%;
+                        height: 100%;
+                        text: entry.kind == "呼出" ? "↗" : "↙";
+                        color: entry.missed ? #eb4646 : #4ade80;
+                        font-size: 15px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                Text { x: 40px; y: -2px; text: entry.kind + " · " + entry.peer; color: #ebeef5; font-size: 16px; font-weight: 700; }
+                Text { x: 40px; y: 18px; text: entry.detail; color: #8c92a0; font-size: 13px; }
+            }
+        }
+    }
+
+    // ===== 拨号页 =====
+    if root.phase == 0 && root.page == 1: Rectangle {
+        BackButton { x: 40px; y: 72px; clicked => { root.page = 0; } }
+        number := LineEdit {
+            x: 212px;
+            y: 110px;
+            width: 600px;
+            height: 64px;
+            placeholder-text: "输入号码";
+            font-size: 30px;
+            horizontal-alignment: center;
+        }
+        NumKey { x: 404px; y: 200px; key: "1"; pressed(k) => { number.text += k; } }
+        NumKey { x: 480px; y: 200px; key: "2"; pressed(k) => { number.text += k; } }
+        NumKey { x: 556px; y: 200px; key: "3"; pressed(k) => { number.text += k; } }
+        NumKey { x: 404px; y: 268px; key: "4"; pressed(k) => { number.text += k; } }
+        NumKey { x: 480px; y: 268px; key: "5"; pressed(k) => { number.text += k; } }
+        NumKey { x: 556px; y: 268px; key: "6"; pressed(k) => { number.text += k; } }
+        NumKey { x: 404px; y: 336px; key: "7"; pressed(k) => { number.text += k; } }
+        NumKey { x: 480px; y: 336px; key: "8"; pressed(k) => { number.text += k; } }
+        NumKey { x: 556px; y: 336px; key: "9"; pressed(k) => { number.text += k; } }
+        NumKey { x: 404px; y: 404px; key: "*"; pressed(k) => { number.text += k; } }
+        NumKey { x: 480px; y: 404px; key: "0"; pressed(k) => { number.text += k; } }
+        NumKey { x: 556px; y: 404px; key: "#"; pressed(k) => { number.text += k; } }
+        Rectangle {
+            x: 404px;
+            y: 484px;
+            width: 104px;
+            height: 48px;
+            border-radius: 14px;
+            background: #3a4152;
+            TouchArea { clicked => { number.text = ""; } }
+            Text { width: 100%; height: 100%; text: "清除"; color: #c8cedc; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        Rectangle {
+            x: 524px;
+            y: 484px;
+            width: 104px;
+            height: 48px;
+            border-radius: 14px;
+            background: number.text == "" ? #2a3a30 : #42af64;
+            TouchArea { clicked => { if (number.text != "") { root.dial(number.text); } } }
+            Text { width: 100%; height: 100%; text: "拨打"; color: white; font-size: 18px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+
+    // ===== 设置页 (只读配置信息) =====
+    if root.phase == 0 && root.page == 2: Rectangle {
+        BackButton { x: 40px; y: 72px; clicked => { root.page = 0; } }
+        Rectangle {
+            x: 212px;
+            y: 100px;
+            width: 600px;
+            height: 440px;
+            background: #1f232e;
+            border-radius: 20px;
+            Text { x: 32px; y: 24px; text: "设置"; color: #ebeef5; font-size: 22px; font-weight: 700; }
+            Text { x: 32px; y: 76px; text: root.settings-text; color: #c8cedc; font-size: 19px; }
+            Text {
+                x: 32px;
+                y: parent.height - 52px;
+                width: parent.width - 64px;
+                text: "更多设置项开发中, 当前为只读配置信息";
+                color: #565c6a;
+                font-size: 14px;
+            }
+        }
+    }
+
+    // ===== 通话中: 视频铺满 + 开锁/挂断 =====
     if root.phase == 3: Rectangle {
+        background: black;
         Image {
             source: root.video-frame;
             width: 100%;
             height: 100%;
             image-fit: contain;
         }
-        Button {
-            text: "挂断";
-            x: parent.width - self.width - 20px;
-            y: parent.height - self.height - 20px;
-            clicked => { root.hangup(); }
+        Rectangle {
+            x: parent.width - 240px;
+            y: parent.height - 76px;
+            width: 104px;
+            height: 48px;
+            border-radius: 14px;
+            background: #c83c3ccc;
+            TouchArea { clicked => { root.show-toast("开锁功能开发中 (需 DTMF 支持)"); } }
+            Text { width: 100%; height: 100%; text: "开锁"; color: white; font-size: 18px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        Rectangle {
+            x: parent.width - 120px;
+            y: parent.height - 76px;
+            width: 104px;
+            height: 48px;
+            border-radius: 14px;
+            background: #3a4152cc;
+            TouchArea { clicked => { root.hangup(); } }
+            Text { width: 100%; height: 100%; text: "挂断"; color: white; font-size: 18px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
         }
     }
 
-    // 待机: 拨号
-    if root.phase == 0: VerticalLayout {
-        alignment: center;
-        spacing: 16px;
-        padding: 60px;
-        number := LineEdit {
-            placeholder-text: "输入号码";
-            font-size: 28px;
-            horizontal-alignment: center;
-        }
-        Button {
-            text: "拨打";
-            enabled: number.text != "";
-            clicked => { root.dial(number.text); }
-        }
-    }
-
-    // 呼出中
+    // ===== 呼出中 =====
     if root.phase == 1: VerticalLayout {
         alignment: center;
         spacing: 16px;
@@ -57,7 +456,7 @@ export component MainWindow inherits Window {
         Button { text: "取消"; clicked => { root.hangup(); } }
     }
 
-    // 来电
+    // ===== 来电 =====
     if root.phase == 2: VerticalLayout {
         alignment: center;
         spacing: 16px;
@@ -70,7 +469,7 @@ export component MainWindow inherits Window {
         }
     }
 
-    // 错误条
+    // ===== 错误条 =====
     if root.error-text != "": Rectangle {
         y: 0;
         width: 100%;
@@ -83,6 +482,25 @@ export component MainWindow inherits Window {
             height: 100%;
             vertical-alignment: center;
             horizontal-alignment: center;
+        }
+    }
+
+    // ===== 气泡提示 (不支持的功能) =====
+    if root.toast != "": Rectangle {
+        x: (parent.width - 400px) / 2;
+        y: parent.height - 96px;
+        width: 400px;
+        height: 48px;
+        border-radius: 24px;
+        background: #2a2f3cee;
+        Text {
+            width: 100%;
+            height: 100%;
+            text: root.toast;
+            color: #ebeef5;
+            font-size: 16px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
         }
     }
 }

@@ -12,11 +12,16 @@ slint = { version = "1", default-features = false, features = [
     # slint 1.17 要求显式开 compat-1-2 (default-features=false 时被关掉)
     "compat-1-2",
 ] }
+# SVG 图标渲染 (lucide 图标): slint 顶层 crate 不导出 svg 开关, 直接钉
+# 内部 crate 的 feature 靠 cargo feature 统一生效; 版本必须等于 slint
+# 锁定的内部版本 (slint 对内部 crate 是 = 钉版)
+i-slint-core = { version = "=1.17.1", features = ["svg"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 rsipstack = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+chrono = { workspace = true }
 ipcam-core = { path = "../ipcam-core" }
 ipcam-gst = { path = "../ipcam-gst" }
 ipcam-sip = { path = "../ipcam-sip" }

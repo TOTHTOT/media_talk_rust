@@ -759,6 +759,8 @@ name = "call-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "i-slint-core",
  "ipcam-core",
  "ipcam-gst",
  "ipcam-sip",
