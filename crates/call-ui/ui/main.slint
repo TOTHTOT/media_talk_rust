@@ -14,7 +14,7 @@ import {
 } from "../material-1.1.0/material.slint";
 // Material 主题全局状态需要链接进二进制, 模板同款写法
 export { MaterialWindowAdapter } from "../material-1.1.0/material.slint";
-import { CallLogEntry, AppToast, ErrorBanner } from "components.slint";
+import { CallLogEntry, ContactEntry, AppToast, ErrorBanner } from "components.slint";
 import { StatusBar } from "status_bar.slint";
 import { HomePage } from "home_page.slint";
 import { DialPage } from "dial_page.slint";
@@ -35,12 +35,17 @@ export component MainWindow inherits MaterialWindow {
     in property <int> today-visitors: 0;
     in property <int> unread-messages: 0;
     in property <[CallLogEntry]> call-log: [];
+    in property <[ContactEntry]> contacts: [];
     in property <string> settings-text: "";
     callback dial(string);
     callback accept-call();
     callback reject-call();
     callback hangup();
     callback set-language(string); // "zh" | "en"
+    // 通讯录 CRUD (SQLite 持久化在 Rust store.rs)
+    callback add-contact(string, string);
+    callback update-contact(int, string, string);
+    callback delete-contact(int);
 
     property <string> displayed-error <=> root.error-text;
     error-timer := Timer {
@@ -115,8 +120,12 @@ export component MainWindow inherits MaterialWindow {
         y: 30px;
         width: 100%;
         height: parent.height - 30px;
+        contacts: root.contacts;
         back => { root.page = 0; }
         dial(num) => { root.dial(num); }
+        add-contact(name, num) => { root.add-contact(name, num); }
+        update-contact(id, name, num) => { root.update-contact(id, name, num); }
+        delete-contact(id) => { root.delete-contact(id); }
     }
 
     // ===== 设置页 =====

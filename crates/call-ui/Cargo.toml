@@ -26,6 +26,8 @@ ipcam-core = { path = "../ipcam-core" }
 ipcam-gst = { path = "../ipcam-gst" }
 ipcam-sip = { path = "../ipcam-sip" }
 parking_lot = { workspace = true }
+rusqlite = { workspace = true }
+directories = { workspace = true }
 
 [build-dependencies]
 slint-build = "1"

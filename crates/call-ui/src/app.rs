@@ -73,6 +73,8 @@ pub struct AppState {
     pub today_visitors: u32,
     /// 最近通话记录, 新的在前, 上限 20 条 (主页只显示前 2)
     pub call_log: Vec<CallRecord>,
+    /// 已记账但还没落盘的记录 (1s 定时器批量写 SQLite, 见 lib.rs)
+    unsaved: Vec<CallRecord>,
     /// 当前/进行通话的方向, 记 call_log 用
     call_dir: Option<CallDir>,
     /// Confirmed 时刻, 通话时长从它算
@@ -110,6 +112,13 @@ impl AppState {
             },
         );
         self.call_log.truncate(20);
+        // 待落盘副本 (持久化不阻塞状态机, 由外部定时器取走写库)
+        self.unsaved.push(self.call_log[0].clone());
+    }
+
+    /// 取走全部待落盘记录 (调用方负责写 SQLite)
+    pub fn take_unsaved_records(&mut self) -> Vec<CallRecord> {
+        std::mem::take(&mut self.unsaved)
     }
 
     /// 通话收尾公共段: 记账 + 回 Idle + 清通话上下文

@@ -141,3 +141,20 @@ msgstr ""
 msgid "门口机监视功能开发中"
 msgstr ""
 
+msgid "通讯录"
+msgstr ""
+
+msgid "姓名"
+msgstr ""
+
+msgid "号码"
+msgstr ""
+
+msgid "添加"
+msgstr ""
+
+msgid "保存"
+msgstr ""
+
+msgid "暂无联系人"
+msgstr ""

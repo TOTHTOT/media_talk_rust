@@ -1,0 +1,109 @@
+// 拨号页左侧通讯录卡: 添加/编辑表单 + 联系人列表 (数据落 SQLite, 回调透传 Rust)
+import {
+    TextField,
+    TextButton,
+    FilledButton,
+    FilledCard,
+    IconButton,
+    ListTile,
+    HorizontalDivider,
+    MaterialText,
+    MaterialTypography,
+    MaterialPalette,
+} from "../../material-1.1.0/material.slint";
+import { ScrollView } from "std-widgets.slint";
+import { ContactEntry } from "../components.slint";
+
+export component ContactsCard inherits FilledCard {
+    in property <[ContactEntry]> contacts: [];
+    callback add-contact(string, string); // name, number
+    callback update-contact(int, string, string); // id, name, number
+    callback delete-contact(int); // id
+    callback pick-number(string); // 点列表行, 把号码交给拨号盘
+
+    // 编辑态: -1=新增, 否则为正在编辑的联系人 id
+    property <int> editing-id: -1;
+    function clear-form() {
+        name-input.text = "";
+        number-input.text = "";
+        root.editing-id = -1;
+    }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        MaterialText {
+            text: @tr("通讯录");
+            style: MaterialTypography.title_large;
+        }
+
+        // 添加/编辑表单 (编辑时点列表行的铅笔载入)
+        name-input := TextField {
+            placeholder-text: @tr("姓名");
+        }
+
+        number-input := TextField {
+            placeholder-text: @tr("号码");
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            FilledButton {
+                text: root.editing-id < 0 ? @tr("添加") : @tr("保存");
+                enabled: name-input.text != "" && number-input.text != "";
+                clicked => {
+                    if (root.editing-id < 0) {
+                        root.add-contact(name-input.text, number-input.text);
+                    } else {
+                        root.update-contact(root.editing-id, name-input.text, number-input.text);
+                    }
+                    root.clear-form();
+                }
+            }
+
+            if root.editing-id >= 0: TextButton {
+                text: @tr("取消");
+                clicked => { root.clear-form(); }
+            }
+        }
+
+        HorizontalDivider {}
+
+        if root.contacts.length == 0: MaterialText {
+            vertical-stretch: 1;
+            text: @tr("暂无联系人");
+            style: MaterialTypography.body_medium;
+            color: MaterialPalette.outline;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        if root.contacts.length > 0: ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 2px;
+                for c in root.contacts: ListTile {
+                    width: 100%;
+                    // 必须显式定高: ListTile 内部 min_height 与头像盒互为依赖, 不定死成环 panic
+                    height: 72px;
+                    text: c.name;
+                    supporting_text: c.number;
+                    clicked => { root.pick-number(c.number); }
+                    IconButton {
+                        icon: @image-url("../icons/pencil.svg");
+                        clicked => {
+                            root.editing-id = c.id;
+                            name-input.text = c.name;
+                            number-input.text = c.number;
+                        }
+                    }
+
+                    IconButton {
+                        icon: @image-url("../icons/trash-2.svg");
+                        clicked => { root.delete-contact(c.id); }
+                    }
+                }
+            }
+        }
+    }
+}

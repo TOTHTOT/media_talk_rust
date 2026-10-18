@@ -141,3 +141,20 @@ msgstr "Call service OK"
 msgid "门口机监视功能开发中"
 msgstr "Door station monitoring under development"
 
+msgid "通讯录"
+msgstr "Contacts"
+
+msgid "姓名"
+msgstr "Name"
+
+msgid "号码"
+msgstr "Number"
+
+msgid "添加"
+msgstr "Add"
+
+msgid "保存"
+msgstr "Save"
+
+msgid "暂无联系人"
+msgstr "No contacts"

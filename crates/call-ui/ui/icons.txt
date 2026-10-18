@@ -17,3 +17,5 @@ shield-check
 video
 wifi
 phone-off
+pencil
+trash-2

@@ -17,6 +17,13 @@ export struct CallLogEntry {
     duration-s: int,   // 接通秒数, connected 时有效
 }
 
+// 通讯录条目 (SQLite contacts 表, Rust store.rs 维护)
+export struct ContactEntry {
+    id: int,
+    name: string,
+    number: string,
+}
+
 // 状态行小圆点 (纵向居中)
 export component Dot inherits Rectangle {
     in property <brush> tint;

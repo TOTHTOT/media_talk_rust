@@ -1,16 +1,19 @@
-// 拨号页: 号码输入 + 3x4 键盘 + 清除/拨打
-import {
-    TextField,
-    TextButton,
-    TonalButton,
-    OutlineButton,
-    FilledButton,
-} from "../material-1.1.0/material.slint";
+// 拨号页: 组装左侧通讯录卡 + 右侧拨号盘
+// 子组件在 dial/ 目录: ContactsCard / Dialpad
+import { TextButton } from "../material-1.1.0/material.slint";
+import { ContactEntry } from "components.slint";
+import { ContactsCard } from "dial/contacts_card.slint";
+import { Dialpad } from "dial/dialpad.slint";
 
 export component DialPage inherits Rectangle {
+    in property <[ContactEntry]> contacts: [];
     callback back();
     callback dial(string);
     callback trigger-error(string);
+    // 通讯录 CRUD: 数据落 SQLite, Rust 侧 store.rs
+    callback add-contact(string, string);
+    callback update-contact(int, string, string);
+    callback delete-contact(int);
 
     VerticalLayout {
         padding: 24px;
@@ -24,135 +27,22 @@ export component DialPage inherits Rectangle {
             }
         }
 
-        Rectangle {
+        HorizontalLayout {
             vertical-stretch: 1;
-            HorizontalLayout {
-                alignment: center;
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 16px;
-                    // 固定宽度: 写 min(600px, root.width - 160px) 会让预览器
-                    // 窗口尺寸↔内容布局信息成环 (窗口最小 1024, 600 必然放得下)
-                    width: 600px;
-                    number := TextField {
-                        placeholder-text: @tr("输入号码");
-                    }
+            spacing: 16px;
+            ContactsCard {
+                horizontal-stretch: 2;
+                contacts: root.contacts;
+                add-contact(name, num) => { root.add-contact(name, num); }
+                update-contact(id, name, num) => { root.update-contact(id, name, num); }
+                delete-contact(id) => { root.delete-contact(id); }
+                // 点联系人行 → 号码填进拨号盘
+                pick-number(num) => { dialpad.number-text = num; }
+            }
 
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 12px;
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "1";
-                            clicked => { number.text += "1"; }
-                        }
-
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "2";
-                            clicked => { number.text += "2"; }
-                        }
-
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "3";
-                            clicked => { number.text += "3"; }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 12px;
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "4";
-                            clicked => { number.text += "4"; }
-                        }
-
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "5";
-                            clicked => { number.text += "5"; }
-                        }
-
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "6";
-                            clicked => { number.text += "6"; }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 12px;
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "7";
-                            clicked => { number.text += "7"; }
-                        }
-
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "8";
-                            clicked => { number.text += "8"; }
-                        }
-
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "9";
-                            clicked => { number.text += "9"; }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 12px;
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "*";
-                            clicked => { number.text += "*"; }
-                        }
-
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "0";
-                            clicked => { number.text += "0"; }
-                        }
-
-                        TonalButton {
-                            width: 96px;
-                            height: 56px;
-                            text: "#";
-                            clicked => { number.text += "#"; }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 16px;
-                        OutlineButton {
-                            text: @tr("清除");
-                            clicked => { number.text = ""; }
-                        }
-
-                        FilledButton {
-                            text: @tr("拨打");
-                            enabled: number.text != "";
-                            clicked => { root.dial(number.text); }
-                        }
-                    }
-                }
+            dialpad := Dialpad {
+                horizontal-stretch: 3;
+                dial(num) => { root.dial(num); }
             }
         }
     }

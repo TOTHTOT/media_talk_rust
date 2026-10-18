@@ -68,7 +68,7 @@ impl UiHandle {
                 if let Some(msg) = error_msg {
                     ui.set_error_text(msg.into());
                 }
-                crate::sync_props(&ui, &app.lock());
+                crate::props::sync_props(&ui, &app.lock());
             }
         }) {
             // 事件循环已停 (窗口关闭流程中): 事件丢弃即可

@@ -38,6 +38,10 @@ anyhow = "1.0"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
+# call-ui: 通讯录/通话记录持久化 (bundled = 内嵌 sqlite3, 交叉编译不依赖系统库)
+rusqlite = { version = "0.32", features = ["bundled"] }
+# call-ui: 平台标准数据目录 (%APPDATA% / ~/.local/share)
+directories = "6"
 dashmap = "6.1"
 pin-project-lite = "0.2"
 clap = { version = "4.5", features = ["derive"] }
