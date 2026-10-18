@@ -338,6 +338,44 @@ mpegtsmux 都认这个格式.
 queue 1s 填满反压 tee, 另一路和整条管线一起冻结 (回归测试
 `missing_track_does_not_freeze_other` 守着).
 
+## 对称 RTP: udpsrc/udpsink 必须共享 socket
+
+**现象**: call-ui 拨打门口机, 对端看/听我们正常 (发送 stats 一直涨),
+我们这边永远黑屏无声, 接收 stats `video_pkts=0 audio_pkts=0`. 两个
+Linphone 互打、真设备互打都没问题 — 只有我们黑.
+
+**根因**: 非对称 RTP. udpsrc 绑 SDP 声明的端口 (40000/40002) 收包,
+udpsink 不 bind、由内核派临时端口 (如 52831) 发包 — 声明端口 ≠ 发包
+源端口. 媒体锚定中继 (B2BUA, miuda.ai) 不信任 SDP 里声明的地址
+(NAT 后面它本来就是错的), 而是按观察到的发送源 latch 回投 → 对端
+媒体全被投到 52831, 那是只发不收的 udpsink 的私有端口, 无人监听.
+真门禁设备和 Linphone 默认就是对称 RTP (收发同端口), latch 到的地址
+必然就是它们在监听的地址, 所以它们从来没事 — 我们是生态里唯一的
+异类. **教训: 过 B2BUA/NAT 的 RTP 端点, 发包源端口 == SDP 声明端口
+== 监听端口是事实标准, 不是可选项.**
+
+**解法**: `ipcam_gst::bind_udp_socket` 自绑 socket, 同一个
+`gio::Socket` 通过 `"socket"` 属性同时喂给 udpsrc 和 udpsink,
+`close-socket=false` 防管线 teardown 误关 (socket 由 session 层持有,
+renegotiate 重建管线时复用, 端口在整个 dialog 存续期不变). 端口策略:
+主叫永远用临时端口 (offer 自带实际端口, 且避开同机冲突), 被叫优先
+配置端口、被占回退临时端口.
+
+**伴生坑 — Windows SO_REUSEADDR**: GStreamer 自建 socket 默认开
+reuse, 同机两个进程能"绑上"同一个 UDP 端口, 双方启动都正常, 但
+Windows 把单播包全投给先绑者 — 后绑方收端 stats 永远 0 包, 完全
+静默. 自绑 socket 时关掉 reuse (`bind(addr, false)`), 端口冲突就变成
+启动期的明确报错, 不再是"运行中无声黑屏".
+
+**实现备注**: udpsink/udpsrc 的 `"socket"` 属性要的是 GSocket
+(GLib 对象), std 的 `UdpSocket` 塞不进去, 只能用 gio; gio 0.22 的
+`gio::Socket` 漏标 Send+Sync (GSocket 官方承诺线程安全), 包了个
+`SharedUdpSocket` newtype 手动 unsafe impl, gio 补上标记后可删.
+
+**遗留**: 中继 latch 有会话级缓存 — 修复部署后的第一次拨打若旧会话
+latch 未过期可能仍不通, 稍候重拨自愈; 反复 0 包时先看日志有无 bind
+失败 WARN, 区分"端口冲突"与"中继缓存".
+
 ## 优雅关停
 
 全进程共享一棵 `CancellationToken` 树（commit `d0b67c9`）：Ctrl+C/SIGTERM
