@@ -300,6 +300,7 @@ fn build_video_tap_branch(
 /// decode → videoconvert → capsfilter(RGBA) → appsink 回调) / tee 双全.
 /// `socket`: Some 时 udpsrc 复用该 socket (对称 RTP 共享), 忽略 port.
 /// 返回 udpsrc 的 src pad (stop 时注入 EOS 用)
+#[allow(clippy::too_many_arguments)]
 fn build_video_track(
     pipeline: &gst::Pipeline,
     mux: Option<&gst::Element>,

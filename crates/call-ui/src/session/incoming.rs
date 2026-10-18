@@ -195,16 +195,14 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<Str
     // 被叫优先用配置端口, 被占 (同机另一个通话进程) 回退临时端口;
     // 端口要写进 answer SDP, socket 从 accept 前绑好活到通话结束:
     // udpsrc/udpsink 共享 (对称 RTP), 过媒体锚定服务器的互通前提
-    let (rtp_ports, sockets) = match super::types::bind_recv_sockets(
-        ctx.local,
-        Some(ctx.cfg.rtp_ports),
-    ) {
-        Ok(ok) => ok,
-        Err(e) => {
-            let _ = dialog.reject(Some(rsip::StatusCode::TemporarilyUnavailable), None);
-            return Err(e.into());
-        }
-    };
+    let (rtp_ports, sockets) =
+        match super::types::bind_recv_sockets(ctx.local, Some(ctx.cfg.rtp_ports)) {
+            Ok(ok) => ok,
+            Err(e) => {
+                let _ = dialog.reject(Some(rsip::StatusCode::TemporarilyUnavailable), None);
+                return Err(e.into());
+            }
+        };
     let offer = accept_with_answer(dialog, ctx.local, &caller, &ctx.ui, rtp_ports)?;
     let mut media = media::start_incoming(&offer, rtp_ports, sockets, &ctx.cfg, &ctx.tap);
 

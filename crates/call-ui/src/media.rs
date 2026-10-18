@@ -515,8 +515,6 @@ mod tests {
         assert_eq!(negotiate::pick_video(&offer, video_pred), None);
     }
 
-    /// 音频发送指纹: 地址取 offer 媒体的 addr/port, pt/编码取选中项
-    #[test]
     /// 音频发送目标: 地址取 offer 媒体的 addr/port, pt/编码取选中项
     #[test]
     fn plan_send_audio_from_offer() {

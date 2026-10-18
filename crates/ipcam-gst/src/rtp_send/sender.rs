@@ -298,7 +298,13 @@ fn build_video_track(
     let pipeline_for_chain = pipeline.clone();
     let pipeline_for_build = pipeline.clone();
     let chain_fn = move |pad| {
-        link_video_send_chain(&pipeline_for_chain, &pad, dest, socket.clone(), stats.clone())
+        link_video_send_chain(
+            &pipeline_for_chain,
+            &pad,
+            dest,
+            socket.clone(),
+            stats.clone(),
+        )
     };
     build_track(&pipeline_for_build, source, TrackKind::Video, chain_fn)
 }
@@ -314,7 +320,13 @@ fn build_audio_track(
     let pipeline_for_chain = pipeline.clone();
     let pipeline_for_build = pipeline.clone();
     let chain_fn = move |pad| {
-        link_audio_send_chain(&pipeline_for_chain, &pad, dest, socket.clone(), stats.clone())
+        link_audio_send_chain(
+            &pipeline_for_chain,
+            &pad,
+            dest,
+            socket.clone(),
+            stats.clone(),
+        )
     };
     build_track(&pipeline_for_build, source, TrackKind::Audio, chain_fn)
 }
