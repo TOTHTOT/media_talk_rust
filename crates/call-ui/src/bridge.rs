@@ -57,8 +57,17 @@ impl UiHandle {
         let weak = self.weak.clone();
         let app = self.app.clone();
         if let Err(e) = slint::invoke_from_event_loop(move || {
+            // 错误条: 事件直接推, 不走 sync_props (slint Timer 自动消化)
+            let error_msg = match &ev {
+                UiEvent::RegisterFailed(r) => Some(format!("注册失败: {r}")),
+                UiEvent::Failed { reason } => Some(reason.clone()),
+                _ => None,
+            };
             app.lock().on_event(ev);
             if let Some(ui) = weak.upgrade() {
+                if let Some(msg) = error_msg {
+                    ui.set_error_text(msg.into());
+                }
                 crate::sync_props(&ui, &app.lock());
             }
         }) {

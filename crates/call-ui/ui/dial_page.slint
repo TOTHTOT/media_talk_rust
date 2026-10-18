@@ -151,12 +151,6 @@ export component DialPage inherits Rectangle {
                             enabled: number.text != "";
                             clicked => { root.dial(number.text); }
                         }
-
-                        // 测试按钮: 没接后端时手动触发错误条, 验证 5s 自动消失
-                        TextButton {
-                            text: @tr("测试错误条");
-                            clicked => { root.trigger-error("模拟拨号失败: 连接超时"); }
-                        }
                     }
                 }
             }

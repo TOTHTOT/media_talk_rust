@@ -135,3 +135,24 @@ export component AppToast inherits Rectangle {
         }
     }
 }
+
+// 错误条: 顶部红色横条, text 非空即显示
+// 自动消失由调用方在 main.slint 用 Timer 清 text, 这里只负责渲染
+export component ErrorBanner inherits Rectangle {
+    in property <string> text;
+
+    if root.text != "" : Rectangle {
+        y: 0;
+        width: 100%;
+        height: 32px;
+        background: MaterialPalette.error;
+        MaterialText {
+            text: root.text;
+            color: MaterialPalette.on_error;
+            width: 100%;
+            height: 100%;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+}

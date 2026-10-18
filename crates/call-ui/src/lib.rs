@@ -14,7 +14,6 @@ use tracing::{error, info};
 pub(crate) fn sync_props(ui: &MainWindow, app: &app::AppState) {
     ui.set_phase(app.phase as i32);
     ui.set_peer(app.peer.as_str().into());
-    ui.set_error_text(app.error.as_str().into());
     ui.set_sip_registered(app.registered);
     ui.set_today_visitors(app.today_visitors as i32);
     // 主页"最近通话": 全量传给 ScrollView 渲染, 每条 72px, 溢出自动滚动
