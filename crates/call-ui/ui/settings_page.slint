@@ -2,6 +2,7 @@
 import {
     FilledCard,
     TextButton,
+    HorizontalDivider,
     MaterialText,
     MaterialTypography,
     MaterialPalette,
@@ -28,54 +29,59 @@ export component SettingsPage inherits Rectangle {
             alignment: center;
             vertical-stretch: 1;
             FilledCard {
-                width: min(640px, root.width - 160px);
-                MaterialText {
-                    x: 32px;
-                    y: 24px;
-                    text: @tr("设置");
-                    style: MaterialTypography.headline_small;
-                }
-
-                // 语言切换: 立即生效 (bundled translations), 重启后回系统 locale
-                HorizontalLayout {
-                    x: 32px;
-                    y: 60px;
-                    spacing: 8px;
-                    alignment: start;
+                // 固定宽度: 写 min(640px, root.width - 160px) 会让预览器
+                // 窗口尺寸↔内容布局信息成环 (窗口最小 1024, 640 必然放得下)
+                width: 640px;
+                VerticalLayout {
+                    padding: 28px;
+                    spacing: 20px;
                     MaterialText {
-                        text: @tr("语言");
+                        text: @tr("设置");
+                        style: MaterialTypography.headline_small;
+                    }
+
+                    HorizontalDivider {}
+
+                    // 语言切换: 立即生效 (bundled translations), 重启后回系统 locale
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: start;
+                        MaterialText {
+                            text: @tr("语言");
+                            style: MaterialTypography.body_large;
+                            color: MaterialPalette.on_surface_variant;
+                            vertical-alignment: center;
+                        }
+
+                        TextButton {
+                            text: "中文";
+                            clicked => { root.set-language("zh"); }
+                        }
+
+                        TextButton {
+                            text: "English";
+                            clicked => { root.set-language("en"); }
+                        }
+                    }
+
+                    HorizontalDivider {}
+
+                    MaterialText {
+                        text: root.settings-text;
                         style: MaterialTypography.body_large;
                         color: MaterialPalette.on_surface_variant;
-                        vertical-alignment: center;
                     }
 
-                    TextButton {
-                        text: "中文";
-                        clicked => { root.set-language("zh"); }
+                    // 占位弹簧: 把底部说明压到卡片底部
+                    Rectangle {
+                        vertical-stretch: 1;
                     }
 
-                    TextButton {
-                        text: "English";
-                        clicked => { root.set-language("en"); }
+                    MaterialText {
+                        text: @tr("更多设置项开发中, 当前为只读配置信息");
+                        style: MaterialTypography.body_small;
+                        color: MaterialPalette.outline;
                     }
-                }
-
-                MaterialText {
-                    x: 32px;
-                    y: 108px;
-                    width: parent.width - 64px;
-                    text: root.settings-text;
-                    style: MaterialTypography.body_large;
-                    color: MaterialPalette.on_surface_variant;
-                }
-
-                MaterialText {
-                    x: 32px;
-                    y: parent.height - 52px;
-                    width: parent.width - 64px;
-                    text: @tr("更多设置项开发中, 当前为只读配置信息");
-                    style: MaterialTypography.body_small;
-                    color: MaterialPalette.outline;
                 }
             }
         }

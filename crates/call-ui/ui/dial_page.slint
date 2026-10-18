@@ -10,6 +10,7 @@ import {
 export component DialPage inherits Rectangle {
     callback back();
     callback dial(string);
+    callback trigger-error(string);
 
     VerticalLayout {
         padding: 24px;
@@ -30,7 +31,9 @@ export component DialPage inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     spacing: 16px;
-                    width: min(600px, root.width - 160px);
+                    // 固定宽度: 写 min(600px, root.width - 160px) 会让预览器
+                    // 窗口尺寸↔内容布局信息成环 (窗口最小 1024, 600 必然放得下)
+                    width: 600px;
                     number := TextField {
                         placeholder-text: @tr("输入号码");
                     }
@@ -147,6 +150,12 @@ export component DialPage inherits Rectangle {
                             text: @tr("拨打");
                             enabled: number.text != "";
                             clicked => { root.dial(number.text); }
+                        }
+
+                        // 测试按钮: 没接后端时手动触发错误条, 验证 5s 自动消失
+                        TextButton {
+                            text: @tr("测试错误条");
+                            clicked => { root.trigger-error("模拟拨号失败: 连接超时"); }
                         }
                     }
                 }
