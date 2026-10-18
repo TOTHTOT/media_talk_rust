@@ -38,6 +38,7 @@ export component DialPage inherits Rectangle {
                 delete-contact(id) => { root.delete-contact(id); }
                 // 点联系人行 → 号码填进拨号盘
                 pick-number(num) => { dialpad.number-text = num; }
+                dial(num) => { root.dial(num); }
             }
 
             dialpad := Dialpad {

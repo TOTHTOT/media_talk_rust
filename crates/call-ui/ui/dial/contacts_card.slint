@@ -20,6 +20,7 @@ export component ContactsCard inherits FilledCard {
     callback update-contact(int, string, string); // id, name, number
     callback delete-contact(int); // id
     callback pick-number(string); // 点列表行, 把号码交给拨号盘
+    callback dial(string); // 行内电话图标快捷拨打
 
     // 编辑态: -1=新增, 否则为正在编辑的联系人 id
     property <int> editing-id: -1;
@@ -32,21 +33,27 @@ export component ContactsCard inherits FilledCard {
     VerticalLayout {
         padding: 20px;
         spacing: 12px;
+        // 表单区各行 vertical-stretch: 0 钉死内容高度, 弹性空间只给列表区,
+        // 否则卡片拉高时输入框会被分摊撑高、间距变大
         MaterialText {
+            vertical-stretch: 0;
             text: @tr("通讯录");
             style: MaterialTypography.title_large;
         }
 
         // 添加/编辑表单 (编辑时点列表行的铅笔载入)
         name-input := TextField {
+            vertical-stretch: 0;
             placeholder-text: @tr("姓名");
         }
 
         number-input := TextField {
+            vertical-stretch: 0;
             placeholder-text: @tr("号码");
         }
 
         HorizontalLayout {
+            vertical-stretch: 0;
             spacing: 8px;
             alignment: start;
             FilledButton {
@@ -68,7 +75,9 @@ export component ContactsCard inherits FilledCard {
             }
         }
 
-        HorizontalDivider {}
+        HorizontalDivider {
+            vertical-stretch: 0;
+        }
 
         if root.contacts.length == 0: MaterialText {
             vertical-stretch: 1;
@@ -89,7 +98,15 @@ export component ContactsCard inherits FilledCard {
                     text: c.name;
                     supporting_text: c.number;
                     clicked => { root.pick-number(c.number); }
+                    // 快捷拨打/编辑/删除: inline 小号按钮 (18px), 标准 40px 三个太挤
                     IconButton {
+                        inline: true;
+                        icon: @image-url("../icons/phone.svg");
+                        clicked => { root.dial(c.number); }
+                    }
+
+                    IconButton {
+                        inline: true;
                         icon: @image-url("../icons/pencil.svg");
                         clicked => {
                             root.editing-id = c.id;
@@ -99,6 +116,7 @@ export component ContactsCard inherits FilledCard {
                     }
 
                     IconButton {
+                        inline: true;
                         icon: @image-url("../icons/trash-2.svg");
                         clicked => { root.delete-contact(c.id); }
                     }
