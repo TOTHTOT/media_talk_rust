@@ -46,6 +46,9 @@ export component MainWindow inherits MaterialWindow {
     callback add-contact(string, string);
     callback update-contact(int, string, string);
     callback delete-contact(int);
+    // 后端通知管线入口 (app.rs Notice): kind 决定文案 (i18n),
+    // level 决定呈现 (0 info / 1 warn → toast, 2 error → 顶部错误条)
+    callback notify(level: int, kind: int, detail: string);
 
     property <string> displayed-error <=> root.error-text;
     error-timer := Timer {
@@ -53,6 +56,25 @@ export component MainWindow inherits MaterialWindow {
         running: root.displayed-error != "";
         triggered => {
             root.displayed-error = "";
+        }
+    }
+
+    // 通知文案: kind 与 app.rs NoticeKind 一一对应 (0=Raw 1=RegisterFailed
+    // 2=CallFailed); detail 是协议文本 (SIP 状态行等), 原样附加不翻译
+    function notice-msg(kind: int, detail: string) -> string {
+        if (kind == 1) {
+            return detail == "" ? @tr("注册失败") : @tr("注册失败") + ": " + detail;
+        }
+        if (kind == 2) {
+            return detail == "" ? @tr("呼叫失败") : @tr("呼叫失败") + ": " + detail;
+        }
+        return detail;
+    }
+    notify(level, kind, detail) => {
+        if (level == 2) {
+            root.error-text = notice-msg(kind, detail);
+        } else {
+            root.show-toast(notice-msg(kind, detail));
         }
     }
 

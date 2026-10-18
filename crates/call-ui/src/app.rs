@@ -57,6 +57,56 @@ pub enum UiEvent {
     Failed {
         reason: String,
     },
+    /// 与通话生命周期无关的提示/警告 (如端口回退): 不进状态机,
+    /// on_event 原样透传给通知管线
+    Notify(Notice),
+}
+
+/// 通知级别: 决定呈现方式 (Info/Warn → toast 气泡, Error → 顶部错误条)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum NoticeLevel {
+    Info = 0,
+    Warn = 1,
+    Error = 2,
+}
+
+/// 通知种类: 文案由 slint 侧 @tr 按 kind 组合 (i18n), detail 是协议文本
+/// (SIP 状态行等) 原样附加, 不参与翻译
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum NoticeKind {
+    /// 无前缀, detail 即全文
+    Raw = 0,
+    RegisterFailed = 1,
+    CallFailed = 2,
+}
+
+/// 后端 → UI 的通知 (toast/错误条统一走它): 分级 + 结构化 kind.
+/// 后端只发 kind 和 detail, 不拼文案
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub level: NoticeLevel,
+    pub kind: NoticeKind,
+    pub detail: String,
+}
+
+impl Notice {
+    pub fn error(kind: NoticeKind, detail: impl Into<String>) -> Self {
+        Self {
+            level: NoticeLevel::Error,
+            kind,
+            detail: detail.into(),
+        }
+    }
+
+    pub fn warn(kind: NoticeKind, detail: impl Into<String>) -> Self {
+        Self {
+            level: NoticeLevel::Warn,
+            kind,
+            detail: detail.into(),
+        }
+    }
 }
 
 /// UI 决策出的动作, 直接就是 SIP worker 命令, 无需翻译
@@ -66,7 +116,6 @@ pub use crate::bridge::WorkerCmd;
 pub struct AppState {
     pub phase: Phase,
     pub peer: String,
-    pub error: String,
     /// SIP 注册状态 (状态栏绿灯/主页"通话服务"行)
     pub registered: bool,
     /// 今日访客数 (来电次数, 进程内计数, 不持久化)
@@ -130,19 +179,21 @@ impl AppState {
         self.confirmed_at = None;
     }
 
-    /// SIP 事件驱动状态迁移. 事件可能迟到 (比如挂断后才来 Confirmed):
-    /// Incoming/Confirmed 与当前阶段不匹配时忽略不迁移, 避免界面乱跳;
-    /// 但 Terminated/Failed 是终态事件, 无条件回 Idle 并清 peer,
-    /// 其中 Failed 仅在非 Idle 时才写 error (Idle 下属于迟到事件, 不弹错误条)
-    pub fn on_event(&mut self, ev: UiEvent) {
+    /// SIP 事件驱动状态迁移, 返回值是要弹给用户的通知 (None = 不弹).
+    /// 事件可能迟到 (比如挂断后才来 Confirmed): Incoming/Confirmed 与当前
+    /// 阶段不匹配时忽略不迁移, 避免界面乱跳; Terminated/Failed 是终态事件,
+    /// 无条件回 Idle 并清 peer, 但 Failed 仅在非 Idle 时才产生通知
+    /// (Idle 下属于迟到事件, 不弹错误条) — 通知的唯一发源点在这里,
+    /// bridge 不再自行判断
+    pub fn on_event(&mut self, ev: UiEvent) -> Option<Notice> {
         match ev {
             UiEvent::Registered => {
                 self.registered = true;
-                self.error.clear();
+                None
             }
             UiEvent::RegisterFailed(reason) => {
                 self.registered = false;
-                self.error = format!("注册失败: {reason}");
+                Some(Notice::error(NoticeKind::RegisterFailed, reason))
             }
             UiEvent::Incoming { caller } => {
                 self.today_visitors += 1;
@@ -153,23 +204,27 @@ impl AppState {
                     self.call_dir = Some(CallDir::Incoming);
                     self.confirmed_at = None;
                 }
+                None
             }
             UiEvent::Confirmed { peer } => {
                 if matches!(self.phase, Phase::Outgoing | Phase::Incoming) {
                     self.phase = Phase::InCall;
                     self.peer = peer;
-                    self.error.clear();
                     self.confirmed_at = Some(Local::now());
                 }
+                None
             }
-            UiEvent::Terminated { .. } | UiEvent::Failed { .. } => {
-                if let UiEvent::Failed { reason } = &ev {
-                    if self.phase != Phase::Idle {
-                        self.error = reason.clone();
-                    }
-                }
+            UiEvent::Terminated { .. } => {
                 self.end_call();
+                None
             }
+            UiEvent::Failed { reason } => {
+                let notify = (self.phase != Phase::Idle)
+                    .then(|| Notice::error(NoticeKind::CallFailed, reason));
+                self.end_call();
+                notify
+            }
+            UiEvent::Notify(n) => Some(n),
         }
     }
 
@@ -181,7 +236,6 @@ impl AppState {
         }
         self.phase = Phase::Outgoing;
         self.peer = number.clone();
-        self.error.clear();
         self.call_dir = Some(CallDir::Outgoing);
         self.confirmed_at = None;
         Some(WorkerCmd::Dial(number))
@@ -294,21 +348,24 @@ mod tests {
     fn failed_shows_error_and_returns_idle() {
         let mut app = AppState::default();
         app.dial("1002".into());
-        app.on_event(UiEvent::Failed {
+        let notice = app.on_event(UiEvent::Failed {
             reason: "486 Busy".into(),
         });
         assert_eq!(app.phase, Phase::Idle);
-        assert!(app.error.contains("486"));
+        assert_eq!(
+            notice,
+            Some(Notice::error(NoticeKind::CallFailed, "486 Busy"))
+        );
     }
 
     #[test]
-    fn stale_failed_in_idle_keeps_error_empty() {
+    fn stale_failed_in_idle_produces_no_notice() {
         let mut app = AppState::default();
-        app.on_event(UiEvent::Failed {
+        let notice = app.on_event(UiEvent::Failed {
             reason: "408 Timeout".into(),
         });
         assert_eq!(app.phase, Phase::Idle);
-        assert_eq!(app.error, "", "Idle 下迟到的 Failed 不得弹错误条");
+        assert_eq!(notice, None, "Idle 下迟到的 Failed 不得弹错误条");
         assert_eq!(app.peer, "");
     }
 
@@ -327,11 +384,14 @@ mod tests {
     fn registration_state_tracked() {
         let mut app = AppState::default();
         assert!(!app.registered);
-        app.on_event(UiEvent::Registered);
+        assert_eq!(app.on_event(UiEvent::Registered), None);
         assert!(app.registered);
-        app.on_event(UiEvent::RegisterFailed("403".into()));
+        let notice = app.on_event(UiEvent::RegisterFailed("403".into()));
         assert!(!app.registered);
-        assert!(app.error.contains("403"));
+        assert_eq!(
+            notice,
+            Some(Notice::error(NoticeKind::RegisterFailed, "403"))
+        );
     }
 
     #[test]

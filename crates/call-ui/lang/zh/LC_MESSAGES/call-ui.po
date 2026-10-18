@@ -158,3 +158,9 @@ msgstr ""
 
 msgid "暂无联系人"
 msgstr ""
+
+msgid "注册失败"
+msgstr ""
+
+msgid "呼叫失败"
+msgstr ""

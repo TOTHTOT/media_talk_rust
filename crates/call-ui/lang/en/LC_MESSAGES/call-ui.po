@@ -158,3 +158,9 @@ msgstr "Save"
 
 msgid "暂无联系人"
 msgstr "No contacts"
+
+msgid "注册失败"
+msgstr "Registration failed"
+
+msgid "呼叫失败"
+msgstr "Call failed"

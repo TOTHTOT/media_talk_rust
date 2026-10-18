@@ -52,21 +52,17 @@ impl UiHandle {
         Self { weak, app }
     }
 
-    /// 投递事件: 主线程上先过状态机, 再把字段刷到 slint 属性
+    /// 投递事件: 主线程上先过状态机, 状态机返回的通知进通知管线
+    /// (slint 侧按 kind 组文案/按 level 选 toast 或错误条), 再把字段
+    /// 刷到 slint 属性
     pub fn post(&self, ev: UiEvent) {
         let weak = self.weak.clone();
         let app = self.app.clone();
         if let Err(e) = slint::invoke_from_event_loop(move || {
-            // 错误条: 事件直接推, 不走 sync_props (slint Timer 自动消化)
-            let error_msg = match &ev {
-                UiEvent::RegisterFailed(r) => Some(format!("注册失败: {r}")),
-                UiEvent::Failed { reason } => Some(reason.clone()),
-                _ => None,
-            };
-            app.lock().on_event(ev);
+            let notice = app.lock().on_event(ev);
             if let Some(ui) = weak.upgrade() {
-                if let Some(msg) = error_msg {
-                    ui.set_error_text(msg.into());
+                if let Some(n) = notice {
+                    ui.invoke_notify(n.level as i32, n.kind as i32, n.detail.into());
                 }
                 crate::props::sync_props(&ui, &app.lock());
             }
