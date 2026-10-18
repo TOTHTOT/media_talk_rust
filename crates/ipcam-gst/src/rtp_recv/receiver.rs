@@ -134,6 +134,7 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
             mux.as_ref(),
             cfg.playback,
             cfg.video_tap.as_ref(),
+            cfg.video_socket.as_ref(),
             port,
             codec,
             stats.clone(),
@@ -144,6 +145,7 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
             &pipeline,
             mux.as_ref(),
             cfg.playback,
+            cfg.audio_socket.as_ref(),
             port,
             codec,
             stats.clone(),
@@ -198,6 +200,19 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
         src_pads: Arc::new(src_pads),
         stats,
     })
+}
+
+/// udpsrc 的 socket 来源: Some 复用外部共享 socket (对称 RTP, 忽略
+/// port; close-socket=false — socket 由调用方持有, 管线 teardown 不能
+/// 关掉它, 发送器和重启后的新管线还要用); None 自建并绑 port (旧行为)
+fn apply_shared_socket(udpsrc: &gst::Element, socket: Option<&crate::SharedUdpSocket>, port: u16) {
+    match socket {
+        Some(sock) => {
+            udpsrc.set_property("socket", sock.as_gio());
+            udpsrc.set_property("close-socket", false);
+        }
+        None => udpsrc.set_property("port", port as i32),
+    }
 }
 
 /// tee 的 request pad 接到分支链头
@@ -283,12 +298,14 @@ fn build_video_tap_branch(
 /// 视频接收轨: udpsrc → depay → parse, 之后按出口分: 存盘 (queue → mux)
 /// / 播放 (decode → videoconvert → autovideosink; tap=Some 时换成
 /// decode → videoconvert → capsfilter(RGBA) → appsink 回调) / tee 双全.
+/// `socket`: Some 时 udpsrc 复用该 socket (对称 RTP 共享), 忽略 port.
 /// 返回 udpsrc 的 src pad (stop 时注入 EOS 用)
 fn build_video_track(
     pipeline: &gst::Pipeline,
     mux: Option<&gst::Element>,
     playback: bool,
     tap: Option<&crate::VideoFrameSink>,
+    socket: Option<&crate::SharedUdpSocket>,
     port: u16,
     codec: VideoCodec,
     stats: Arc<crate::PktStats>,
@@ -327,7 +344,7 @@ fn build_video_track(
         )
         .build();
     udpsrc.set_property("caps", &caps);
-    udpsrc.set_property("port", port as i32);
+    apply_shared_socket(&udpsrc, socket, port);
 
     let depay = make(depay_name)?;
     let parse = make(parse_name)?;
@@ -442,11 +459,13 @@ fn build_video_track(
 /// 音频接收轨: udpsrc → depay → G.711 解码, 之后按出口分: 存盘 (convert
 /// → resample → opusenc → queue → mux, TS 不认 G.711 转 opus) / 播放
 /// (convert → resample → autoaudiosink) / tee 双全.
+/// `socket`: Some 时 udpsrc 复用该 socket (对称 RTP 共享), 忽略 port.
 /// 返回 udpsrc 的 src pad (stop 时注入 EOS 用)
 fn build_audio_track(
     pipeline: &gst::Pipeline,
     mux: Option<&gst::Element>,
     playback: bool,
+    socket: Option<&crate::SharedUdpSocket>,
     port: u16,
     codec: AudioCodec,
     stats: Arc<crate::PktStats>,
@@ -474,7 +493,7 @@ fn build_audio_track(
         )
         .build();
     udpsrc.set_property("caps", &caps);
-    udpsrc.set_property("port", port as i32);
+    apply_shared_socket(&udpsrc, socket, port);
 
     let depay = make(depay_name)?;
     let decode = make(decode_name)?;
@@ -597,6 +616,8 @@ mod tests {
             video_tap: Some(tap),
             video: Some((42130, VideoCodec::H264)),
             audio: None,
+            video_socket: None,
+            audio_socket: None,
         })
         .expect("receiver starts");
 
@@ -638,6 +659,8 @@ mod tests {
             video_tap: None,
             video: Some((42110, VideoCodec::H264)),
             audio: Some((42112, AudioCodec::G711U)),
+            video_socket: None,
+            audio_socket: None,
         })
         .expect("receiver starts");
 
@@ -679,6 +702,8 @@ mod tests {
             video_tap: None,
             video: None,
             audio: Some((42114, AudioCodec::G711U)),
+            video_socket: None,
+            audio_socket: None,
         })
         .expect("receiver starts");
 
@@ -718,6 +743,8 @@ mod tests {
             video_tap: None,
             video: Some((42120, VideoCodec::H264)),
             audio: Some((42122, AudioCodec::G711U)),
+            video_socket: None,
+            audio_socket: None,
         })
         .expect("receiver starts");
 
@@ -764,6 +791,8 @@ mod tests {
             video_tap: None,
             video: Some((42124, VideoCodec::H264)),
             audio: Some((42126, AudioCodec::G711U)),
+            video_socket: None,
+            audio_socket: None,
         })
         .expect("receiver starts");
 

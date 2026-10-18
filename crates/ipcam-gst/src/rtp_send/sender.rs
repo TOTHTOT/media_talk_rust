@@ -81,6 +81,8 @@ fn build_shared_file_track(
     uri: &str,
     audio_dest: AudioDest,
     video_dest: RtpDest,
+    audio_socket: Option<crate::SharedUdpSocket>,
+    video_socket: Option<crate::SharedUdpSocket>,
     stats: &Arc<crate::PktStats>,
 ) -> Result<(), GstStreamError> {
     let stats_audio = stats.clone();
@@ -91,10 +93,22 @@ fn build_shared_file_track(
         pipeline,
         uri,
         Some(std::sync::Arc::new(move |pad| {
-            link_audio_send_chain(&pipeline_for_audio, &pad, audio_dest, stats_audio.clone())
+            link_audio_send_chain(
+                &pipeline_for_audio,
+                &pad,
+                audio_dest,
+                audio_socket.clone(),
+                stats_audio.clone(),
+            )
         })),
         Some(std::sync::Arc::new(move |pad| {
-            link_video_send_chain(&pipeline_for_video, &pad, video_dest, stats_video.clone())
+            link_video_send_chain(
+                &pipeline_for_video,
+                &pad,
+                video_dest,
+                video_socket.clone(),
+                stats_video.clone(),
+            )
         })),
     )
 }
@@ -133,7 +147,15 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
     if let Some((file_path, audio_dest, video_dest)) = shared_file {
         let uri = file_uri(&file_path)?;
         info!("some audio and video path");
-        build_shared_file_track(&pipeline, &uri, audio_dest, video_dest, &stats)?;
+        build_shared_file_track(
+            &pipeline,
+            &uri,
+            audio_dest,
+            video_dest,
+            cfg.audio_socket.clone(),
+            cfg.video_socket.clone(),
+            &stats,
+        )?;
     } else {
         build_tracks(&pipeline, &cfg, &stats)?;
     }
@@ -269,12 +291,15 @@ fn build_video_track(
     pipeline: &gst::Pipeline,
     source: &TrackSource,
     dest: RtpDest,
+    socket: Option<crate::SharedUdpSocket>,
     stats: Arc<crate::PktStats>,
 ) -> Result<(), GstStreamError> {
     info!(?source, "building video track");
     let pipeline_for_chain = pipeline.clone();
     let pipeline_for_build = pipeline.clone();
-    let chain_fn = move |pad| link_video_send_chain(&pipeline_for_chain, &pad, dest, stats.clone());
+    let chain_fn = move |pad| {
+        link_video_send_chain(&pipeline_for_chain, &pad, dest, socket.clone(), stats.clone())
+    };
     build_track(&pipeline_for_build, source, TrackKind::Video, chain_fn)
 }
 
@@ -282,12 +307,15 @@ fn build_audio_track(
     pipeline: &gst::Pipeline,
     source: &TrackSource,
     dest: AudioDest,
+    socket: Option<crate::SharedUdpSocket>,
     stats: Arc<crate::PktStats>,
 ) -> Result<(), GstStreamError> {
     info!(?source, "building audio track");
     let pipeline_for_chain = pipeline.clone();
     let pipeline_for_build = pipeline.clone();
-    let chain_fn = move |pad| link_audio_send_chain(&pipeline_for_chain, &pad, dest, stats.clone());
+    let chain_fn = move |pad| {
+        link_audio_send_chain(&pipeline_for_chain, &pad, dest, socket.clone(), stats.clone())
+    };
     build_track(&pipeline_for_build, source, TrackKind::Audio, chain_fn)
 }
 
@@ -299,10 +327,22 @@ fn build_tracks(
     stats: &Arc<crate::PktStats>,
 ) -> Result<(), GstStreamError> {
     if let Some((source, dest)) = &cfg.video {
-        build_video_track(pipeline, source, *dest, stats.clone())?;
+        build_video_track(
+            pipeline,
+            source,
+            *dest,
+            cfg.video_socket.clone(),
+            stats.clone(),
+        )?;
     }
     if let Some((source, dest)) = &cfg.audio {
-        build_audio_track(pipeline, source, *dest, stats.clone())?;
+        build_audio_track(
+            pipeline,
+            source,
+            *dest,
+            cfg.audio_socket.clone(),
+            stats.clone(),
+        )?;
     }
     Ok(())
 }
@@ -327,6 +367,8 @@ mod tests {
                     max_width: Some(640),
                 },
             )),
+            audio_socket: None,
+            video_socket: None,
         })
         .expect("sender starts");
         std::thread::sleep(Duration::from_secs(3));
@@ -357,6 +399,8 @@ mod tests {
                     max_width: Some(640),
                 },
             )),
+            audio_socket: None,
+            video_socket: None,
         })
         .expect("sender starts");
         std::thread::sleep(Duration::from_secs(3));

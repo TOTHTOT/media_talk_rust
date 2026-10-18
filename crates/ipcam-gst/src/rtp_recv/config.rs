@@ -25,6 +25,12 @@ pub struct RtpRecvConfig {
     /// (GUI 纹理通路), 取代 autovideosink 播放分支; 不影响音频 playback
     /// 和存盘. 回调跑在 GStreamer 流线程, 别在里面碰 UI 状态
     pub video_tap: Option<crate::VideoFrameSink>,
+    /// 视频路共享 UDP socket: Some 时 udpsrc 直接用它收 (忽略 video 里
+    /// 的端口配置), 发送器可用同一 socket 发 — 对称 RTP, 见
+    /// [`crate::bind_udp_socket`]. None = udpsrc 自建 socket (旧行为)
+    pub video_socket: Option<crate::SharedUdpSocket>,
+    /// 音频路共享 UDP socket, 同 `video_socket`
+    pub audio_socket: Option<crate::SharedUdpSocket>,
 }
 
 /// VideoFrameSink 是回调闭包没有 Debug, 手写 impl 只标个占位
@@ -36,6 +42,8 @@ impl std::fmt::Debug for RtpRecvConfig {
             .field("video", &self.video)
             .field("audio", &self.audio)
             .field("video_tap", &self.video_tap.as_ref().map(|_| "..."))
+            .field("video_socket", &self.video_socket.is_some())
+            .field("audio_socket", &self.audio_socket.is_some())
             .finish()
     }
 }

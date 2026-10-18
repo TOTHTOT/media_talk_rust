@@ -59,6 +59,8 @@ oxvif = { version = "=0.15.0", default-features = false, features = ["mock"] }
 gstreamer = "0.25.3"
 gstreamer-app = "0.25.2"
 gstreamer-video = "0.25.3"
+# 与 gstreamer 0.25 同属 glib 0.22 生态 (udpsrc/udpsink 的 GSocket 属性)
+gio = "0.22"
 rsipstack = "0.6.10"
 sdp-rs = "0.2.1"
 vec1 = "1"

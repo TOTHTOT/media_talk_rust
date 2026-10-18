@@ -41,6 +41,12 @@ pub struct RtpSendConfig {
     /// None = 不发这路 (对端没接这路媒体时)
     pub audio: Option<(TrackSource, AudioDest)>,
     pub video: Option<(TrackSource, RtpDest)>,
+    /// 音频路共享 UDP socket: Some 时 udpsink 用它发 (源端口 = socket
+    /// 绑定端口), 接收器可用同一 socket 收 — 对称 RTP, 见
+    /// [`crate::bind_udp_socket`]. None = udpsink 自建 socket (源端口随机)
+    pub audio_socket: Option<crate::SharedUdpSocket>,
+    /// 视频路共享 UDP socket, 同 `audio_socket`
+    pub video_socket: Option<crate::SharedUdpSocket>,
 }
 
 #[cfg(test)]

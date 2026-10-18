@@ -30,6 +30,7 @@ pub(super) fn link_video_send_chain(
     pipeline: &gst::Pipeline,
     raw_pad: &gst::Pad,
     dest: RtpDest,
+    socket: Option<crate::SharedUdpSocket>,
     stats: Arc<PktStats>,
 ) -> Result<(), GstStreamError> {
     // convert 编码格式转换
@@ -70,7 +71,7 @@ pub(super) fn link_video_send_chain(
     pay.set_property("pt", dest.payload_type as u32);
     pay.set_property("config-interval", 1i32);
     install_pkt_probe(&pay, stats.clone(), false)?;
-    chain.extend([enc, pay, make_udpsink(dest.addr)?]);
+    chain.extend([enc, pay, make_udpsink(dest.addr, socket.as_ref())?]);
     let refs: Vec<&gst::Element> = chain.iter().collect();
     add_link_and_plug(pipeline, raw_pad, &refs, "video")
 }
@@ -80,6 +81,7 @@ pub(super) fn link_audio_send_chain(
     pipeline: &gst::Pipeline,
     raw_pad: &gst::Pad,
     dest: AudioDest,
+    socket: Option<crate::SharedUdpSocket>,
     stats: Arc<PktStats>,
 ) -> Result<(), GstStreamError> {
     let queue = make("queue")?;
@@ -106,7 +108,7 @@ pub(super) fn link_audio_send_chain(
     let pay = make(pay_name)?;
     pay.set_property("pt", dest.payload_type as u32);
     install_pkt_probe(&pay, stats.clone(), true)?;
-    let sink = make_udpsink(dest.addr)?;
+    let sink = make_udpsink(dest.addr, socket.as_ref())?;
     add_link_and_plug(
         pipeline,
         raw_pad,
@@ -115,14 +117,23 @@ pub(super) fn link_audio_send_chain(
     )
 }
 
-fn make_udpsink(addr: SocketAddr) -> Result<gst::Element, GstStreamError> {
+fn make_udpsink(
+    addr: SocketAddr,
+    socket: Option<&crate::SharedUdpSocket>,
+) -> Result<gst::Element, GstStreamError> {
     let sink = make("udpsink")?;
     sink.set_property("host", addr.ip().to_string());
     sink.set_property("port", addr.port() as i32);
     // sync=true: 按码流时间戳限速发送; async=false: 不等 clock 对齐 preroll
     sink.set_property("sync", true);
     sink.set_property("async", false);
-    info!(host = %addr.ip(), port = addr.port(), "udpsink target");
+    // 共享 socket (对称 RTP): 源端口 = socket 绑定端口; close-socket=false
+    // — socket 由调用方持有, 管线 teardown 不能关掉, 接收器还在用
+    if let Some(sock) = socket {
+        sink.set_property("socket", sock.as_gio());
+        sink.set_property("close-socket", false);
+    }
+    info!(host = %addr.ip(), port = addr.port(), shared_socket = socket.is_some(), "udpsink target");
     Ok(sink)
 }
 

@@ -20,6 +20,8 @@ thiserror = { workspace = true }
 gstreamer = { workspace = true }
 gstreamer-app = { workspace = true }
 gstreamer-video = { workspace = true }
+# udpsrc/udpsink 的 "socket" 属性类型 (GSocket): 对称 RTP 共享 socket 用
+gio = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

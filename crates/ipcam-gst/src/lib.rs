@@ -76,6 +76,72 @@ pub fn validate(cfg: &GstStreamConfig) -> Result<(), GstStreamError> {
     ingest::config::validate(cfg)
 }
 
+/// gio::Socket 的 Send+Sync 包装: GSocket 官方文档明确 threadsafe
+/// (https://docs.gtk.org/gio/class.Socket.html), 但 gio 0.22 的 Rust
+/// 绑定漏标了 (同包的 SocketAddress 倒是标了). udpsrc/udpsink 共享
+/// socket 要跨 worker 线程和 GStreamer 流线程传递, 必须过 Send+Sync
+/// 边界, 这里按官方文档补标
+#[derive(Debug, Clone)]
+pub struct SharedUdpSocket(gio::Socket);
+
+unsafe impl Send for SharedUdpSocket {}
+unsafe impl Sync for SharedUdpSocket {}
+
+impl SharedUdpSocket {
+    /// 取内部的 gio::Socket (设置 udpsrc/udpsink 的 "socket" 属性用)
+    pub fn as_gio(&self) -> &gio::Socket {
+        &self.0
+    }
+}
+
+/// 绑定一个 UDP GSocket, 供 udpsrc/udpsink 的 "socket" 属性共享 —
+/// 对称 RTP: 发送源端口 == 接收端口 == SDP 声明端口. 经过媒体锚定的
+/// 服务器 (B2BUA 中继, 如 FreeSWITCH/rtpengine 按发送源地址 latch
+/// 转发) 时这是互通前提: 源端口和声明端口不一致, 对端媒体会被中继
+/// 投到无人监听的临时端口, 收端永远 0 包 (2026-10-18 实测复现).
+///
+/// 绑非 0 端口时不带 SO_REUSEADDR (allow_reuse=false): 独占语义, 端口
+/// 冲突真实报错, 便于探测 (GStreamer 自建 socket 默认 reuse, 同机两个
+/// 进程能静默绑同一端口, 然后 Windows 把单播包全投给先绑者). 绑 0 让
+/// OS 分配临时端口, 用 [`udp_socket_port`] 查实际值.
+///
+/// # Arguments
+///
+/// * `ip`: 绑定的本机地址
+/// * `port`: 端口, 0 = OS 分配临时端口
+///
+/// returns: io::Result<SharedUdpSocket> — 已绑定且设为非阻塞的 socket
+pub fn bind_udp_socket(ip: std::net::IpAddr, port: u16) -> std::io::Result<SharedUdpSocket> {
+    use gio::prelude::*;
+    let family = match ip {
+        std::net::IpAddr::V4(_) => gio::SocketFamily::Ipv4,
+        std::net::IpAddr::V6(_) => gio::SocketFamily::Ipv6,
+    };
+    let sock = gio::Socket::new(family, gio::SocketType::Datagram, gio::SocketProtocol::Udp)
+        .map_err(std::io::Error::other)?;
+    let addr = gio::InetSocketAddress::new(&gio::InetAddress::from(ip), port);
+    sock.bind(&addr, false).map_err(std::io::Error::other)?;
+    // GStreamer 自建 socket 会设非阻塞; 外部传入的它不设, 补上
+    sock.set_blocking(false);
+    Ok(SharedUdpSocket(sock))
+}
+
+/// 查询已绑定 UDP socket 的实际本地端口 (配合 bind 0 的临时端口分配)
+///
+/// # Arguments
+///
+/// * `sock`: [`bind_udp_socket`] 绑好的 socket
+///
+/// returns: io::Result<u16> — 本地端口
+pub fn udp_socket_port(sock: &SharedUdpSocket) -> std::io::Result<u16> {
+    use gio::prelude::*;
+    let addr = sock.0.local_address().map_err(std::io::Error::other)?;
+    let inet = addr
+        .downcast::<gio::InetSocketAddress>()
+        .map_err(|_| std::io::Error::other("local address is not inet"))?;
+    Ok(inet.port())
+}
+
 /// Anchor pipeline hosting the process-wide WebRTC signalling server.
 static SIGNALLING_ANCHOR: OnceLock<gst::Pipeline> = OnceLock::new();
 
