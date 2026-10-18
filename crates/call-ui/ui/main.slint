@@ -56,7 +56,7 @@ export component MainWindow inherits MaterialWindow {
         }
     }
     toast-timer := Timer {
-        interval: 3s;
+        interval: 1s;
         // running 跟随 toast 非空: 队列续杯时保持 true, 计时器连续触发 (每条各 3 秒)
         running: root.toast != "";
         triggered => {
@@ -87,9 +87,9 @@ export component MainWindow inherits MaterialWindow {
 
     // ===== 主页 =====
     if root.phase == 0 && root.page == 0: HomePage {
-        y: 64px;
+        y: 30px;
         width: 100%;
-        height: parent.height - 64px;
+        height: parent.height - 30px;
         sip-registered: root.sip-registered;
         clock-text: root.clock-text;
         date-text: root.date-text;
@@ -103,18 +103,18 @@ export component MainWindow inherits MaterialWindow {
 
     // ===== 拨号页 =====
     if root.phase == 0 && root.page == 1: DialPage {
-        y: 64px;
+        y: 30px;
         width: 100%;
-        height: parent.height - 64px;
+        height: parent.height - 30px;
         back => { root.page = 0; }
         dial(num) => { root.dial(num); }
     }
 
     // ===== 设置页 =====
     if root.phase == 0 && root.page == 2: SettingsPage {
-        y: 64px;
+        y: 30px;
         width: 100%;
-        height: parent.height - 64px;
+        height: parent.height - 30px;
         settings-text: root.settings-text;
         back => { root.page = 0; }
         set-language(lang) => { root.set-language(lang); }

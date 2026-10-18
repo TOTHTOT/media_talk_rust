@@ -16,3 +16,4 @@ settings
 shield-check
 video
 wifi
+phone-off

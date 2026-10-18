@@ -1,10 +1,18 @@
 // 顶部状态栏: 自定义 HorizontalLayout.
 // 布局: [SIP图标+账号] [时间(居中)] [布防+wifi图标]
 import { IconButton } from "../material-1.1.0/ui/components/icon_button.slint";
-import { MaterialStyleMetrics } from "../material-1.1.0/ui/styling/material_style_metrics.slint";
-import { MaterialTypography } from "../material-1.1.0/ui/styling/material_typography.slint";
-import { MaterialPalette } from "../material-1.1.0/ui/styling/material_palette.slint";
-import { MaterialText } from "../material-1.1.0/ui/components/material_text.slint";
+import {
+    MaterialStyleMetrics,
+} from "../material-1.1.0/ui/styling/material_style_metrics.slint";
+import {
+    MaterialTypography,
+} from "../material-1.1.0/ui/styling/material_typography.slint";
+import {
+    MaterialPalette,
+} from "../material-1.1.0/ui/styling/material_palette.slint";
+import {
+    MaterialText,
+} from "../material-1.1.0/ui/components/material_text.slint";
 
 export component StatusBar inherits HorizontalLayout {
     in property <bool> sip-registered;
@@ -30,11 +38,12 @@ export component StatusBar inherits HorizontalLayout {
                 height: 16px;
                 source: root.sip-registered
                     ? @image-url("icons/phone.svg")
-                    : @image-url("icons/bell.svg");
+                    : @image-url("icons/phone-off.svg");
                 colorize: root.sip-registered
                     ? MaterialPalette.primary
                     : MaterialPalette.error;
             }
+
             MaterialText {
                 text: root.account;
                 style: MaterialTypography.label_small;
@@ -68,6 +77,7 @@ export component StatusBar inherits HorizontalLayout {
             tooltip: @tr("布防");
             clicked => { root.show-toast(@tr("安防功能开发中")); }
         }
+
         IconButton {
             icon: @image-url("icons/wifi.svg");
             tooltip: @tr("网络");
