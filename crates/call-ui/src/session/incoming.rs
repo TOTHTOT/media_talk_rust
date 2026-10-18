@@ -112,7 +112,7 @@ async fn wait_user_decision(
 /// * `ui`: 事件回投句柄
 /// * `rtp_ports`: 本机 RTP 接收端口 (音频, 视频)
 ///
-/// returns: Result<(OfferMedias, String)>
+/// returns: Result<OfferMedias> — 解析后的 offer (起媒体用)
 ///
 /// # Examples
 ///
@@ -125,7 +125,7 @@ fn accept_with_answer(
     caller: &str,
     ui: &UiHandle,
     rtp_ports: RtpPorts,
-) -> Result<(OfferMedias, String)> {
+) -> Result<OfferMedias> {
     let offer = match parse_offer_all(dialog.initial_request().body()) {
         Ok(o) => o,
         Err(e) => {
@@ -155,7 +155,7 @@ fn accept_with_answer(
     if audio_pt.is_none() && video.is_none() {
         warn!("no supported media in offer, call kept up without media");
     }
-    Ok((offer, answer))
+    Ok(offer)
 }
 
 /// 被叫通话内部流程: 等用户决策 -> 协商 answer -> 起媒体 -> 通话 loop.
@@ -192,8 +192,21 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<Str
         Decision::Accept => {}
     }
 
-    let (offer, _) = accept_with_answer(dialog, ctx.local, &caller, &ctx.ui, ctx.cfg.rtp_ports)?;
-    let mut media = media::start_incoming(&offer, &ctx.cfg, &ctx.tap);
+    // 被叫优先用配置端口, 被占 (同机另一个通话进程) 回退临时端口;
+    // 端口要写进 answer SDP, socket 从 accept 前绑好活到通话结束:
+    // udpsrc/udpsink 共享 (对称 RTP), 过媒体锚定服务器的互通前提
+    let (rtp_ports, sockets) = match super::types::bind_recv_sockets(
+        ctx.local,
+        Some(ctx.cfg.rtp_ports),
+    ) {
+        Ok(ok) => ok,
+        Err(e) => {
+            let _ = dialog.reject(Some(rsip::StatusCode::TemporarilyUnavailable), None);
+            return Err(e.into());
+        }
+    };
+    let offer = accept_with_answer(dialog, ctx.local, &caller, &ctx.ui, rtp_ports)?;
+    let mut media = media::start_incoming(&offer, rtp_ports, sockets, &ctx.cfg, &ctx.tap);
 
     let reason = call_loop(
         dialog,
@@ -201,7 +214,7 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<Str
         &mut ctx.call_answer_ctl_rx,
         &mut ctx.update_rx,
         ctx.local,
-        ctx.cfg.rtp_ports,
+        rtp_ports,
     )
     .await?;
     if let Some(m) = media.take() {

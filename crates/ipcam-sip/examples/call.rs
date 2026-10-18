@@ -93,12 +93,13 @@ async fn main() -> Result<()> {
     let callee = client.callee_uri(&args.callee)?;
 
     // offer 里写真实绑定的 UDP 端口, 而不是随口编一个——对端会按它回送
-    // RTP. 先用占位 socket 占住端口 (INVITE 完成前收到包也不会 ICMP
-    // unreachable), 通话建立后释放给接收器. 音频和视频各绑一个
-    let audio_rtp_sock = std::net::UdpSocket::bind((local, 0))?;
-    let video_rtp_sock = std::net::UdpSocket::bind((local, 0))?;
-    let audio_port = audio_rtp_sock.local_addr()?.port();
-    let video_port = video_rtp_sock.local_addr()?.port();
+    // RTP. socket 从 INVITE 前绑好活到通话结束: 收发管线共享 (对称 RTP,
+    // 源端口 == offer 声明的接收端口, 过媒体锚定服务器的互通前提),
+    // 端口绑定失败或 INVITE 期间的早期媒体也不会吃到 ICMP unreachable
+    let audio_rtp_sock = ipcam_gst::bind_udp_socket(IpAddr::V4(local), 0)?;
+    let video_rtp_sock = ipcam_gst::bind_udp_socket(IpAddr::V4(local), 0)?;
+    let audio_port = ipcam_gst::udp_socket_port(&audio_rtp_sock)?;
+    let video_port = ipcam_gst::udp_socket_port(&video_rtp_sock)?;
     let offer = build_av_offer(
         IpAddr::V4(local),
         audio_port,
@@ -162,8 +163,8 @@ async fn call_until_hangup(
     audio_src: TrackSource,
     max_width: u32,
     rtp_ports: (u16, u16),
-    // 占位 socket: 保 offer 端口到 INVITE 完成, 进这里后释放给接收器
-    rtp_sockets: (std::net::UdpSocket, std::net::UdpSocket),
+    // 共享 RTP socket: 收发管线经它对称收发, 全程持有
+    rtp_sockets: (ipcam_gst::SharedUdpSocket, ipcam_gst::SharedUdpSocket),
 ) -> Result<()> {
     let (dialog, resp) = dialog_layer.do_invite(invite_option, state_sender).await?;
     let resp = resp.ok_or_else(|| anyhow!("INVITE got no final response"))?;
@@ -180,9 +181,8 @@ async fn call_until_hangup(
         info!(?video, "SDP consult result");
     }
 
-    // 收端: 播放对端音视频 (双向对讲的听路). 占位 socket 任务完成,
-    // 释放端口给接收器绑
-    drop(rtp_sockets);
+    // 收端: 播放对端音视频 (双向对讲的听路), udpsrc 直接用共享 socket
+    let (audio_sock, video_sock) = rtp_sockets;
     let (audio_port, video_port) = rtp_ports;
     let receiver = match ipcam_gst::start_rtp_receiver(ipcam_gst::RtpRecvConfig {
         path: None,
@@ -199,6 +199,8 @@ async fn call_until_hangup(
                 c @ (VideoCodec::H264 | VideoCodec::H265) => Some((video_port, c)),
                 _ => None,
             }),
+        audio_socket: peers.audio.as_ref().map(|_| audio_sock.clone()),
+        video_socket: peers.video.as_ref().map(|_| video_sock.clone()),
     }) {
         Ok(r) => Some(r),
         Err(e) => {
@@ -221,6 +223,7 @@ async fn call_until_hangup(
                 None
             })
     });
+    let (has_audio, has_video) = (audio.is_some(), peers.video.is_some());
     let sender = ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
         audio: audio.map(|d| (audio_src.clone(), d)),
         video: peers.video.map(|p| {
@@ -238,6 +241,8 @@ async fn call_until_hangup(
                 },
             )
         }),
+        audio_socket: has_audio.then(|| audio_sock.clone()),
+        video_socket: has_video.then(|| video_sock.clone()),
     })?;
     info!("call established, streaming to peer + playing peer media, ctrl+c to hang up");
 

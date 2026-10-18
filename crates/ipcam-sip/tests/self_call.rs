@@ -118,13 +118,18 @@ async fn self_call_send_recv_file() -> Result<()> {
     };
     let record_path = std::env::temp_dir().join("ipcam_sip_self_call_test.mp4");
     let _ = std::fs::remove_file(&record_path);
-    // path=Some 让音频有去处 (解码转 opus 进 mp4), 不碰本机声卡
+    // path=Some 让音频有去处 (解码转 opus 进 mp4), 不碰本机声卡.
+    // udpsrc 复用共享 socket (对称 RTP 路径, 顺便覆盖 socket 分支)
+    let callee_audio_sock = ipcam_gst::bind_udp_socket(IpAddr::V4(LOCAL), CALLEE_AUDIO_PORT)?;
+    let callee_video_sock = ipcam_gst::bind_udp_socket(IpAddr::V4(LOCAL), CALLEE_VIDEO_PORT)?;
     let receiver = start_rtp_receiver(RtpRecvConfig {
         path: Some(record_path.clone()),
         playback: false,
         video_tap: Some(tap),
         video: Some((CALLEE_VIDEO_PORT, VideoCodec::H264)),
         audio: Some((CALLEE_AUDIO_PORT, AudioCodec::G711U)),
+        video_socket: Some(callee_video_sock.clone()),
+        audio_socket: Some(callee_audio_sock.clone()),
     })?;
 
     // --- 主叫: offer (PCMU/PCMA + H264) 直拨自己 ---
@@ -151,6 +156,9 @@ async fn self_call_send_recv_file() -> Result<()> {
     let peer_video = peers.video.as_ref().expect("answer must have video");
 
     // --- 主叫媒体: 把片源音视频发回被叫 ---
+    // udpsink 用共享 socket (源端口 == offer 声明的接收端口), 对称 RTP
+    let caller_audio_sock = ipcam_gst::bind_udp_socket(IpAddr::V4(LOCAL), CALLER_AUDIO_PORT)?;
+    let caller_video_sock = ipcam_gst::bind_udp_socket(IpAddr::V4(LOCAL), CALLER_VIDEO_PORT)?;
     let sender = start_rtp_sender(RtpSendConfig {
         audio: Some((
             TrackSource::File(oceans()),
@@ -168,6 +176,8 @@ async fn self_call_send_recv_file() -> Result<()> {
                 max_width: None,
             },
         )),
+        audio_socket: Some(caller_audio_sock.clone()),
+        video_socket: Some(caller_video_sock.clone()),
     })?;
 
     // --- 断言: 收端包数/解码帧数持续增长 (任一环节断链都会卡住超时) ---

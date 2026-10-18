@@ -39,7 +39,7 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     ui.set_account(format!("{}@{}", cfg.username, cfg.server.ip()).into());
     ui.set_settings_text(
         format!(
-            "SIP 服务器    {}\nSIP 账号      {}\n视频源        {}\n音频源        {}\nRTP 端口      音频 {} / 视频 {}\n视频限宽      {}",
+            "SIP 服务器    {}\nSIP 账号      {}\n视频源        {}\n音频源        {}\nRTP 端口      音频 {} / 视频 {} (被叫)\n视频限宽      {}",
             cfg.server,
             cfg.username,
             props::src_label(&cfg.video_src),

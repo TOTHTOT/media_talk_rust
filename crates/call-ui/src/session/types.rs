@@ -9,6 +9,7 @@ pub use ipcam_sip::{CallRoutes, UpdateMsg};
 use parking_lot::Mutex;
 use rsipstack::sip as rsip;
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use crate::bridge::UiHandle;
 pub use crate::bridge::WorkerCmd;
@@ -18,7 +19,9 @@ pub const DEFAULT_AUDIO_RTP_PORT: u16 = 40000;
 pub const DEFAULT_VIDEO_RTP_PORT: u16 = 40002;
 
 /// RTP 端口对: 本机用于接收 RTP 的音频/视频端口.
-#[derive(Debug, Clone, Copy)]
+/// 语义是"被叫首选端口": 主叫永远用临时端口 (见 `bind_recv_sockets`),
+/// 被叫优先用它, 被占时回退临时端口
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RtpPorts {
     pub audio: u16,
     pub video: u16,
@@ -29,6 +32,51 @@ impl RtpPorts {
         audio: DEFAULT_AUDIO_RTP_PORT,
         video: DEFAULT_VIDEO_RTP_PORT,
     };
+}
+
+/// 一路通话的 RTP socket 对 (音频, 视频): udpsrc/udpsink 共享同一
+/// socket — 对称 RTP, 发送源端口 == 接收端口 == SDP 声明端口, 过媒体
+/// 锚定服务器 (按发送源 latch 转发) 的互通前提, 见 ipcam_gst::bind_udp_socket.
+/// 从信令期 (端口写进 offer/answer) 一直持有到通话结束
+pub struct RecvSockets {
+    pub audio: ipcam_gst::SharedUdpSocket,
+    pub video: ipcam_gst::SharedUdpSocket,
+}
+
+/// 为本路通话绑定 RTP socket 并确定接收端口.
+///
+/// `preferred: Some` (被叫) 先试配置端口, 被占 (典型: 同机还跑着别的
+/// 通话进程) 回退临时端口; `None` (主叫) 直接临时端口.
+///
+/// 为什么主叫不能先试配置端口: 同机对跑 answer 示例时它对端也是
+/// 40000/40002, 双方声明相同接收端口会让两路发送互相投错 socket —
+/// 后绑方靠 SO_REUSEADDR 能绑上, 但 Windows 把单播 UDP 全投给先绑的
+/// socket, 表现就是收端 stats 永远 0 包 (2026-10-18 实测复现). 主叫
+/// 用临时端口后两进程各绑各的, 从根上避开.
+pub fn bind_recv_sockets(
+    local: Ipv4Addr,
+    preferred: Option<RtpPorts>,
+) -> std::io::Result<(RtpPorts, RecvSockets)> {
+    let bind_pair = |audio_port: u16, video_port: u16| {
+        let audio = ipcam_gst::bind_udp_socket(std::net::IpAddr::V4(local), audio_port)?;
+        let video = ipcam_gst::bind_udp_socket(std::net::IpAddr::V4(local), video_port)?;
+        let ports = RtpPorts {
+            audio: ipcam_gst::udp_socket_port(&audio)?,
+            video: ipcam_gst::udp_socket_port(&video)?,
+        };
+        Ok::<_, std::io::Error>((ports, RecvSockets { audio, video }))
+    };
+    if let Some(preferred) = preferred {
+        match bind_pair(preferred.audio, preferred.video) {
+            Ok(ok) => return Ok(ok),
+            Err(e) => {
+                let (ports, sockets) = bind_pair(0, 0)?;
+                warn!(error = %e, ?preferred, fallback = ?ports, "preferred RTP ports unavailable, fall back to ephemeral");
+                return Ok((ports, sockets));
+            }
+        }
+    }
+    bind_pair(0, 0)
 }
 
 /// 来电振铃等待用户接听的最长时间, 超时自动拒接, 避免对端挂死在 ringing
@@ -54,7 +102,8 @@ pub struct GuiSipConfig {
     pub video_src: TrackSource,
     /// 视频限宽 (对端解码能力, 超宽源降采样); 0 = 不限
     pub max_width: u32,
-    /// 被叫侧 RTP 端口 (音频, 视频); 默认 RtpPorts::DEFAULT
+    /// 被叫侧 RTP 首选端口 (音频, 视频); 默认 RtpPorts::DEFAULT.
+    /// 主叫不用它 (永远临时端口), 被叫被占时回退临时端口, 见 `bind_recv_sockets`
     pub rtp_ports: RtpPorts,
 }
 
@@ -144,4 +193,47 @@ pub fn caller_from_request(req: &rsip::Request) -> String {
         .and_then(|h| h.uri().ok())
         .and_then(|u| u.auth.map(|a| a.user))
         .unwrap_or_else(|| "unknown".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LOOPBACK: Ipv4Addr = Ipv4Addr::LOCALHOST;
+
+    /// 主叫 (preferred=None): 总是拿到非 0 的临时端口, 音/视频不同;
+    /// socket 活着期间端口确实被占住
+    #[test]
+    fn outgoing_always_gets_ephemeral_ports() {
+        let (ports, _sockets) = bind_recv_sockets(LOOPBACK, None).unwrap();
+        assert_ne!(ports.audio, 0);
+        assert_ne!(ports.video, 0);
+        assert_ne!(ports.audio, ports.video);
+        assert!(
+            std::net::UdpSocket::bind((LOOPBACK, ports.audio)).is_err(),
+            "socket must keep the audio port occupied"
+        );
+    }
+
+    /// 被叫首选端口空闲时按配置绑; 端口值原样返回
+    #[test]
+    fn incoming_binds_preferred_when_free() {
+        // 先问 OS 要两个临时端口再立刻释放, 得到两个当前大概率空闲的
+        // 端口号当"配置值", 避免测试钉死端口撞车
+        let (free, _tmp) = bind_recv_sockets(LOOPBACK, None).unwrap();
+        drop(_tmp);
+        let (ports, _sockets) = bind_recv_sockets(LOOPBACK, Some(free)).unwrap();
+        assert_eq!(ports, free);
+    }
+
+    /// 被叫首选端口已被占 (同机另一个通话进程) 时回退临时端口,
+    /// 且回退端口不等于被占的配置值
+    #[test]
+    fn incoming_falls_back_when_preferred_occupied() {
+        let (occupied, _blockers) = bind_recv_sockets(LOOPBACK, None).unwrap();
+        let (ports, _sockets) = bind_recv_sockets(LOOPBACK, Some(occupied)).unwrap();
+        assert_ne!(ports.audio, occupied.audio);
+        assert_ne!(ports.video, occupied.video);
+        assert_ne!(ports.audio, ports.video);
+    }
 }

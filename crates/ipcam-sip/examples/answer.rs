@@ -277,14 +277,20 @@ fn mic_params(offer: &OfferMedias) -> Option<ipcam_gst::AudioDest> {
 }
 
 /// 起麦克风回传: 在 wasapisrc/alsasrc 上拉一条 RTP 发送链, 把本机麦的
-/// 声音灌给对端给的地址.
+/// 声音灌给对端给的地址. socket 是通话的音频共享 socket (对称 RTP:
+/// 源端口 == answer 声明的接收端口).
 ///
 /// 没有麦克风设备就返回 None, 通话继续 (只收不发). 失败会 warn 但不
 /// 抛 — 通话不因麦克风挂掉.
-fn start_mic_sender(dest: ipcam_gst::AudioDest) -> Option<RtpSender> {
+fn start_mic_sender(
+    dest: ipcam_gst::AudioDest,
+    socket: &ipcam_gst::SharedUdpSocket,
+) -> Option<RtpSender> {
     match ipcam_gst::start_rtp_sender(ipcam_gst::RtpSendConfig {
         audio: Some((ipcam_gst::TrackSource::Mic, dest)),
         video: None,
+        audio_socket: Some(socket.clone()),
+        video_socket: None,
     }) {
         Ok(s) => {
             info!(%dest.addr, dest.payload_type, "mic sender started");
@@ -321,13 +327,17 @@ fn start_receiver(
     output_dir: &std::path::Path,
     audio: Option<AudioCodec>,
     video: Option<VideoCodec>,
+    ports: (u16, u16),
+    sockets: &(ipcam_gst::SharedUdpSocket, ipcam_gst::SharedUdpSocket),
 ) -> Option<RtpReceiver> {
     match start_rtp_receiver(RtpRecvConfig {
         path: Some(output_dir.join("call.ts")),
         playback: true,
         video_tap: None,
-        video: video.map(|c| (VIDEO_RTP_PORT, c)),
-        audio: audio.map(|c| (AUDIO_RTP_PORT, c)),
+        video: video.map(|c| (ports.1, c)),
+        audio: audio.map(|c| (ports.0, c)),
+        video_socket: video.map(|_| sockets.1.clone()),
+        audio_socket: audio.map(|_| sockets.0.clone()),
     }) {
         Ok(r) => Some(r),
         Err(e) => {
@@ -350,6 +360,12 @@ struct CallMedia {
     recv_fingerprint: (Option<AudioCodec>, Option<VideoCodec>),
     /// 回传指纹: (对端收音频地址, pt, 编码)
     send_fingerprint: Option<ipcam_gst::AudioDest>,
+    /// 本机 RTP 接收端口 (音频, 视频): answer SDP 里声明的实际值
+    /// (固定端口被占时回退过临时端口), re-INVITE 的 answer 要复用
+    ports: (u16, u16),
+    /// 对称 RTP 共享 socket (音频, 视频): udpsrc 收/udpsink 发同一对,
+    /// 管线重启时复用, 端口在 dialog 存续期不变
+    sockets: (ipcam_gst::SharedUdpSocket, ipcam_gst::SharedUdpSocket),
 }
 
 impl CallMedia {
@@ -376,13 +392,21 @@ impl CallMedia {
         mic: bool,
         recv_fingerprint: (Option<AudioCodec>, Option<VideoCodec>),
         send_fingerprint: Option<ipcam_gst::AudioDest>,
+        ports: (u16, u16),
+        sockets: (ipcam_gst::SharedUdpSocket, ipcam_gst::SharedUdpSocket),
     ) -> Self {
-        let receiver = start_receiver(&output_dir, recv_fingerprint.0, recv_fingerprint.1);
+        let receiver = start_receiver(
+            &output_dir,
+            recv_fingerprint.0,
+            recv_fingerprint.1,
+            ports,
+            &sockets,
+        );
         let sender = if mic {
             if send_fingerprint.is_none() {
                 warn!("no sendable audio codec in offer, mic muted");
             }
-            send_fingerprint.and_then(start_mic_sender)
+            send_fingerprint.and_then(|dest| start_mic_sender(dest, &sockets.0))
         } else {
             info!("mic disabled (--no-mic)");
             None
@@ -395,6 +419,8 @@ impl CallMedia {
             sender,
             recv_fingerprint,
             send_fingerprint,
+            ports,
+            sockets,
         }
     }
 
@@ -404,8 +430,8 @@ impl CallMedia {
         let (audio, video, _) = ipcam_sip::negotiate::build_answer(
             offer,
             self.local_ip,
-            AUDIO_RTP_PORT,
-            VIDEO_RTP_PORT,
+            self.ports.0,
+            self.ports.1,
             audio_pred,
             video_pred,
         );
@@ -415,7 +441,13 @@ impl CallMedia {
             if let Some(r) = self.receiver.take() {
                 r.stop();
             }
-            self.receiver = start_receiver(&self.output_dir, new_recv.0, new_recv.1);
+            self.receiver = start_receiver(
+                &self.output_dir,
+                new_recv.0,
+                new_recv.1,
+                self.ports,
+                &self.sockets,
+            );
             self.recv_fingerprint = new_recv;
         }
         let new_send = if self.mic { mic_params(offer) } else { None };
@@ -424,7 +456,7 @@ impl CallMedia {
             if let Some(s) = self.sender.take() {
                 s.stop();
             }
-            self.sender = new_send.and_then(start_mic_sender);
+            self.sender = new_send.and_then(|dest| start_mic_sender(dest, &self.sockets.0));
             self.send_fingerprint = new_send;
         }
     }
@@ -439,6 +471,36 @@ impl CallMedia {
             r.stop();
         }
     }
+}
+
+/// 绑本路通话的 RTP socket 对: 优先固定端口 (AUDIO_RTP_PORT /
+/// VIDEO_RTP_PORT), 被占 (同机另一个通话进程) 回退临时端口.
+/// socket 由收发管线共享 (对称 RTP: 源端口 == answer 声明的接收端口),
+/// 返回附带实际绑定的 (音频端口, 视频端口) — 写 answer SDP 用
+fn bind_media_sockets(
+    local_ip: IpAddr,
+) -> Result<(
+    ipcam_gst::SharedUdpSocket,
+    ipcam_gst::SharedUdpSocket,
+    (u16, u16),
+)> {
+    let bind = |audio_port: u16, video_port: u16| {
+        let audio = ipcam_gst::bind_udp_socket(local_ip, audio_port)?;
+        let video = ipcam_gst::bind_udp_socket(local_ip, video_port)?;
+        Ok::<_, std::io::Error>((audio, video))
+    };
+    let (audio, video) = match bind(AUDIO_RTP_PORT, VIDEO_RTP_PORT) {
+        Ok(pair) => pair,
+        Err(e) => {
+            warn!(error = %e, "fixed RTP ports unavailable, fall back to ephemeral");
+            bind(0, 0)?
+        }
+    };
+    let ports = (
+        ipcam_gst::udp_socket_port(&audio)?,
+        ipcam_gst::udp_socket_port(&video)?,
+    );
+    Ok((audio, video, ports))
 }
 
 /// 一路通话生命周期: 解析 offer → ringing + accept (带 answer SDP) →
@@ -478,11 +540,13 @@ async fn process_call(
     let offer = parse_offer_all(dialog.initial_request().body())?;
     info!(?offer, "incoming offer");
 
+    // 端口要写进 answer SDP, socket 绑好后活到通话结束 (收发共享)
+    let (audio_sock, video_sock, ports) = bind_media_sockets(local_ip)?;
     let (audio_pt, video, answer) = ipcam_sip::negotiate::build_answer(
         &offer,
         local_ip,
-        AUDIO_RTP_PORT,
-        VIDEO_RTP_PORT,
+        ports.0,
+        ports.1,
         audio_pred,
         video_pred,
     );
@@ -502,6 +566,8 @@ async fn process_call(
         mic,
         (audio_pt.map(|(_, c)| c), video.map(|(_, c, _)| c)),
         mic_params(&offer),
+        ports,
+        (audio_sock, video_sock),
     );
 
     // 对端 BYE → dialog.cancel_token 取消; 本地 Ctrl+C → 发 BYE;
@@ -524,8 +590,8 @@ async fn process_call(
                         let (_, _, answer) = ipcam_sip::negotiate::build_answer(
                             &new_offer,
                             local_ip,
-                            AUDIO_RTP_PORT,
-                            VIDEO_RTP_PORT,
+                            media.ports.0,
+                            media.ports.1,
                             audio_pred,
                             video_pred,
                         );

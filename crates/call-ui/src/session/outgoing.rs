@@ -104,13 +104,19 @@ async fn outgoing_inner(
     state_sender: DialogStateSender,
     ctx: &mut OutgoingCtx,
 ) -> Result<String> {
+    // 主叫永远用临时端口 (同 call.rs): 同机对端 (answer 示例) 也用
+    // 40000/40002 时, 双方声明相同接收端口会让发送互相投错 socket,
+    // 后绑方收端永远 0 包; 临时端口两进程各绑各的, 从根上避开.
+    // socket 从 INVITE 前绑好一直活到通话结束: udpsrc/udpsink 共享
+    // (对称 RTP), 过媒体锚定服务器的互通前提
+    let (rtp_ports, sockets) = super::types::bind_recv_sockets(ctx.base.local, None)?;
     let offer = build_av_offer(
         IpAddr::V4(ctx.base.local),
-        ctx.base.cfg.rtp_ports.audio,
-        ctx.base.cfg.rtp_ports.video,
+        rtp_ports.audio,
+        rtp_ports.video,
         &[PT_PCMU, PT_PCMA],
     );
-    info!(%ctx.callee, rtp_ports = ?ctx.base.cfg.rtp_ports, "calling, SDP offer:\n{offer}");
+    info!(%ctx.callee, ?rtp_ports, "calling, SDP offer:\n{offer}");
 
     let invite_option = InviteOption {
         callee: ctx.callee.clone(),
@@ -170,12 +176,8 @@ async fn outgoing_inner(
         peer: ctx.number.clone(),
     });
 
-    let mut media = media::start_outgoing(
-        &peers,
-        &ctx.base.cfg.rtp_ports,
-        &ctx.base.cfg,
-        &ctx.base.tap,
-    );
+    let mut media =
+        media::start_outgoing(&peers, &rtp_ports, sockets, &ctx.base.cfg, &ctx.base.tap);
     info!("call established");
 
     let reason = call_loop(
@@ -184,7 +186,7 @@ async fn outgoing_inner(
         &mut ctx.base.call_answer_ctl_rx,
         &mut ctx.base.update_rx,
         ctx.base.local,
-        ctx.base.cfg.rtp_ports,
+        rtp_ports,
     )
     .await?;
     if let Some(m) = media {
