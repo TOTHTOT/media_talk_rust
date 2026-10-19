@@ -412,6 +412,26 @@ latch 未过期可能仍不通, 稍候重拨自愈; 反复 0 包时先看日志�
 
 ## 待办
 
+- **RK3566 视频上屏零拷贝路线** (板不在身边, 卡在阶段 2):
+  - 阶段 0 ✅ 已完成 (commit `c764e33`): tap 分支限宽缩放 + appsink
+    drop, RGBA 带宽 720p 时 ~92MB/s → ~23MB/s
+  - 阶段 1: MPP 硬解真接通 (现 `MppDecoder::submit` 是 NoBackend 空壳,
+    全链路 avdec 软解), 目标 dmabuf 输出
+  - 阶段 2 (**go/no-go, 需上板验证**): femtovg/GL 可用性. 清单:
+    1. `ls /dev/dri` 有 card0/renderD128; `dmesg | grep -i panfrost`
+       驱动已载 (主线内核 Mali-G52 走 Panfrost, 没有就查内核
+       `CONFIG_DRM_PANFROST`)
+    2. `eglinfo -B` renderer 带 "Mali-G52" (mesa-utils), 证明 EGL/GLES2
+       用户态通
+    3. 现有 kms 二进制不用重编 (femtovg 已编进), 直接
+       `SLINT_BACKEND=linuxkms-femtovg ./media_talk_rust gui ...`
+       界面出来即通过
+    - 顺手查 (后续阶段用): `gst-inspect-1.0 glupload` (gst-gl);
+      `/dev/rga` + librga. 这两个是用户态包, 自编译 Armbian 未必带
+  - 阶段 3: 零拷贝上屏. 优先 dmabuf → gst-gl 直通 (GPU 采样时做
+    YUV→RGB, 不需要 RGA); RGA→EGLImage→BorrowedOpenGLTexture 是备选.
+    glupload 能用但不是捷径: 它只做上传不做 RGA, 且要 gst-gl context
+    与 slint 共享, 复杂度不比手写 EGLImage 低
 - 音频 tap 实机验证（168 相机无音轨，需要一台带音频的相机）
 - serve.rs 启动日志里 local_ip 的端口硬编码 `:8080`，与实际默认 bind 8081
   不符，未修
