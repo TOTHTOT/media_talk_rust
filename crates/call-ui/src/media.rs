@@ -110,7 +110,14 @@ impl MediaHandles {
         sockets: RecvSockets,
     ) -> Self {
         info!("start build gst pipeline");
-        let receiver = start_receiver(tap.clone(), recv_ports, plan.recv.0, plan.recv.1, &sockets);
+        let receiver = start_receiver(
+            tap.clone(),
+            recv_ports,
+            plan.recv.0,
+            plan.recv.1,
+            &sockets,
+            cfg.max_width,
+        );
         let sender = start_sender(
             &cfg.audio_src,
             &cfg.video_src,
@@ -146,6 +153,7 @@ impl MediaHandles {
                 new_plan.recv.0,
                 new_plan.recv.1,
                 &self.sockets,
+                self.max_width,
             );
         }
         let send_changed = new_plan.send_audio != self.plan.send_audio
@@ -281,6 +289,7 @@ pub fn reinvite_answer(
 /// * `audio`: 要收的音频编码, None 表示音频路不建
 /// * `video`: 要收的视频编码, None 表示视频路不建
 /// * `sockets`: 对称 RTP 共享 socket, 启用的那几路 udpsrc 直接复用
+/// * `max_width`: tap 显示限宽, 0 表示不限 (透传成 None)
 ///
 /// returns: Option<RtpReceiver> — 运行中的接收器句柄, stop 即拆管线
 fn start_receiver(
@@ -289,6 +298,7 @@ fn start_receiver(
     audio: Option<AudioCodec>,
     video: Option<VideoCodec>,
     sockets: &RecvSockets,
+    max_width: u32,
 ) -> Option<RtpReceiver> {
     if audio.is_none() && video.is_none() {
         warn!("audio or video is null, skip build recv gst pipeline");
@@ -299,6 +309,9 @@ fn start_receiver(
         path: None,
         playback: true,
         video_tap: Some(tap),
+        // 显示通路限宽复用 max_width (0 = 不限): 屏幕 widget 就那么大,
+        // 全尺寸帧只是白搬 (memcpy + 纹理上传带宽)
+        tap_max_width: (max_width > 0).then_some(max_width),
         video: video.map(|c| (ports.video, c)),
         audio: audio.map(|c| (ports.audio, c)),
         video_socket: video.map(|_| sockets.video.clone()),

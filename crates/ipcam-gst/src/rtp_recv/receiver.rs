@@ -134,6 +134,7 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
             mux.as_ref(),
             cfg.playback,
             cfg.video_tap.as_ref(),
+            cfg.tap_max_width,
             cfg.video_socket.as_ref(),
             port,
             codec,
@@ -245,22 +246,35 @@ fn link_mux(
     Ok(())
 }
 
-/// 视频 tap 分支链头之后的一段: decode → convert → capsfilter(RGBA) →
-/// appsink(回调吐帧). 返回要接进 tee/链尾的元素列表已 link 完成.
-/// capsfilter 锁 RGBA: tap 回调契约就是 RGBA 裸帧 (ingest::tap 同契约)
+/// 视频 tap 分支链头之后的一段: decode → convert → [videoscale] →
+/// capsfilter(RGBA[, 限宽]) → appsink(回调吐帧). 返回要接进 tee/链尾的
+/// 元素列表已 link 完成.
+/// capsfilter 锁 RGBA: tap 回调契约就是 RGBA 裸帧 (ingest::tap 同契约).
+/// `max_width`: Some(w) 时插 videoscale 且 caps 限宽到 w 以内, 显示通路
+/// 没必要搬全尺寸帧. 限宽时必须同时锁 PAR=1/1: 只限宽不限高 videoscale
+/// 会只压宽度 (320x240 → 160x240 画面变形), 锁住方像素它才会同比缩高
+/// (同 rtp_send 发送链的踩坑记录)
 fn build_video_tap_branch(
     decode_name: &str,
     tap: &crate::VideoFrameSink,
+    max_width: Option<u32>,
 ) -> Result<Vec<gst::Element>, GstStreamError> {
     let decode = make(decode_name)?;
     let convert = make("videoconvert")?;
+    let mut chain = vec![decode, convert];
+    if max_width.is_some() {
+        let scale = make("videoscale")?;
+        chain.push(scale);
+    }
     let rgba = make("capsfilter")?;
-    rgba.set_property(
-        "caps",
-        gst::Caps::builder("video/x-raw")
-            .field("format", "RGBA")
-            .build(),
-    );
+    let mut caps = gst::Caps::builder("video/x-raw").field("format", "RGBA");
+    if let Some(w) = max_width {
+        caps = caps
+            .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+            .field("width", gst::IntRange::new(1i32, w as i32));
+    }
+    rgba.set_property("caps", caps.build());
+    chain.push(rgba);
     let appsink = make("appsink")?;
     // appsink 走 set_callbacks 不需要 emit-signals; 它也不是 Bin,
     // disable_sink_async 对它 no-op — 两处死配置已删 (auto*sink 的那些是真的, 别误删)
@@ -268,6 +282,10 @@ fn build_video_tap_branch(
         .clone()
         .dynamic_cast::<gstreamer_app::AppSink>()
         .map_err(|_| GstStreamError::Init("appsink cast failed".into()))?;
+    // 只留最新一帧, 旧帧直接丢: 回调消费 (memcpy + UI 纹理上传) 跟不上
+    // 流线程时不能让它堆积 — 显示通路要的是低延迟, 不是不丢帧
+    sink.set_max_buffers(1);
+    sink.set_drop(true);
     let tap = tap.clone();
     sink.set_callbacks(
         gstreamer_app::AppSinkCallbacks::builder()
@@ -292,13 +310,15 @@ fn build_video_tap_branch(
             })
             .build(),
     );
-    Ok(vec![decode, convert, rgba, appsink])
+    chain.push(appsink);
+    Ok(chain)
 }
 
 /// 视频接收轨: udpsrc → depay → parse, 之后按出口分: 存盘 (queue → mux)
 /// / 播放 (decode → videoconvert → autovideosink; tap=Some 时换成
 /// decode → videoconvert → capsfilter(RGBA) → appsink 回调) / tee 双全.
 /// `socket`: Some 时 udpsrc 复用该 socket (对称 RTP 共享), 忽略 port.
+/// `tap_max_width`: tap 分支显示限宽, 透传给 `build_video_tap_branch`.
 /// 返回 udpsrc 的 src pad (stop 时注入 EOS 用)
 #[allow(clippy::too_many_arguments)]
 fn build_video_track(
@@ -306,6 +326,7 @@ fn build_video_track(
     mux: Option<&gst::Element>,
     playback: bool,
     tap: Option<&crate::VideoFrameSink>,
+    tap_max_width: Option<u32>,
     socket: Option<&crate::SharedUdpSocket>,
     port: u16,
     codec: VideoCodec,
@@ -382,7 +403,7 @@ fn build_video_track(
         }
         (None, true) => match tap {
             Some(tap) => {
-                let branch = build_video_tap_branch(decode_name, tap)?;
+                let branch = build_video_tap_branch(decode_name, tap, tap_max_width)?;
                 let mut elems: Vec<&gst::Element> = vec![&udpsrc, &depay, &parse, &bs];
                 elems.extend(branch.iter());
                 add_and_sync(pipeline, &elems)?;
@@ -407,7 +428,7 @@ fn build_video_track(
             let play_queue = leaky_queue()?;
             match tap {
                 Some(tap) => {
-                    let branch = build_video_tap_branch(decode_name, tap)?;
+                    let branch = build_video_tap_branch(decode_name, tap, tap_max_width)?;
                     let mut elems: Vec<&gst::Element> =
                         vec![&udpsrc, &depay, &parse, &bs, &tee, &rec_queue, &play_queue];
                     elems.extend(branch.iter());
@@ -592,7 +613,8 @@ mod tests {
     }
 
     /// GUI 视频通路: 视频帧经 appsink tap 回调吐 RGBA 裸帧 (不进 autovideosink).
-    /// 环回发 H264, tap 必须收到帧且宽高与源一致
+    /// 环回发 H264, tap 必须收到帧; tap_max_width=160 时 videoscale 降采样
+    /// (保持宽高比), 宽高必须是 320x240 缩下来的 160x120
     #[test]
     fn video_tap_receives_decoded_frames() {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
@@ -615,6 +637,7 @@ mod tests {
             path: None,
             playback: true, // 音频仍走 autoaudiosink; 视频被 tap 接管
             video_tap: Some(tap),
+            tap_max_width: Some(160),
             video: Some((42130, VideoCodec::H264)),
             audio: None,
             video_socket: None,
@@ -639,7 +662,7 @@ mod tests {
             frames.load(std::sync::atomic::Ordering::Relaxed) > 10,
             "tap got no frames"
         );
-        assert_eq!(*dims.lock(), (320, 240));
+        assert_eq!(*dims.lock(), (160, 120));
     }
 
     /// 端到端: 真发 RTP (本机环回) → 接收器合并成 TS → stop() 注入 EOS
@@ -658,6 +681,7 @@ mod tests {
             path: Some(path.clone()),
             playback: false,
             video_tap: None,
+            tap_max_width: None,
             video: Some((42110, VideoCodec::H264)),
             audio: Some((42112, AudioCodec::G711U)),
             video_socket: None,
@@ -701,6 +725,7 @@ mod tests {
             path: Some(path.clone()),
             playback: true,
             video_tap: None,
+            tap_max_width: None,
             video: None,
             audio: Some((42114, AudioCodec::G711U)),
             video_socket: None,
@@ -742,6 +767,7 @@ mod tests {
             path: Some(path.clone()),
             playback: true,
             video_tap: None,
+            tap_max_width: None,
             video: Some((42120, VideoCodec::H264)),
             audio: Some((42122, AudioCodec::G711U)),
             video_socket: None,
@@ -790,6 +816,7 @@ mod tests {
             path: Some(path.clone()),
             playback: true,
             video_tap: None,
+            tap_max_width: None,
             video: Some((42124, VideoCodec::H264)),
             audio: Some((42126, AudioCodec::G711U)),
             video_socket: None,

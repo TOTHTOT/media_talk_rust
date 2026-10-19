@@ -334,6 +334,7 @@ fn start_receiver(
         path: Some(output_dir.join("call.ts")),
         playback: true,
         video_tap: None,
+        tap_max_width: None,
         video: video.map(|c| (ports.1, c)),
         audio: audio.map(|c| (ports.0, c)),
         video_socket: video.map(|_| sockets.1.clone()),

@@ -338,6 +338,27 @@ mpegtsmux 都认这个格式.
 queue 1s 填满反压 tee, 另一路和整条管线一起冻结 (回归测试
 `missing_track_does_not_freeze_other` 守着).
 
+### tap 限宽只写 width 范围 = 画面变形, 必须配 PAR=1/1
+
+**通俗版**: 想省带宽, 让 videoscale 把 720p 缩到 640 宽再喂给界面.
+只在关卡 (capsfilter) 上写"宽度不许超 640", 缩放器就耍滑头: 宽度是
+压了, 高度一个像素不动 — 320x240 进去 160x**240** 出来, 画面压成
+竹竿. 它觉得"宽高比我可以用非方像素 (PAR) 找补, 不算违约". 关卡上
+加一句"必须方像素 (PAR=1/1)", 它没退路了才老老实实同比缩高.
+
+**现象**: tap 回调收到的帧是 160x240 (源 320x240 限宽 160), 宽度对
+高度没缩, 显示变形. 单测 `video_tap_receives_decoded_frames` 断言
+dims 当场抓住.
+
+**根因**: videoscale 缩放宽高各自独立, caps 只约束宽度时它没有缩
+高度的义务 — 和发送链当年"限宽 640 协商出 640x720 PAR 2/1"是同一
+个坑 (见上文"相机源黑屏"一节), 只是那次它用 PAR 代偿, 这次直接不缩.
+
+**解法**: tap 分支限宽时 capsfilter 同时锁
+`pixel-aspect-ratio=1/1` + `width=IntRange(1, max)`, videoscale 被迫
+保持宽高比 (320x240 → 160x120). **教训: 给 videoscale 的 caps 约束
+必须宽高/PAR 一起想, 只写一半等于把另一半的决定权交给它.**
+
 ## 对称 RTP: udpsrc/udpsink 必须共享 socket
 
 **现象**: call-ui 拨打门口机, 对端看/听我们正常 (发送 stats 一直涨),

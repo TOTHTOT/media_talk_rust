@@ -188,6 +188,7 @@ async fn call_until_hangup(
         path: None,
         playback: true,
         video_tap: None,
+        tap_max_width: None,
         audio: peers
             .audio
             .as_ref()

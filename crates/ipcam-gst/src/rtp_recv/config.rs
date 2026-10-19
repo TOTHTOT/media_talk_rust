@@ -25,6 +25,17 @@ pub struct RtpRecvConfig {
     /// (GUI 纹理通路), 取代 autovideosink 播放分支; 不影响音频 playback
     /// 和存盘. 回调跑在 GStreamer 流线程, 别在里面碰 UI 状态
     pub video_tap: Option<crate::VideoFrameSink>,
+    /// tap 分支的显示限宽: Some(w) 时解码后先 videoscale 降采样到 w
+    /// 以内 (保持宽高比) 再吐给回调; None = 不限制 (不插 videoscale).
+    /// 仅 tap 分支生效, 不影响存盘.
+    ///
+    /// 为什么要缩: tap 吐的帧最终只显示在屏幕上 640 宽左右的 widget
+    /// 里, 但缩放前每一级都要按全尺寸买单 — 720p@25fps 的 RGBA ≈
+    /// 92MB/s, 要过 appsink → GUI 的 memcpy 和纹理上传两道, 其中 ~75%
+    /// 的像素搬过去只为被立刻缩掉 (ARM 板子上这是帧率杀手). 在 gst
+    /// 里解码完就缩 (videoscale), 后面的 memcpy/上传全按小尺寸走,
+    /// 带宽降到 ~23MB/s; 比在 GUI 层缩省得多 — 越早缩越省
+    pub tap_max_width: Option<u32>,
     /// 视频路共享 UDP socket: Some 时 udpsrc 直接用它收 (忽略 video 里
     /// 的端口配置), 发送器可用同一 socket 发 — 对称 RTP, 见
     /// [`crate::bind_udp_socket`]. None = udpsrc 自建 socket (旧行为)
@@ -42,6 +53,7 @@ impl std::fmt::Debug for RtpRecvConfig {
             .field("video", &self.video)
             .field("audio", &self.audio)
             .field("video_tap", &self.video_tap.as_ref().map(|_| "..."))
+            .field("tap_max_width", &self.tap_max_width)
             .field("video_socket", &self.video_socket.is_some())
             .field("audio_socket", &self.audio_socket.is_some())
             .finish()

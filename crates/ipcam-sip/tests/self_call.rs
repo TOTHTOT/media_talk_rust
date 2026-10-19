@@ -126,6 +126,7 @@ async fn self_call_send_recv_file() -> Result<()> {
         path: Some(record_path.clone()),
         playback: false,
         video_tap: Some(tap),
+        tap_max_width: None,
         video: Some((CALLEE_VIDEO_PORT, VideoCodec::H264)),
         audio: Some((CALLEE_AUDIO_PORT, AudioCodec::G711U)),
         video_socket: Some(callee_video_sock.clone()),
