@@ -115,6 +115,7 @@ export component MainWindow inherits MaterialWindow {
     if root.phase != 3: StatusBar {
         y: 0;
         width: 100%;
+        z: 1;
         sip-registered: root.sip-registered;
         account: root.account;
         status-time-text: root.status-time-text;
@@ -217,6 +218,7 @@ export component MainWindow inherits MaterialWindow {
     ErrorBanner {
         y: 0;
         width: 100%;
+        z: 2;
         text: root.displayed-error;
     }
 
