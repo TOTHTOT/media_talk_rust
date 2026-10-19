@@ -24,6 +24,26 @@ export struct ContactEntry {
     number: string,
 }
 
+// 已保存摄像头 (SQLite cameras 表, Rust store.rs 维护)
+export struct CameraEntry {
+    id: int,
+    name: string,
+    uri: string,
+}
+
+// ONVIF 搜索到的设备 (未保存; index 是 Rust 侧列表下标)
+export struct DiscoveredEntry {
+    index: int,
+    label: string,   // "厂商 型号 (地址)" 或裸地址
+    xaddr: string,
+}
+
+// 设备的媒体 profile (选择后保存)
+export struct ProfileEntry {
+    token: string,
+    label: string,   // "H264 1920x1080" 等
+}
+
 // 状态行小圆点 (纵向居中)
 export component Dot inherits Rectangle {
     in property <brush> tint;

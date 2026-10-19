@@ -14,7 +14,7 @@ import {
 } from "../material-1.1.0/material.slint";
 // Material 主题全局状态需要链接进二进制, 模板同款写法
 export { MaterialWindowAdapter } from "../material-1.1.0/material.slint";
-import { CallLogEntry, ContactEntry, AppToast, ErrorBanner } from "components.slint";
+import { CallLogEntry, ContactEntry, CameraEntry, DiscoveredEntry, ProfileEntry, AppToast, ErrorBanner } from "components.slint";
 import { StatusBar } from "status_bar.slint";
 import { HomePage } from "home_page.slint";
 import { DialPage } from "dial_page.slint";
@@ -62,6 +62,11 @@ export component MainWindow inherits MaterialWindow {
     in property <int> unread-messages: 0;
     in property <[CallLogEntry]> call-log: [];
     in property <[ContactEntry]> contacts: [];
+    in property <[CameraEntry]> cameras: [];
+    // 摄像头操作忙标志 (搜索中/拉 profile 中), 对话框里转菊花文案
+    in property <bool> camera-busy: false;
+    in property <[DiscoveredEntry]> discovered-devices: [];
+    in property <[ProfileEntry]> camera-profiles: [];
     in property <string> settings-text: "";
     callback dial(string);
     callback accept-call();
@@ -72,6 +77,12 @@ export component MainWindow inherits MaterialWindow {
     callback add-contact(string, string);
     callback update-contact(int, string, string);
     callback delete-contact(int);
+    // 摄像头管理 (设置页): 手动添加/删除/ONVIF 搜索/拉 profile/保存搜索到的设备
+    callback add-camera(string, string, string, string); // name, uri, user, pass
+    callback delete-camera(int);
+    callback search-cameras();
+    callback fetch-camera-profiles(string, string, string); // xaddr, user, pass
+    callback save-discovered-camera(string, string, string, string, string); // xaddr, name, user, pass, token
     // 后端通知管线入口 (app.rs Notice): 前端按 kind 解析文案 (i18n),
     // level 决定呈现 (0 info / 1 warn → toast, 2 error → 顶部错误条),
     // detail 可选 (空串 = 无), 用于系统错误原文或后端指定提示
@@ -187,8 +198,18 @@ export component MainWindow inherits MaterialWindow {
         width: 100%;
         height: parent.height - 30px;
         settings-text: root.settings-text;
+        cameras: root.cameras;
+        camera-busy: root.camera-busy;
+        discovered-devices: root.discovered-devices;
+        camera-profiles: root.camera-profiles;
         back => { root.page = 0; }
         set-language(lang) => { root.set-language(lang); }
+        add-camera(n, u, user, p) => { root.add-camera(n, u, user, p); }
+        delete-camera(id) => { root.delete-camera(id); }
+        search-cameras => { root.search-cameras(); }
+        fetch-camera-profiles(x, user, p) => { root.fetch-camera-profiles(x, user, p); }
+        save-discovered-camera(x, n, user, p, t) => { root.save-discovered-camera(x, n, user, p, t); }
+        show-toast(t) => { root.show-toast(t); }
     }
 
     // ===== 通话中 =====

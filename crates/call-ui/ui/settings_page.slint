@@ -1,17 +1,47 @@
-// 设置页 (只读配置信息)
+// 设置页: 只读配置信息 + 摄像头管理 (增删; 查看在监控页)
 import {
     FilledCard,
+    FilledButton,
     TextButton,
+    IconButton,
+    TextField,
+    ListTile,
     HorizontalDivider,
     MaterialText,
     MaterialTypography,
     MaterialPalette,
 } from "../material-1.1.0/material.slint";
+import { ScrollView } from "std-widgets.slint";
+import { CameraEntry, DiscoveredEntry, ProfileEntry } from "components.slint";
 
 export component SettingsPage inherits Rectangle {
     in property <string> settings-text;
+    in property <[CameraEntry]> cameras: [];
+    in property <bool> camera-busy: false;
+    in property <[DiscoveredEntry]> discovered-devices: [];
+    in property <[ProfileEntry]> camera-profiles: [];
     callback back();
     callback set-language(string); // "zh" | "en"
+    callback add-camera(string, string, string, string);
+    callback delete-camera(int);
+    callback search-cameras();
+    callback fetch-camera-profiles(string, string, string);
+    callback save-discovered-camera(string, string, string, string, string);
+    callback show-toast(string);
+
+    // 对话框: 0=无 1=搜索添加 2=手动添加
+    property <int> dialog: 0;
+    // 搜索对话框步骤: 0=设备列表 1=凭据 2=选 profile
+    property <int> search-step: 0;
+    property <string> sel-xaddr: "";
+    property <string> sel-label: "";
+    // 步骤 1 的输入在切到步骤 2 时快照进属性 (条件块内 id 跨块不可见,
+    // 步骤 2 保存时用快照值而不是引用输入框)
+    property <string> sel-name: "";
+    property <string> sel-user: "";
+    property <string> sel-pass: "";
+
+    background: MaterialPalette.background;
 
     VerticalLayout {
         padding: 24px;
@@ -25,62 +55,311 @@ export component SettingsPage inherits Rectangle {
             }
         }
 
-        HorizontalLayout {
-            alignment: center;
+        ScrollView {
             vertical-stretch: 1;
-            FilledCard {
-                // 固定宽度: 写 min(640px, root.width - 160px) 会让预览器
-                // 窗口尺寸↔内容布局信息成环 (窗口最小 1024, 640 必然放得下)
-                width: 640px;
-                VerticalLayout {
-                    padding: 28px;
-                    spacing: 20px;
-                    MaterialText {
-                        text: @tr("设置");
-                        style: MaterialTypography.headline_small;
-                    }
+            VerticalLayout {
+                alignment: center;
+                spacing: 16px;
 
-                    HorizontalDivider {}
-
-                    // 语言切换: 立即生效 (bundled translations), 重启后回系统 locale
-                    HorizontalLayout {
-                        spacing: 12px;
-                        alignment: start;
+                // ===== 原设置卡 (只读配置) =====
+                FilledCard {
+                    width: 640px;
+                    VerticalLayout {
+                        padding: 28px;
+                        spacing: 20px;
                         MaterialText {
-                            text: @tr("语言");
+                            text: @tr("设置");
+                            style: MaterialTypography.headline_small;
+                        }
+
+                        HorizontalDivider {}
+
+                        // 语言切换: 立即生效 (bundled translations), 重启后回系统 locale
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: start;
+                            MaterialText {
+                                text: @tr("语言");
+                                style: MaterialTypography.body_large;
+                                color: MaterialPalette.on_surface_variant;
+                                vertical-alignment: center;
+                            }
+
+                            TextButton {
+                                text: "中文";
+                                clicked => { root.set-language("zh"); }
+                            }
+
+                            TextButton {
+                                text: "English";
+                                clicked => { root.set-language("en"); }
+                            }
+                        }
+
+                        HorizontalDivider {}
+
+                        MaterialText {
+                            text: root.settings-text;
                             style: MaterialTypography.body_large;
                             color: MaterialPalette.on_surface_variant;
-                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // ===== 摄像头管理卡 =====
+                FilledCard {
+                    width: 640px;
+                    VerticalLayout {
+                        padding: 28px;
+                        spacing: 16px;
+                        MaterialText {
+                            text: @tr("摄像头");
+                            style: MaterialTypography.headline_small;
                         }
 
-                        TextButton {
-                            text: "中文";
-                            clicked => { root.set-language("zh"); }
+                        HorizontalDivider {}
+
+                        if root.cameras.length == 0: MaterialText {
+                            text: @tr("暂无已保存的摄像头");
+                            style: MaterialTypography.body_large;
+                            color: MaterialPalette.on_surface_variant;
                         }
 
-                        TextButton {
-                            text: "English";
-                            clicked => { root.set-language("en"); }
+                        for cam in root.cameras: ListTile {
+                            width: 100%;
+                            // 必须显式定高: ListTile 内部 min_height 与头像盒互为依赖, 不定死成环 panic
+                            height: 72px;
+                            text: cam.name;
+                            supporting-text: cam.uri;
+                            IconButton {
+                                inline: true;
+                                icon: @image-url("icons/trash-2.svg");
+                                clicked => { root.delete-camera(cam.id); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: start;
+                            FilledButton {
+                                text: @tr("搜索添加");
+                                clicked => {
+                                    root.search-step = 0;
+                                    root.dialog = 1;
+                                    root.search-cameras();
+                                }
+                            }
+
+                            TextButton {
+                                text: @tr("手动添加");
+                                clicked => { root.dialog = 2; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ===== 对话框遮罩 (纯 Rectangle 覆盖层, 不用 PopupWindow) =====
+    if root.dialog != 0: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000080;
+        TouchArea {} // 吃掉点击, 不穿透到下层
+
+        FilledCard {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 560px;
+            height: 480px;
+
+            // ----- 搜索添加 -----
+            if root.dialog == 1: VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                MaterialText {
+                    text: @tr("搜索添加摄像头");
+                    style: MaterialTypography.title_large;
+                }
+
+                // 步骤 0: 设备列表
+                if root.search-step == 0: VerticalLayout {
+                    spacing: 8px;
+                    vertical-stretch: 1;
+                    if root.camera-busy: MaterialText {
+                        text: @tr("正在搜索局域网设备 ...");
+                        style: MaterialTypography.body_large;
+                        color: MaterialPalette.on_surface_variant;
+                    }
+                    if !root.camera-busy && root.discovered-devices.length == 0: MaterialText {
+                        text: @tr("未发现设备, 可重试或手动添加");
+                        style: MaterialTypography.body_large;
+                        color: MaterialPalette.on_surface_variant;
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 2px;
+                            for dev in root.discovered-devices: ListTile {
+                                width: 100%;
+                                height: 72px;
+                                text: dev.label;
+                                supporting-text: dev.xaddr;
+                                clicked => {
+                                    root.sel-xaddr = dev.xaddr;
+                                    root.sel-label = dev.label;
+                                    root.search-step = 1;
+                                }
+                            }
                         }
                     }
 
-                    HorizontalDivider {}
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: end;
+                        TextButton {
+                            text: @tr("重新搜索");
+                            clicked => { root.search-cameras(); }
+                        }
+                    }
+                }
 
+                // 步骤 1: 凭据
+                if root.search-step == 1: VerticalLayout {
+                    spacing: 12px;
+                    vertical-stretch: 1;
                     MaterialText {
-                        text: root.settings-text;
+                        text: root.sel-label;
+                        style: MaterialTypography.body_large;
+                    }
+
+                    name-input := TextField {
+                        label: @tr("名称");
+                        text: root.sel-label;
+                    }
+
+                    user-input := TextField {
+                        label: @tr("用户名");
+                    }
+
+                    pass-input := TextField {
+                        label: @tr("密码");
+                        input-type: password;
+                    }
+
+                    if root.camera-busy: MaterialText {
+                        text: @tr("正在读取设备配置 ...");
                         style: MaterialTypography.body_large;
                         color: MaterialPalette.on_surface_variant;
                     }
 
-                    // 占位弹簧: 把底部说明压到卡片底部
-                    Rectangle {
-                        vertical-stretch: 1;
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: end;
+                        TextButton {
+                            text: @tr("上一步");
+                            clicked => { root.search-step = 0; }
+                        }
+
+                        FilledButton {
+                            text: @tr("获取配置");
+                            enabled: name-input.text != "";
+                            clicked => {
+                                root.sel-name = name-input.text;
+                                root.sel-user = user-input.text;
+                                root.sel-pass = pass-input.text;
+                                root.fetch-camera-profiles(root.sel-xaddr, root.sel-user, root.sel-pass);
+                                root.search-step = 2;
+                            }
+                        }
+                    }
+                }
+
+                // 步骤 2: 选 profile 保存
+                if root.search-step == 2: VerticalLayout {
+                    spacing: 8px;
+                    vertical-stretch: 1;
+                    if root.camera-profiles.length == 0: MaterialText {
+                        text: root.camera-busy ? @tr("正在读取设备配置 ...") : @tr("未读到媒体配置, 请检查账号密码");
+                        style: MaterialTypography.body_large;
+                        color: MaterialPalette.on_surface_variant;
                     }
 
-                    MaterialText {
-                        text: @tr("更多设置项开发中, 当前为只读配置信息");
-                        style: MaterialTypography.body_small;
-                        color: MaterialPalette.outline;
+                    for prof in root.camera-profiles: ListTile {
+                        width: 100%;
+                        height: 72px;
+                        text: prof.label;
+                        clicked => {
+                            root.save-discovered-camera(root.sel-xaddr, root.sel-name, root.sel-user, root.sel-pass, prof.token);
+                            root.dialog = 0;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: end;
+                        TextButton {
+                            text: @tr("上一步");
+                            clicked => { root.search-step = 1; }
+                        }
+                    }
+                }
+
+                HorizontalDivider {}
+
+                HorizontalLayout {
+                    alignment: end;
+                    TextButton {
+                        text: @tr("取消");
+                        clicked => { root.dialog = 0; }
+                    }
+                }
+            }
+
+            // ----- 手动添加 -----
+            if root.dialog == 2: VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                MaterialText {
+                    text: @tr("手动添加摄像头");
+                    style: MaterialTypography.title_large;
+                }
+
+                m-name := TextField {
+                    label: @tr("名称");
+                }
+
+                m-uri := TextField {
+                    label: "RTSP URL";
+                }
+
+                m-user := TextField {
+                    label: @tr("用户名 (可空)");
+                }
+
+                m-pass := TextField {
+                    label: @tr("密码 (可空)");
+                    input-type: password;
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: end;
+                    TextButton {
+                        text: @tr("取消");
+                        clicked => { root.dialog = 0; }
+                    }
+
+                    FilledButton {
+                        text: @tr("保存");
+                        enabled: m-name.text != "" && m-uri.text != "";
+                        clicked => {
+                            root.add-camera(m-name.text, m-uri.text, m-user.text, m-pass.text);
+                            root.dialog = 0;
+                        }
                     }
                 }
             }
