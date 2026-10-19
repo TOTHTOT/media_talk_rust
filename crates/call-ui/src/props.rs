@@ -5,7 +5,7 @@ use tracing::error;
 
 use slint::ComponentHandle;
 
-use crate::{CallLogEntry, ContactEntry, MainWindow, app, store};
+use crate::{CallLogEntry, CameraEntry, ContactEntry, MainWindow, app, store};
 
 /// 把 AppState 字段刷到 slint 属性 (UiHandle::post 里也是这段)
 pub(crate) fn sync_props(ui: &MainWindow, app: &app::AppState) {
@@ -81,6 +81,28 @@ pub(crate) fn refresh_contacts(ui: &MainWindow, store: &store::Store) {
         }
         Err(e) => error!(err = %e, "load contacts failed"),
     }
+}
+
+/// 从 SQLite 全量刷新摄像头列表到 slint 属性 (同 refresh_contacts 模式)
+pub(crate) fn refresh_cameras(ui: &MainWindow, store: &store::Store) {
+    match store.cameras() {
+        Ok(list) => set_camera_entries(ui, &list),
+        Err(e) => error!(err = %e, "load cameras failed"),
+    }
+}
+
+/// CameraRow 列表 → slint cameras 属性 (跨线程回刷路径只带得动纯数据,
+/// 与 refresh_cameras 共用转换逻辑)
+pub(crate) fn set_camera_entries(ui: &MainWindow, list: &[store::CameraRow]) {
+    let entries: Vec<CameraEntry> = list
+        .iter()
+        .map(|c| CameraEntry {
+            id: c.id as i32,
+            name: c.name.as_str().into(),
+            uri: c.uri.as_str().into(),
+        })
+        .collect();
+    ui.set_cameras(slint::ModelRc::new(slint::VecModel::from(entries)));
 }
 
 /// store 行 → 状态机记录 (启动回填用); 两类型同构, 分开放是避免 store 依赖 app

@@ -6,6 +6,7 @@ slint::include_modules!();
 
 pub mod app;
 pub mod bridge;
+mod camera;
 mod media;
 mod persist;
 mod props;
@@ -74,6 +75,7 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     // UI 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性
     wiring::wire_callbacks(&ui, &app, &cmd_tx);
     persist::wire_contacts(&ui, &store);
+    camera::wire_settings(&ui, &store);
 
     ui.run()?;
     persist::drain_unsaved(&app, &store);

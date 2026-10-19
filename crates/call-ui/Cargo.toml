@@ -23,6 +23,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 ipcam-core = { path = "../ipcam-core" }
+ipcam-discovery = { path = "../ipcam-discovery" }
 ipcam-gst = { path = "../ipcam-gst" }
 ipcam-sip = { path = "../ipcam-sip" }
 parking_lot = { workspace = true }

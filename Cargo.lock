@@ -694,6 +694,7 @@ dependencies = [
  "directories",
  "i-slint-core",
  "ipcam-core",
+ "ipcam-discovery",
  "ipcam-gst",
  "ipcam-sip",
  "parking_lot",
