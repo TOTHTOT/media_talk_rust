@@ -32,6 +32,7 @@ use ipcam_core::{AudioCodec, VideoCodec};
 /// * `ws`: webrtcsink 元件 (接收链接好的轨道); None = 本地查看模式, 不建转推支路
 /// * `handle`: 会话句柄, 用于错误上报
 /// * `taps`: 原始帧回调 (视频/音频 tap sink)
+/// * `tap_max_width`: 视频 tap 支路显示限宽 (透传给 link_video); None = 不缩放
 ///
 /// returns: ()
 ///
@@ -40,6 +41,7 @@ use ipcam_core::{AudioCodec, VideoCodec};
 /// ```
 ///
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub(super) fn install_pad_added(
     src: &gst::Element,
     pipeline: &gst::Pipeline,
@@ -48,6 +50,7 @@ pub(super) fn install_pad_added(
     ws: Option<gst::Element>,
     handle: GstStreamHandle,
     taps: RawTaps,
+    tap_max_width: Option<u32>,
 ) {
     let weak = pipeline.downgrade();
 
@@ -72,6 +75,7 @@ pub(super) fn install_pad_added(
                     ws.as_ref(),
                     &handle,
                     &taps.video,
+                    tap_max_width,
                 ) {
                     error!(%e, "link_video failed");
                 }
@@ -174,6 +178,8 @@ fn link_rtsp_pad(pad: &gst::Pad, head: &gst::Element) -> Result<(), GstStreamErr
 /// * `ws`: webrtcsink 元件 (请求 video_%u pad 接收轨道); None = 仅 tap 消费
 /// * `handle`: 会话句柄 (挂载统计 probe)
 /// * `tap`: 视频帧回调 (Option, 有值时插入 tee + 解码支路)
+/// * `tap_max_width`: tap 支路显示限宽 (Some 时解码后 videoscale 降采样);
+///   None = 不缩放
 ///
 /// returns: Result<(), GstStreamError>
 ///
@@ -182,6 +188,7 @@ fn link_rtsp_pad(pad: &gst::Pad, head: &gst::Element) -> Result<(), GstStreamErr
 /// ```
 ///
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub(super) fn link_video(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
@@ -190,6 +197,7 @@ pub(super) fn link_video(
     ws: Option<&gst::Element>,
     handle: &GstStreamHandle,
     tap: &Option<VideoFrameSink>,
+    tap_max_width: Option<u32>,
 ) -> Result<(), GstStreamError> {
     // 至少一个消费者: webrtcsink 支路 (webrtc 模式) 或 tap 支路;
     // 两个都没有这路轨纯属浪费带宽, 直接报错
@@ -206,7 +214,11 @@ pub(super) fn link_video(
     let depay = make(depay_name)?; // RTP 包 → 编码码流（Annex-B NAL）
     let parse = make(parse_name)?; // 组帧 + 提供 codec_data 给下游
     let tap_branch = match tap {
-        Some(sink) => Some(build_video_tap_branch(decoder_name, sink.clone())?),
+        Some(sink) => Some(build_video_tap_branch(
+            decoder_name,
+            sink.clone(),
+            tap_max_width,
+        )?),
         None => None,
     };
 
@@ -251,30 +263,45 @@ pub(super) fn link_video(
 }
 
 /// Elements of the optional video tap branch: a tee right after parse,
-/// and `queue(leaky) → decoder → videoconvert → appsink(RGBA)` for the
-/// raw-frame callback. The WebRTC branch links straight off the tee.
+/// and `queue(leaky) → decoder → videoconvert → [videoscale → capsfilter]
+/// → appsink(RGBA)` for the raw-frame callback (videoscale/capsfilter
+/// only when a display width cap is configured). The WebRTC branch links
+/// straight off the tee.
 struct VideoTapBranch {
     tee: gst::Element,
-    /// queue → decoder → videoconvert → appsink (linked in this order).
+    /// queue → decoder → videoconvert → [scale/capsfilter] → appsink
+    /// (linked in this order).
     gui_chain: Vec<gst::Element>,
 }
 
 fn build_video_tap_branch(
     decoder_name: &str,
     sink: VideoFrameSink,
+    max_width: Option<u32>,
 ) -> Result<VideoTapBranch, GstStreamError> {
     let tee = make("tee")?;
     let gui_queue = leaky_queue()?;
     let decoder = make(decoder_name)?;
-    if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        return Err(GstStreamError::Link("not supported aarch64".into()));
-    }
     let conv = make("videoconvert")?;
-    let appsink = build_video_appsink(sink);
-    Ok(VideoTapBranch {
-        tee,
-        gui_chain: vec![gui_queue, decoder, conv, appsink],
-    })
+    let mut gui_chain = vec![gui_queue, decoder, conv];
+    if let Some(w) = max_width {
+        // 显示限宽: 摄像头常发 1080p, 全尺寸 RGBA 帧的 memcpy/上传带宽
+        // 在 ARM 板上扛不住. 限宽必须同时锁 PAR=1/1: 只限宽 videoscale
+        // 会只压宽度 (320x240 → 160x240 变形), 同 rtp_recv 踩坑记录
+        gui_chain.push(make("videoscale")?);
+        let caps = make("capsfilter")?;
+        caps.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("format", "RGBA")
+                .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+                .field("width", gst::IntRange::new(1i32, w as i32))
+                .build(),
+        );
+        gui_chain.push(caps);
+    }
+    gui_chain.push(build_video_appsink(sink));
+    Ok(VideoTapBranch { tee, gui_chain })
 }
 
 /// appsink delivering decoded RGBA frames into the tap callback.
@@ -572,4 +599,41 @@ fn link_tee_to_pad(tee: &gst::Element, target: &gst::Pad) -> Result<(), GstStrea
         .link(target)
         .map_err(|e| GstStreamError::Link(format!("failed to link tee src pad: {e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_sink() -> VideoFrameSink {
+        std::sync::Arc::new(Mutex::new(|_f: RawVideoFrame| {}))
+    }
+
+    fn chain_factories(chain: &[gst::Element]) -> Vec<String> {
+        chain
+            .iter()
+            .map(|e| {
+                e.factory()
+                    .map(|f| f.name().to_string())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// 限宽时 tap 链插 videoscale + capsfilter (PAR=1/1 锁方像素,
+    /// 否则 videoscale 只压宽度画面变形 — 见 docs/pitfalls.md);
+    /// 不限宽保持原样 (queue/decoder/conv/appsink 四件)
+    #[test]
+    fn tap_branch_scales_only_when_capped() {
+        crate::ensure_init_internal().unwrap();
+        let capped = build_video_tap_branch("avdec_h264", dummy_sink(), Some(640))
+            .expect("capped branch builds");
+        let names = chain_factories(&capped.gui_chain);
+        assert!(names.contains(&"videoscale".to_string()), "{names:?}");
+        assert!(names.contains(&"capsfilter".to_string()), "{names:?}");
+
+        let plain =
+            build_video_tap_branch("avdec_h264", dummy_sink(), None).expect("plain branch builds");
+        assert_eq!(plain.gui_chain.len(), 4);
+    }
 }

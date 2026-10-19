@@ -31,6 +31,10 @@ pub struct GstStreamConfig {
     /// 不需要信令服务器. false 且 RawTaps.video 为 None 时视频轨无消费者,
     /// link_video 会报 Link 错误
     pub webrtc: bool,
+    /// tap 分支显示限宽: Some(w) 时解码后 videoscale 降采样到 w 以内
+    /// (保持宽高比, capsfilter 锁 PAR=1/1) 再吐回调; None = 不缩放.
+    /// 1080p 摄像头全尺寸 RGBA @30fps ≈ 165MB/s, ARM 板上必须限
+    pub tap_max_width: Option<u32>,
 }
 
 impl Default for GstStreamConfig {
@@ -47,6 +51,7 @@ impl Default for GstStreamConfig {
             signalling_host: "127.0.0.1".into(),
             signalling_port: 8443,
             webrtc: true,
+            tap_max_width: None,
         }
     }
 }

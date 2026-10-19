@@ -105,6 +105,7 @@ pub(super) fn build_pipeline(
         ws,
         handle,
         taps,
+        cfg.tap_max_width,
     );
     Ok((pipeline, tracks))
 }
