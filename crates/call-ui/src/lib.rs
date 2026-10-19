@@ -68,14 +68,16 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     let handle = bridge::UiHandle::new(ui.as_weak(), app.clone());
     // 前端控件和后端程序通信
     let (cmd_tx, cmd_rx) = bridge::cmd_channel();
-    // 视频接收的闭包
+    // 视频接收的闭包 (监控查看与对讲通话共享同一个 tap)
     let tap = video::make_frame_sink(ui.as_weak());
-    let worker = session::spawn(cfg, cmd_rx, handle, tap)?;
+    let worker = session::spawn(cfg, cmd_rx, handle, tap.clone())?;
 
     // UI 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性
-    wiring::wire_callbacks(&ui, &app, &cmd_tx);
+    let monitor = std::rc::Rc::new(std::cell::RefCell::new(camera::MonitorController::new()));
+    wiring::wire_callbacks(&ui, &app, &cmd_tx, &monitor);
     persist::wire_contacts(&ui, &store);
     camera::wire_settings(&ui, &store);
+    camera::wire_monitor(&ui, &store, &monitor, &tap);
 
     ui.run()?;
     persist::drain_unsaved(&app, &store);

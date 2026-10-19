@@ -1,0 +1,106 @@
+// 监控页: 可折叠侧边栏切换已保存摄像头, 右侧视频画面 (复用对讲的
+// video-frame 通路). 录制/截图是占位 (toast 暂不支持), 见设计文档预留节
+import {
+    IconButton,
+    ListTile,
+    MaterialText,
+    MaterialTypography,
+    MaterialPalette,
+    OutlineButton,
+} from "../material-1.1.0/material.slint";
+import { ScrollView } from "std-widgets.slint";
+import { CameraEntry } from "components.slint";
+
+export component MonitorPage inherits Rectangle {
+    in property <[CameraEntry]> cameras: [];
+    in property <image> video-frame;
+    in property <int> selected-id: -1;
+    callback back();
+    callback select-camera(int);
+    callback show-toast(string);
+
+    property <bool> sidebar-open: true;
+    background: MaterialPalette.background;
+
+    HorizontalLayout {
+        // ===== 可折叠侧边栏 =====
+        if root.sidebar-open: Rectangle {
+            width: 260px;
+            background: MaterialPalette.surface_container;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 4px;
+                MaterialText {
+                    text: @tr("摄像头");
+                    style: MaterialTypography.title_medium;
+                }
+
+                if root.cameras.length == 0: MaterialText {
+                    text: @tr("暂无摄像头\n请到设置页添加");
+                    style: MaterialTypography.body_medium;
+                    color: MaterialPalette.on_surface_variant;
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    for cam in root.cameras: Rectangle {
+                        height: 56px;
+                        background: cam.id == root.selected-id ? MaterialPalette.secondary_container : transparent;
+                        border-radius: 8px;
+                        ListTile {
+                            width: 100%;
+                            text: cam.name;
+                            clicked => { root.select-camera(cam.id); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===== 视频区 =====
+        Rectangle {
+            horizontal-stretch: 1;
+            background: #000000;
+
+            Image {
+                width: 100%;
+                height: 100%;
+                source: root.video-frame;
+                image-fit: contain;
+            }
+
+            // 顶部工具条: 折叠/返回
+            HorizontalLayout {
+                y: 8px;
+                x: 8px;
+                spacing: 4px;
+                IconButton {
+                    icon: @image-url("icons/menu.svg");
+                    clicked => { root.sidebar-open = !root.sidebar-open; }
+                }
+
+                IconButton {
+                    icon: @image-url("icons/arrow-left.svg");
+                    clicked => { root.back(); }
+                }
+            }
+
+            // 底部操作: 录制/截图 (占位)
+            HorizontalLayout {
+                y: parent.height - 56px;
+                width: 100%;
+                alignment: center;
+                spacing: 16px;
+                OutlineButton {
+                    text: @tr("录制");
+                    clicked => { root.show-toast(@tr("录制功能暂不支持")); }
+                }
+
+                OutlineButton {
+                    text: @tr("截图");
+                    clicked => { root.show-toast(@tr("截图功能暂不支持")); }
+                }
+            }
+        }
+    }
+}

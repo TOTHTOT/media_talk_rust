@@ -2,8 +2,10 @@
 //! ONVIF 搜索是异步网络操作, 在独立线程跑 tokio runtime, 结果经
 //! invoke_from_event_loop 回 UI 线程刷属性, UI 线程零阻塞.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
+use ipcam_gst::VideoFrameSink;
 use slint::ComponentHandle;
 use tracing::{error, warn};
 
@@ -163,6 +165,109 @@ pub(crate) fn wire_settings(ui: &MainWindow, store: &Rc<Store>) {
     }
 }
 
+/// 监控查看控制器: 任一时刻最多一路 ingest 在跑 (单路全屏形态).
+/// 与对讲共用同一个 tap/video-frame 属性 — 靠"phase==0 才能进监控页
+/// + 拨打/接听时强制 stop"保证不并发
+#[derive(Default)]
+pub(crate) struct MonitorController {
+    current: Option<ipcam_gst::GstStreamHandle>,
+    selected: Option<i64>,
+}
+
+impl MonitorController {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // 当前选中摄像头 id; 目前只有状态机单测消费 (UI 侧选中态走
+    // monitor-selected-id 属性), 故仅测试构建可见
+    #[cfg(test)]
+    pub fn selected_id(&self) -> Option<i64> {
+        self.selected
+    }
+
+    /// 选中摄像头: 停旧起新 (本地查看模式 + 限宽 640, 不要摄像头音频).
+    /// 启动失败 (RTSP 不通/认证错) 时旧流已停, 返回 Err 由调用方 toast
+    pub fn select(
+        &mut self,
+        cam: &crate::store::CameraRow,
+        tap: &VideoFrameSink,
+    ) -> Result<(), ipcam_gst::GstStreamError> {
+        self.stop();
+        let cfg = ipcam_gst::GstStreamConfig {
+            uri: cam.uri.clone(),
+            credentials: if cam.username.is_empty() {
+                None
+            } else {
+                Some((cam.username.clone(), cam.password.clone()))
+            },
+            audio_output: ipcam_gst::AudioOutput::Disabled,
+            webrtc: false,
+            tap_max_width: Some(640),
+            // stream_name 本地模式用不到 (不建 webrtcsink), 随便给个唯一的
+            stream_name: format!("monitor-{}", cam.id),
+            ..Default::default()
+        };
+        let taps = ipcam_gst::RawTaps {
+            video: Some(tap.clone()),
+            audio: None,
+        };
+        let handle = ipcam_gst::start_with_taps(cfg, taps)?;
+        self.current = Some(handle);
+        self.selected = Some(cam.id);
+        Ok(())
+    }
+
+    /// 停止当前查看 (幂等)
+    pub fn stop(&mut self) {
+        if let Some(h) = self.current.take() {
+            h.stop();
+        }
+        self.selected = None;
+    }
+}
+
+/// 监控页装配: 选中查看 / 离开停止
+pub(crate) fn wire_monitor(
+    ui: &MainWindow,
+    store: &Rc<Store>,
+    monitor: &Rc<RefCell<MonitorController>>,
+    tap: &VideoFrameSink,
+) {
+    {
+        let (store, monitor, tap, weak) =
+            (store.clone(), monitor.clone(), tap.clone(), ui.as_weak());
+        ui.on_monitor_select(move |id| {
+            let cam = store
+                .cameras()
+                .ok()
+                .and_then(|list| list.into_iter().find(|c| c.id == id as i64));
+            let Some(cam) = cam else { return };
+            let mut m = monitor.borrow_mut();
+            match m.select(&cam, &tap) {
+                Ok(()) => {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_monitor_selected_id(id);
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, uri = %cam.uri, "monitor select failed");
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_monitor_selected_id(-1);
+                        ui.invoke_notify(1, 0, slint::SharedString::from("摄像头连接失败"));
+                    }
+                }
+            }
+        });
+    }
+    {
+        let monitor = monitor.clone();
+        ui.on_monitor_leave(move || {
+            monitor.borrow_mut().stop();
+        });
+    }
+}
+
 /// 阻塞版 profile 拉取 (独立线程 + 一次性 runtime)
 fn fetch_profiles_blocking(
     xaddr: &str,
@@ -219,6 +324,14 @@ fn save_discovered_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitor_stop_is_idempotent_and_clears_selection() {
+        let mut c = MonitorController::new();
+        assert!(c.selected_id().is_none());
+        c.stop(); // 空状态 stop 不 panic
+        assert!(c.selected_id().is_none());
+    }
 
     #[test]
     fn device_label_prefers_manufacturer_model() {

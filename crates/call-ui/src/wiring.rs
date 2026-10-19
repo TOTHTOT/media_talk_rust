@@ -13,6 +13,7 @@ pub(crate) fn wire_callbacks(
     ui: &MainWindow,
     app: &bridge::SharedApp,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<bridge::WorkerCmd>,
+    monitor: &std::rc::Rc<std::cell::RefCell<crate::camera::MonitorController>>,
 ) {
     /// 决策落地: 有命令才发, 然后刷属性.
     /// 注意必须先 `let cmd = app.lock().xxx();` 绑定再调本函数 —
@@ -35,15 +36,21 @@ pub(crate) fn wire_callbacks(
     }
 
     {
-        let (app, cmd_tx, weak) = (app.clone(), cmd_tx.clone(), ui.as_weak());
+        let (app, cmd_tx, weak, monitor) =
+            (app.clone(), cmd_tx.clone(), ui.as_weak(), monitor.clone());
         ui.on_dial(move |number| {
+            // 监控查看与通话共用视频通路: 起通话前必须停掉监控 ingest
+            monitor.borrow_mut().stop();
             let cmd = app.lock().dial(number.as_str().to_string());
             apply(&weak, &app, &cmd_tx, cmd);
         });
     }
     {
-        let (app, cmd_tx, weak) = (app.clone(), cmd_tx.clone(), ui.as_weak());
+        let (app, cmd_tx, weak, monitor) =
+            (app.clone(), cmd_tx.clone(), ui.as_weak(), monitor.clone());
         ui.on_accept_call(move || {
+            // 监控查看与通话共用视频通路: 起通话前必须停掉监控 ingest
+            monitor.borrow_mut().stop();
             let cmd = app.lock().accept();
             apply(&weak, &app, &cmd_tx, cmd);
         });

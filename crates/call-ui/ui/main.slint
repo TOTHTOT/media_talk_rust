@@ -19,6 +19,7 @@ import { StatusBar } from "status_bar.slint";
 import { HomePage } from "home_page.slint";
 import { DialPage } from "dial_page.slint";
 import { SettingsPage } from "settings_page.slint";
+import { MonitorPage } from "monitor_page.slint";
 import { InCallPage } from "in_call_page.slint";
 
 export component MainWindow inherits MaterialWindow {
@@ -67,6 +68,7 @@ export component MainWindow inherits MaterialWindow {
     in property <bool> camera-busy: false;
     in property <[DiscoveredEntry]> discovered-devices: [];
     in property <[ProfileEntry]> camera-profiles: [];
+    in property <int> monitor-selected-id: -1;
     in property <string> settings-text: "";
     callback dial(string);
     callback accept-call();
@@ -83,6 +85,9 @@ export component MainWindow inherits MaterialWindow {
     callback search-cameras();
     callback fetch-camera-profiles(string, string, string); // xaddr, user, pass
     callback save-discovered-camera(string, string, string, string, string); // xaddr, name, user, pass, token
+    // 监控页: 选中查看 / 离开停止 (Rust 侧 MonitorController)
+    callback monitor-select(int);
+    callback monitor-leave();
     // 后端通知管线入口 (app.rs Notice): 前端按 kind 解析文案 (i18n),
     // level 决定呈现 (0 info / 1 warn → toast, 2 error → 顶部错误条),
     // detail 可选 (空串 = 无), 用于系统错误原文或后端指定提示
@@ -209,6 +214,22 @@ export component MainWindow inherits MaterialWindow {
         search-cameras => { root.search-cameras(); }
         fetch-camera-profiles(x, user, p) => { root.fetch-camera-profiles(x, user, p); }
         save-discovered-camera(x, n, user, p, t) => { root.save-discovered-camera(x, n, user, p, t); }
+        show-toast(t) => { root.show-toast(t); }
+    }
+
+    // ===== 监控页 =====
+    if root.phase == 0 && root.page == 3: MonitorPage {
+        y: 30px;
+        width: 100%;
+        height: parent.height - 30px;
+        cameras: root.cameras;
+        video-frame: root.video-frame;
+        selected-id: root.monitor-selected-id;
+        back => {
+            root.monitor-leave();
+            root.page = 0;
+        }
+        select-camera(id) => { root.monitor-select(id); }
         show-toast(t) => { root.show-toast(t); }
     }
 

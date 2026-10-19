@@ -19,3 +19,4 @@ wifi
 phone-off
 pencil
 trash-2
+menu
