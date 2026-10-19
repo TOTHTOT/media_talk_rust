@@ -68,6 +68,22 @@ GUI/分析模块要原始帧时，`parse` 后接 `tee` 分路（commit `213c87d`
 相机出来的音频（G.711/AAC）不能直接进 webrtcsink，浏览器 WebRTC 音频强制
 Opus。中间要过一次 `opusenc` 转码（commit `7296d60`）。
 
+### AAC 有两种 RTP 封装：LATM 与 MPEG4-GENERIC 的 depay 不同
+
+现象：ffmpeg → mediamtx 转发的 AAC 流，ingest 日志报
+`link_audio failed ... failed to link rtspsrc pad to branch: Pads do not
+have common format`，web 支路无声（视频正常）。
+
+根因：AAC 在 RTP 上有两种封装——MP4A-LATM（RFC 3016，海康/大华相机常用）
+和 MPEG4-GENERIC AAC-hbr（RFC 3640，ffmpeg/mediamtx 默认）。
+`AudioCodec::from_name` 把两者都识别成 `Aac`（ipcam-core lib.rs），但
+ingest `audio_codec()` 一律给 `rtpmp4adepay`（只认 LATM caps），
+遇到 MPEG4-GENERIC 的 pad 就 link 失败。
+
+解法：监控页本地查看模式（webrtc=false + AudioOutput::Disabled）音频轨直接
+忽略，不受影响；web/喇叭支路要带 AAC 声音需按 `encoding-name` 选
+`rtpmp4gdepay` + `aacparse`，未修（真实相机普遍发 LATM，暂不阻塞）。
+
 ### Windows 开发环境
 
 - 每条 cargo 命令前都要：
@@ -432,10 +448,13 @@ latch 未过期可能仍不通, 稍候重拨自愈; 反复 0 包时先看日志�
     YUV→RGB, 不需要 RGA); RGA→EGLImage→BorrowedOpenGLTexture 是备选.
     glupload 能用但不是捷径: 它只做上传不做 RGA, 且要 gst-gl context
     与 slint 共享, 复杂度不比手写 EGLImage 低
-- **监控页侧边栏缩略图预览** (摄像头管理功能预留, 设计文档
-  `docs/superpowers/specs/2026-10-19-camera-monitor-design.md`):
-  每路摄像头一个 VideoFrameSink 属性 + 低帧率低分辨率 ingest 实例,
-  接口形态预留但本期不实现; 同文档还预留录制/截图/摄像头音频/多路宫格
+- **监控页侧边栏缩略图预览** (预留项): 摄像头管理 + 监控页本地查看已落地
+  (commit `9049640..b99e8c5`, 计划 `docs/superpowers/plans/2026-10-19-camera-monitor.md`,
+  设计文档 `docs/superpowers/specs/2026-10-19-camera-monitor-design.md`) —
+  设置页增删/ONVIF 搜索, 监控页侧边栏切换 + ingest 本地模式 (webrtc=false)
+  全屏查看. 缩略图预览仍是预留: 每路摄像头一个 VideoFrameSink 属性 +
+  低帧率低分辨率 ingest 实例, 接口形态预留但本期不实现; 同文档还预留
+  录制/截图/摄像头音频/多路宫格
 - 音频 tap 实机验证（168 相机无音轨，需要一台带音频的相机）
 - serve.rs 启动日志里 local_ip 的端口硬编码 `:8080`，与实际默认 bind 8081
   不符，未修
