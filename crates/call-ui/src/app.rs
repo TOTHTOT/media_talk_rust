@@ -2,6 +2,7 @@
 //! 不依赖 slint, 纯逻辑可单测. slint 层只把字段映射到属性.
 
 use chrono::{DateTime, Local};
+use tracing::info;
 
 /// 界面阶段, 与 ui/main.slint 的 phase 属性一一对应
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,41 +72,49 @@ pub enum NoticeLevel {
     Error = 2,
 }
 
-/// 通知种类: 文案由 slint 侧 @tr 按 kind 组合 (i18n), detail 是协议文本
-/// (SIP 状态行等) 原样附加, 不参与翻译
+/// 通知种类: 前端按 kind 用 @tr 解析文案 (i18n), 后端不发成品文案
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum NoticeKind {
-    /// 无前缀, detail 即全文
+    /// 无本地化文案, detail 即全文
     Raw = 0,
     RegisterFailed = 1,
     CallFailed = 2,
 }
 
 /// 后端 → UI 的通知 (toast/错误条统一走它): 分级 + 结构化 kind.
-/// 后端只发 kind 和 detail, 不拼文案
+/// 前端按 kind 自己解析并显示, 后端不拼文案
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     pub level: NoticeLevel,
     pub kind: NoticeKind,
-    pub detail: String,
+    /// 可选补充: 系统错误原文 (SIP 状态行等) 或后端想直接提示的内容;
+    /// None 时前端只显示 kind 对应的本地化文案
+    pub detail: Option<String>,
 }
 
 impl Notice {
-    pub fn error(kind: NoticeKind, detail: impl Into<String>) -> Self {
+    pub fn error(kind: NoticeKind) -> Self {
         Self {
             level: NoticeLevel::Error,
             kind,
-            detail: detail.into(),
+            detail: None,
         }
     }
 
-    pub fn warn(kind: NoticeKind, detail: impl Into<String>) -> Self {
+    pub fn warn(kind: NoticeKind) -> Self {
         Self {
             level: NoticeLevel::Warn,
             kind,
-            detail: detail.into(),
+            detail: None,
         }
+    }
+
+    /// 附加 detail; 空串视为无 (前端不拼分隔符)
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        self.detail = (!detail.is_empty()).then_some(detail);
+        self
     }
 }
 
@@ -186,6 +195,7 @@ impl AppState {
     /// (Idle 下属于迟到事件, 不弹错误条) — 通知的唯一发源点在这里,
     /// bridge 不再自行判断
     pub fn on_event(&mut self, ev: UiEvent) -> Option<Notice> {
+        info!(?ev, "deal with a event");
         match ev {
             UiEvent::Registered => {
                 self.registered = true;
@@ -193,7 +203,7 @@ impl AppState {
             }
             UiEvent::RegisterFailed(reason) => {
                 self.registered = false;
-                Some(Notice::error(NoticeKind::RegisterFailed, reason))
+                Some(Notice::error(NoticeKind::RegisterFailed).with_detail(reason))
             }
             UiEvent::Incoming { caller } => {
                 self.today_visitors += 1;
@@ -220,7 +230,7 @@ impl AppState {
             }
             UiEvent::Failed { reason } => {
                 let notify = (self.phase != Phase::Idle)
-                    .then(|| Notice::error(NoticeKind::CallFailed, reason));
+                    .then(|| Notice::error(NoticeKind::CallFailed).with_detail(reason));
                 self.end_call();
                 notify
             }
@@ -354,7 +364,7 @@ mod tests {
         assert_eq!(app.phase, Phase::Idle);
         assert_eq!(
             notice,
-            Some(Notice::error(NoticeKind::CallFailed, "486 Busy"))
+            Some(Notice::error(NoticeKind::CallFailed).with_detail("486 Busy"))
         );
     }
 
@@ -390,7 +400,7 @@ mod tests {
         assert!(!app.registered);
         assert_eq!(
             notice,
-            Some(Notice::error(NoticeKind::RegisterFailed, "403"))
+            Some(Notice::error(NoticeKind::RegisterFailed).with_detail("403"))
         );
     }
 

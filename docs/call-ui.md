@@ -19,7 +19,7 @@ flowchart LR
     end
     A -- "WorkerCmd (unbounded mpsc)" --> K
     K -- "UiHandle::post(UiEvent) invoke_from_event_loop" --> A
-    N -- "invoke_notify" --> S
+    N -- "invoke_notify(level, kind, detail?)" --> S
 ```
 
 ## 四条通道
@@ -50,9 +50,9 @@ Terminated / Failed / Notify），不带展示逻辑。事件可能迟到（挂�
 
 ```rust
 pub struct Notice {
-    pub level: NoticeLevel,  // Info/Warn → toast; Error → 顶部错误条
-    pub kind: NoticeKind,    // Raw/RegisterFailed/CallFailed: 结构化种类
-    pub detail: String,      // 协议文本 (SIP 状态行等), 原样附加不翻译
+    pub level: NoticeLevel,       // Info/Warn → toast; Error → 顶部错误条
+    pub kind: NoticeKind,         // Raw/RegisterFailed/CallFailed: 结构化种类
+    pub detail: Option<String>,   // 可选: 系统错误原文或后端指定提示, 原样附加不翻译
 }
 ```
 
@@ -62,14 +62,27 @@ bridge 拿到什么就 `invoke_notify` 什么，不做任何判断和拼接。�
 散落在桥接层的特判（曾经的 bug：bridge 特判绕过状态机守卫，迟到的
 失败照样弹条）。
 
-slint 侧 `notify(level, kind, detail)` 回调按 kind 用 `@tr` 组文案
-（i18n），按 level 选 toast 气泡（队列逐条展示，Timer 自动消化）或
-顶部错误条（计时自动消失）。**后端永远不发文案** —— 新增一种通知只要：
-`NoticeKind` 加一个枚举值 → `notice-msg()` 加一行 `@tr` → po 文件补
-两条翻译。状态机、bridge 都不用碰。
+**消息内容分工**：后端只发 `kind`，前端按 kind 用 `@tr` 解析并显示文案
+（i18n）；后端不拼成品文案。`detail` 是可选补充，只用于两类内容：
+系统错误原文（SIP 状态行等）或后端明确想直接提示的文本。
+
+```rust
+Notice::error(NoticeKind::CallFailed)                 // 只显示 "呼叫失败"
+Notice::error(NoticeKind::CallFailed).with_detail(e)  // "呼叫失败: 486 Busy"
+```
+
+`with_detail` 把空串视为无（`Option` 记 `None`），bridge 转成 slint
+回调的空字符串；slint 侧 `notify(level, kind, detail)` 在 detail 为空时
+只显示本地化文案，不拼 `": "`。`Raw` 没有本地化文案，detail 即全文，
+两者都空则不弹。按 level 选呈现：Info/Warn → toast 气泡（队列逐条
+展示，Timer 自动消化），Error → 顶部错误条（计时自动消失）。
+
+新增一种通知只要：`NoticeKind` 加一个枚举值 → `notice-msg()` 加一行
+`@tr` → po 文件补两条翻译。状态机、bridge 都不用碰。
 
 与通话无关的纯提示（如"端口被占已回退"）由 worker 直接
-`post(UiEvent::Notify(n))`，状态机原样透传。
+`post(UiEvent::Notify(Notice::warn(kind).with_detail(...)))`，状态机原样
+透传。
 
 ### 4. 视频帧：接收管线 → UI（`VideoFrameSink` tap）
 

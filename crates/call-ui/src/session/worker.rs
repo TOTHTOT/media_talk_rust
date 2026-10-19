@@ -181,7 +181,8 @@ async fn run(
                 warn!(result = ?r, "register loop exited");
                 let reason = match r {
                     Err(e) => format!("{e}"),
-                    Ok(()) => "注册循环退出".into(),
+                    // 正常退出无系统错误: detail 留空, 前端只显示 kind 文案
+                    Ok(()) => String::new(),
                 };
                 ui.post(UiEvent::RegisterFailed(reason));
                 reg_done = true;

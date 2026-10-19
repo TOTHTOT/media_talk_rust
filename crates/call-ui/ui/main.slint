@@ -46,8 +46,9 @@ export component MainWindow inherits MaterialWindow {
     callback add-contact(string, string);
     callback update-contact(int, string, string);
     callback delete-contact(int);
-    // 后端通知管线入口 (app.rs Notice): kind 决定文案 (i18n),
-    // level 决定呈现 (0 info / 1 warn → toast, 2 error → 顶部错误条)
+    // 后端通知管线入口 (app.rs Notice): 前端按 kind 解析文案 (i18n),
+    // level 决定呈现 (0 info / 1 warn → toast, 2 error → 顶部错误条),
+    // detail 可选 (空串 = 无), 用于系统错误原文或后端指定提示
     callback notify(level: int, kind: int, detail: string);
 
     property <string> displayed-error <=> root.error-text;
@@ -60,7 +61,7 @@ export component MainWindow inherits MaterialWindow {
     }
 
     // 通知文案: kind 与 app.rs NoticeKind 一一对应 (0=Raw 1=RegisterFailed
-    // 2=CallFailed); detail 是协议文本 (SIP 状态行等), 原样附加不翻译
+    // 2=CallFailed), 按 kind 出本地化文案; detail 可选, 原样附加不翻译
     function notice-msg(kind: int, detail: string) -> string {
         if (kind == 1) {
             return detail == "" ? @tr("注册失败") : @tr("注册失败") + ": " + detail;
@@ -71,6 +72,9 @@ export component MainWindow inherits MaterialWindow {
         return detail;
     }
     notify(level, kind, detail) => {
+        if (detail == "" && kind == 0) {
+            return;
+        }
         if (level == 2) {
             root.error-text = notice-msg(kind, detail);
         } else {

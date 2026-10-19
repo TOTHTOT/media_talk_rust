@@ -58,17 +58,22 @@ impl UiHandle {
     pub fn post(&self, ev: UiEvent) {
         let weak = self.weak.clone();
         let app = self.app.clone();
+        let ev_clone = ev.clone();
         if let Err(e) = slint::invoke_from_event_loop(move || {
             let notice = app.lock().on_event(ev);
             if let Some(ui) = weak.upgrade() {
                 if let Some(n) = notice {
-                    ui.invoke_notify(n.level as i32, n.kind as i32, n.detail.into());
+                    ui.invoke_notify(
+                        n.level as i32,
+                        n.kind as i32,
+                        n.detail.unwrap_or_default().into(),
+                    );
                 }
                 crate::props::sync_props(&ui, &app.lock());
             }
         }) {
             // 事件循环已停 (窗口关闭流程中): 事件丢弃即可
-            warn!(error = %e, "UI 事件投递失败, 事件循环可能已退出");
+            warn!(error = %e, event = ?ev_clone, "invoke event failed");
         }
     }
 }
