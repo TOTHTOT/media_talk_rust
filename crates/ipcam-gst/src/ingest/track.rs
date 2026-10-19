@@ -29,7 +29,7 @@ use ipcam_core::{AudioCodec, VideoCodec};
 /// * `pipeline`: GStreamer 管线 (用于添加元件)
 /// * `tracks`: Track 状态追踪器 (标记 video/audio 已链接)
 /// * `audio_output`: 音频输出模式 (Alsa / Disabled)
-/// * `ws`: webrtcsink 元件 (接收链接好的轨道)
+/// * `ws`: webrtcsink 元件 (接收链接好的轨道); None = 本地查看模式, 不建转推支路
 /// * `handle`: 会话句柄, 用于错误上报
 /// * `taps`: 原始帧回调 (视频/音频 tap sink)
 ///
@@ -45,7 +45,7 @@ pub(super) fn install_pad_added(
     pipeline: &gst::Pipeline,
     tracks: Arc<Mutex<TrackState>>,
     audio_output: AudioOutput,
-    ws: gst::Element,
+    ws: Option<gst::Element>,
     handle: GstStreamHandle,
     taps: RawTaps,
 ) {
@@ -64,7 +64,15 @@ pub(super) fn install_pad_added(
         };
         match s.get::<&str>("media").unwrap_or("") {
             "video" => {
-                if let Err(e) = link_video(&pipeline, pad, s, &tracks, &ws, &handle, &taps.video) {
+                if let Err(e) = link_video(
+                    &pipeline,
+                    pad,
+                    s,
+                    &tracks,
+                    ws.as_ref(),
+                    &handle,
+                    &taps.video,
+                ) {
                     error!(%e, "link_video failed");
                 }
             }
@@ -74,7 +82,7 @@ pub(super) fn install_pad_added(
                     pad,
                     s,
                     &tracks,
-                    &ws,
+                    ws.as_ref(),
                     &handle,
                     &audio_output,
                     &taps.audio,
@@ -163,7 +171,7 @@ fn link_rtsp_pad(pad: &gst::Pad, head: &gst::Element) -> Result<(), GstStreamErr
 /// * `pad`: rtspsrc 动态视频 pad
 /// * `s`: pad 的 caps structure (提取 encoding-name)
 /// * `tracks`: Track 状态追踪器 (标记 video 已链接)
-/// * `ws`: webrtcsink 元件 (请求 video_%u pad 接收轨道)
+/// * `ws`: webrtcsink 元件 (请求 video_%u pad 接收轨道); None = 仅 tap 消费
 /// * `handle`: 会话句柄 (挂载统计 probe)
 /// * `tap`: 视频帧回调 (Option, 有值时插入 tee + 解码支路)
 ///
@@ -179,10 +187,17 @@ pub(super) fn link_video(
     pad: &gst::Pad,
     s: &gst::StructureRef,
     tracks: &Arc<Mutex<TrackState>>,
-    ws: &gst::Element,
+    ws: Option<&gst::Element>,
     handle: &GstStreamHandle,
     tap: &Option<VideoFrameSink>,
 ) -> Result<(), GstStreamError> {
+    // 至少一个消费者: webrtcsink 支路 (webrtc 模式) 或 tap 支路;
+    // 两个都没有这路轨纯属浪费带宽, 直接报错
+    if ws.is_none() && tap.is_none() {
+        return Err(GstStreamError::Link(
+            "video track has no consumer (webrtc disabled and no tap)".into(),
+        ));
+    }
     let encoding = s.get::<&str>("encoding-name").unwrap_or("");
     debug!(encoding = encoding, "linking video");
     let (codec, depay_name, parse_name, decoder_name) = video_chain_names(encoding)?;
@@ -207,23 +222,27 @@ pub(super) fn link_video(
     add_and_sync(pipeline, &refs)?;
     link_chain(&[&depay, &parse], "video branch")?;
     link_rtsp_pad(pad, &depay)?;
-    let ws_pad = request_ws_pad(ws, "video_%u")?;
     let parse_src = static_pad(&parse, "src")?;
-    match &tap_branch {
-        Some(b) => {
+    match (&tap_branch, ws) {
+        (Some(b), _) => {
             parse_src
                 .link(&static_pad(&b.tee, "sink")?)
                 .map_err(|e| GstStreamError::Link(format!("failed to link parse to tee: {e}")))?;
-            link_tee_to_pad(&b.tee, &ws_pad)?;
+            if let Some(ws) = ws {
+                let ws_pad = request_ws_pad(ws, "video_%u")?;
+                link_tee_to_pad(&b.tee, &ws_pad)?;
+            }
             link_tee_branch(&b.tee, &b.gui_chain[0])?;
             let gui_refs: Vec<&gst::Element> = b.gui_chain.iter().collect();
             link_chain(&gui_refs, "video tap branch")?;
         }
-        None => {
+        (None, Some(ws)) => {
+            let ws_pad = request_ws_pad(ws, "video_%u")?;
             parse_src.link(&ws_pad).map_err(|e| {
                 GstStreamError::Link(format!("failed to link parse to webrtcsink: {e}"))
             })?;
         }
+        (None, None) => unreachable!("consumer check above rejects this"),
     }
     install_stats_probe(&parse_src, handle.clone(), false);
 
@@ -403,7 +422,7 @@ fn build_alsa_elements(device: &str) -> Result<Vec<gst::Element>, GstStreamError
 /// * `pad`: rtspsrc 动态音频 pad
 /// * `s`: pad 的 caps structure (提取 encoding-name 和 payload)
 /// * `tracks`: Track 状态追踪器 (标记 audio 已链接)
-/// * `ws`: webrtcsink 元件 (请求 audio_%u pad 接收轨道)
+/// * `ws`: webrtcsink 元件 (请求 audio_%u pad 接收轨道); None = 无 web 支路
 /// * `handle`: 会话句柄 (挂载统计 probe)
 /// * `audio_output`: 音频输出模式 (Alsa 本地播放 / Disabled)
 /// * `tap`: 音频块回调 (Option, 有值时插入原始帧 tap 支路)
@@ -421,11 +440,22 @@ pub(super) fn link_audio(
     pad: &gst::Pad,
     s: &gst::StructureRef,
     tracks: &Arc<Mutex<TrackState>>,
-    ws: &gst::Element,
+    ws: Option<&gst::Element>,
     handle: &GstStreamHandle,
     audio_output: &AudioOutput,
     tap: &Option<AudioChunkSink>,
 ) -> Result<(), GstStreamError> {
+    // 本地模式 + 无音频 tap + 不开喇叭 = 音频轨没有消费者, 标记占用后
+    // 直接忽略 (监控页不需要摄像头声音)
+    if ws.is_none() && matches!(audio_output, AudioOutput::Disabled) && tap.is_none() {
+        let encoding = s.get::<&str>("encoding-name").unwrap_or("");
+        claim_track(tracks, true, encoding)?;
+        info!(
+            encoding = encoding,
+            "audio track ignored (no consumer in local mode)"
+        );
+        return Ok(());
+    }
     let encoding = s.get::<&str>("encoding-name").unwrap_or("");
     let payload = s.get::<i32>("payload").ok();
     let Some((depay_name, codec)) = audio_codec(encoding, payload) else {
@@ -445,7 +475,10 @@ pub(super) fn link_audio(
     let chain = build_decode_elements(depay_name, decode_names)?;
     let tee = chain.last().expect("chain always ends with tee").clone();
 
-    let web = build_web_audio_elements()?;
+    let web = match ws {
+        Some(_) => Some(build_web_audio_elements()?),
+        None => None,
+    };
     let alsa = match audio_output {
         AudioOutput::Alsa { device } => Some(build_alsa_elements(device)?),
         AudioOutput::Disabled => None,
@@ -462,7 +495,9 @@ pub(super) fn link_audio(
     };
 
     let mut all: Vec<&gst::Element> = chain.iter().collect();
-    all.extend(web.iter());
+    if let Some(web) = &web {
+        all.extend(web.iter());
+    }
     if let Some(alsa_elems) = &alsa {
         all.extend(alsa_elems.iter());
     }
@@ -473,13 +508,22 @@ pub(super) fn link_audio(
 
     let chain_refs: Vec<&gst::Element> = chain.iter().collect();
     link_chain(&chain_refs, "audio decode chain")?;
-    let web_refs: Vec<&gst::Element> = web.iter().collect();
-    link_chain(&web_refs, "web audio branch")?;
-    let ws_pad = request_ws_pad(ws, "audio_%u")?;
-    static_pad(web.last().expect("branch is non-empty"), "src")?
-        .link(&ws_pad)
-        .map_err(|e| GstStreamError::Link(format!("failed to link opusenc to webrtcsink: {e}")))?;
-    link_tee_branch(&tee, &web[0])?;
+    if let Some(web) = &web {
+        let web_refs: Vec<&gst::Element> = web.iter().collect();
+        link_chain(&web_refs, "web audio branch")?;
+        let Some(ws) = ws else {
+            // web 支路只在 ws=Some 时构建, 这里不可达; 库代码禁 expect,
+            // 用防御性返回代替
+            return Err(GstStreamError::Link("web branch without webrtcsink".into()));
+        };
+        let ws_pad = request_ws_pad(ws, "audio_%u")?;
+        static_pad(web.last().expect("branch is non-empty"), "src")?
+            .link(&ws_pad)
+            .map_err(|e| {
+                GstStreamError::Link(format!("failed to link opusenc to webrtcsink: {e}"))
+            })?;
+        link_tee_branch(&tee, &web[0])?;
+    }
     if let Some(alsa_elems) = &alsa {
         let alsa_refs: Vec<&gst::Element> = alsa_elems.iter().collect();
         link_chain(&alsa_refs, "audio playback chain")?;

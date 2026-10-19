@@ -26,6 +26,11 @@ pub struct GstStreamConfig {
     pub signalling_host: String,
     /// Signalling server port.
     pub signalling_port: u16,
+    /// 是否创建 webrtcsink 转推支路. true = RTSP → WebRTC 转推 (web 端
+    /// 查看, 现状); false = 仅本地 tap (GUI 监控页), 不建 webrtcsink,
+    /// 不需要信令服务器. false 且 RawTaps.video 为 None 时视频轨无消费者,
+    /// link_video 会报 Link 错误
+    pub webrtc: bool,
 }
 
 impl Default for GstStreamConfig {
@@ -41,6 +46,7 @@ impl Default for GstStreamConfig {
             stream_name: "stream".into(),
             signalling_host: "127.0.0.1".into(),
             signalling_port: 8443,
+            webrtc: true,
         }
     }
 }
