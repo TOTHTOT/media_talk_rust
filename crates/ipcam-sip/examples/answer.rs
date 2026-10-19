@@ -543,12 +543,7 @@ async fn process_call(
     // 端口要写进 answer SDP, socket 绑好后活到通话结束 (收发共享)
     let (audio_sock, video_sock, ports) = bind_media_sockets(local_ip)?;
     let (audio_pt, video, answer) = ipcam_sip::negotiate::build_answer(
-        &offer,
-        local_ip,
-        ports.0,
-        ports.1,
-        audio_pred,
-        video_pred,
+        &offer, local_ip, ports.0, ports.1, audio_pred, video_pred,
     );
     let headers = vec![Header::ContentType("application/sdp".into())];
     let answer_body = answer.clone().into_bytes();
