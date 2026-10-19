@@ -432,6 +432,10 @@ latch 未过期可能仍不通, 稍候重拨自愈; 反复 0 包时先看日志�
     YUV→RGB, 不需要 RGA); RGA→EGLImage→BorrowedOpenGLTexture 是备选.
     glupload 能用但不是捷径: 它只做上传不做 RGA, 且要 gst-gl context
     与 slint 共享, 复杂度不比手写 EGLImage 低
+- **监控页侧边栏缩略图预览** (摄像头管理功能预留, 设计文档
+  `docs/superpowers/specs/2026-10-19-camera-monitor-design.md`):
+  每路摄像头一个 VideoFrameSink 属性 + 低帧率低分辨率 ingest 实例,
+  接口形态预留但本期不实现; 同文档还预留录制/截图/摄像头音频/多路宫格
 - 音频 tap 实机验证（168 相机无音轨，需要一台带音频的相机）
 - serve.rs 启动日志里 local_ip 的端口硬编码 `:8080`，与实际默认 bind 8081
   不符，未修
