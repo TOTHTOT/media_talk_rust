@@ -229,6 +229,7 @@ cargo run --release --bin media_talk_rust gui --video-src file:./assets/oceans.m
 9. 接收视频电话正常，拨打不支持对端和本机都没画面和声音
 10. e7f87f98b5b5cc5037fec7c23b4474619fc8d8fc 深入分析这个修改
 11. ui框架和gui的启动命令参数需要整合，有参数传入优先参数否则使用配置
+12. **通话接收端音画同步** — `rtp_recv` 的视频/音频两路完全独立，各自从 udpsrc 经 depay/decode 到 autovideosink/autoaudiosdk，无 jitter buffer / PTS 对齐机制；网络抖动时可能出现音画错位。发送侧 `udpsink sync=true` 按 PTS 限速，录像（mpegtsmux）可保证 TS 流内 PTS 正确。接收侧如需顽健同步，应引入 `rtpbin` 替代裸 udpsrc（额外引入 ~150-200ms 延迟，换来 jitter buffer + RTCP Remb）。
 ## License
 
 仓库内尚未声明 license。所有权保留,在补 `LICENSE` 文件前请勿重新分发。
