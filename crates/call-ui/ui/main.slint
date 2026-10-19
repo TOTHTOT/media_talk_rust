@@ -29,9 +29,35 @@ export component MainWindow inherits MaterialWindow {
     // 主页状态 (Rust 侧驱动)
     in property <bool> sip-registered: false;
     in property <string> account: "";
-    in property <string> clock-text: "--:--";
-    in property <string> date-text: "";
-    in property <string> status-time-text: "";
+    // 时钟: 后端只发原始时间组件, 格式化与翻译全在下方 @tr —
+    // 后端不感知语言, 新增语言只改 lang/*.po
+    in property <int> clock-hour: -1;
+    in property <int> clock-minute: 0;
+    in property <int> date-month: 1;
+    in property <int> date-day: 1;
+    in property <int> weekday-index: 0; // 0=周一 .. 6=周日
+    property <string> weekday-short:
+        weekday-index == 0 ? @tr("周一") :
+        weekday-index == 1 ? @tr("周二") :
+        weekday-index == 2 ? @tr("周三") :
+        weekday-index == 3 ? @tr("周四") :
+        weekday-index == 4 ? @tr("周五") :
+        weekday-index == 5 ? @tr("周六") :
+        @tr("周日");
+    property <string> weekday-long:
+        weekday-index == 0 ? @tr("星期一") :
+        weekday-index == 1 ? @tr("星期二") :
+        weekday-index == 2 ? @tr("星期三") :
+        weekday-index == 3 ? @tr("星期四") :
+        weekday-index == 4 ? @tr("星期五") :
+        weekday-index == 5 ? @tr("星期六") :
+        @tr("星期日");
+    property <string> clock-text: clock-hour < 0 ? "--:--" :
+        (clock-hour < 10 ? "0" : "") + clock-hour + ":" +
+        (clock-minute < 10 ? "0" : "") + clock-minute;
+    // @tr 只支持顺序占位 {}, 翻译侧可用 {0}/{1}/... 重排 (en: 星期提前)
+    property <string> date-text: @tr("{}月{}日 {}", date-month, date-day, weekday-long);
+    property <string> status-time-text: @tr("{}  {} {}/{}", clock-text, weekday-short, date-month, date-day);
     in property <int> today-visitors: 0;
     in property <int> unread-messages: 0;
     in property <[CallLogEntry]> call-log: [];

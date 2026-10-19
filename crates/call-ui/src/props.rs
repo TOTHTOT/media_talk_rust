@@ -29,31 +29,20 @@ pub(crate) fn sync_props(ui: &MainWindow, app: &app::AppState) {
     ui.set_call_log(slint::ModelRc::new(slint::VecModel::from(entries)));
 }
 
-/// 时钟字符串: (大时钟 "12:58", 日期 "10月16日 星期四", 状态栏 "12:58  周四 10/16")
-fn clock_strings() -> (String, String, String) {
-    use chrono::Datelike;
-    let now = chrono::Local::now();
-    const WD: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-    let wd = WD[now.weekday().num_days_from_monday() as usize];
-    let clock = now.format("%H:%M").to_string();
-    let date = format!(
-        "{} {}",
-        now.format("%m月%d日"),
-        wd.replacen('周', "星期", 1)
-    );
-    let status = format!("{}  {} {}", clock, wd, now.format("%m/%d"));
-    (clock, date, status)
-}
-
-/// 主页时钟定时器: 立即一次 + 每秒刷. 返回的 Timer 需调用方保活
+/// 主页时钟定时器: 立即一次 + 每秒刷. 只发原始时间组件 (时/分/月/日/
+/// 星期索引), 格式化与翻译全在 slint 侧 @tr — 后端不感知语言,
+/// 新增语言只改 lang/*.po. 返回的 Timer 需调用方保活
 pub(crate) fn start_clock_timer(ui: &MainWindow) -> slint::Timer {
     let weak = ui.as_weak();
     let tick = move || {
         if let Some(ui) = weak.upgrade() {
-            let (clock, date, status) = clock_strings();
-            ui.set_clock_text(clock.into());
-            ui.set_date_text(date.into());
-            ui.set_status_time_text(status.into());
+            use chrono::{Datelike, Timelike};
+            let now = chrono::Local::now();
+            ui.set_clock_hour(now.hour() as i32);
+            ui.set_clock_minute(now.minute() as i32);
+            ui.set_date_month(now.month() as i32);
+            ui.set_date_day(now.day() as i32);
+            ui.set_weekday_index(now.weekday().num_days_from_monday() as i32);
         }
     };
     tick();

@@ -164,3 +164,51 @@ msgstr "Registration failed"
 
 msgid "呼叫失败"
 msgstr "Call failed"
+
+msgid "周一"
+msgstr "Mon"
+
+msgid "周二"
+msgstr "Tue"
+
+msgid "周三"
+msgstr "Wed"
+
+msgid "周四"
+msgstr "Thu"
+
+msgid "周五"
+msgstr "Fri"
+
+msgid "周六"
+msgstr "Sat"
+
+msgid "周日"
+msgstr "Sun"
+
+msgid "星期一"
+msgstr "Monday"
+
+msgid "星期二"
+msgstr "Tuesday"
+
+msgid "星期三"
+msgstr "Wednesday"
+
+msgid "星期四"
+msgstr "Thursday"
+
+msgid "星期五"
+msgstr "Friday"
+
+msgid "星期六"
+msgstr "Saturday"
+
+msgid "星期日"
+msgstr "Sunday"
+
+msgid "{}月{}日 {}"
+msgstr "{2}, {0}/{1}"
+
+msgid "{}  {} {}/{}"
+msgstr "{0}  {1} {2}/{3}"
