@@ -14,6 +14,7 @@ use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -55,6 +56,13 @@ impl SipClientConfig {
     }
 }
 
+/// SipClient 可观测状态快照: watch 广播, 新增状态只需加字段, 通道形态不变.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ClientStatus {
+    /// 是否已向 SIP 服务器注册成功
+    pub registered: bool,
+}
+
 pub struct SipClient {
     config: SipClientConfig,
     pub endpoint: Endpoint,
@@ -62,6 +70,9 @@ pub struct SipClient {
     pub dialog_layer: Arc<DialogLayer>,
     pub sip_server_uri: Uri,
     cancel_token: CancellationToken,
+    /// 状态快照广播: watch 内部就是 Arc 共享, 后订阅者能直接读到当前值.
+    /// 新增状态字段时只改 [`ClientStatus`], 不用换通道.
+    status: watch::Sender<ClientStatus>,
 }
 impl SipClient {
     /// `cancel_token` 由调用方（二进制的 root token）传入：cancel 即
@@ -106,6 +117,8 @@ impl SipClient {
                 params: vec![],
                 headers: vec![],
             };
+            // 初始 Receiver 直接丢弃; 后续订阅者用 subscribe() 拿当前值
+            let (status, _) = watch::channel(ClientStatus::default());
             Ok(Self {
                 config,
                 endpoint,
@@ -113,6 +126,7 @@ impl SipClient {
                 sip_server_uri,
                 dialog_layer,
                 cancel_token,
+                status,
             })
         } else {
             anyhow::bail!("SIP server address is invalid");
@@ -123,6 +137,23 @@ impl SipClient {
     /// 注册循环收到后会先做 best-effort 注销（Expires:0）再退出。
     pub fn stop(&self) {
         self.cancel_token.cancel();
+    }
+
+    /// 订阅客户端状态快照: 返回时立即拿到当前值, 之后每次变化都会唤醒.
+    /// 消费方按需读取 [`ClientStatus`] 字段, 新增状态不需要新通道.
+    pub fn status(&self) -> watch::Receiver<ClientStatus> {
+        self.status.subscribe()
+    }
+
+    /// 更新注册状态; 值未变化时不唤醒订阅者 (续期成功不重复通知)
+    fn set_registered(&self, registered: bool) {
+        self.status.send_if_modified(|s| {
+            if s.registered == registered {
+                return false;
+            }
+            s.registered = registered;
+            true
+        });
     }
 
     /// endpoint 收包循环甩后台：从共享 inner 重建一个 owned Endpoint
@@ -220,6 +251,7 @@ impl SipClient {
                     // 之后) 遇 401/403/404 也走这个 return, 会跳过 Expires:0 注销,
                     // 服务器残留绑定到自然过期 (已知取舍); 原因透传给调用方 —
                     // UI 错误条要看得到 401/403, 不能只留在日志里
+                    self.set_registered(false);
                     return Err(e);
                 }
             }
@@ -260,6 +292,7 @@ impl SipClient {
                 let wait = match cycle {
                     Cycle::Registered => {
                         debug!("register success");
+                        self.set_registered(true);
                         // 续期间隔不能直接用 registration.expires()：rsipstack 不采纳
                         // 200 OK 里的 Contact，而我们把有效期放在 Expires 头而非
                         // Contact 参数，contact 上永远没有 expires，会落到默认值 50。
@@ -501,5 +534,75 @@ mod tests {
         while let Ok(req) = observed.try_recv() {
             assert!(req.contains("CSeq: 1"), "永久失败不应重试:\n{req}");
         }
+    }
+
+    // ---- L2：客户端状态广播 ----
+
+    /// 新建客户端初始状态为未注册
+    #[tokio::test]
+    async fn status_starts_unregistered() {
+        let client = SipClient::new(
+            test_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 5060))),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(!client.status().borrow().registered);
+    }
+
+    /// 200 OK 后: 已订阅者收到变化, 晚订阅者直接读到 registered=true
+    #[tokio::test]
+    async fn status_registered_after_ok() {
+        let (server_addr, _observed) = fake_uas(rsip::StatusCode::OK).await;
+        let client = SipClient::new(test_config(server_addr), CancellationToken::new())
+            .await
+            .unwrap();
+        let _endpoint = client.spawn_endpoint();
+
+        let mut first = client.status();
+        let mut second = client.status();
+        assert!(!first.borrow_and_update().registered);
+
+        let mut reg = Box::pin(client.process_register());
+        tokio::select! {
+            r = &mut reg => panic!("register loop exited early: {:?}", r),
+            r = tokio::time::timeout(Duration::from_secs(5), first.changed()) => {
+                r.expect("state must change within 5s").expect("sender alive");
+            }
+        }
+        assert!(
+            first.borrow_and_update().registered,
+            "first subscriber sees registered"
+        );
+        assert!(second.has_changed().unwrap(), "second subscriber notified");
+        assert!(second.borrow_and_update().registered);
+        assert!(
+            client.status().borrow().registered,
+            "late subscriber reads current value"
+        );
+
+        client.stop();
+        let _ = reg.await;
+    }
+
+    /// 403 永久失败: registered 保持 false, 原因仍通过 Err 透传
+    #[tokio::test]
+    async fn status_stays_unregistered_on_permanent_failure() {
+        let (server_addr, _observed) = fake_uas(rsip::StatusCode::Forbidden).await;
+        let client = SipClient::new(test_config(server_addr), CancellationToken::new())
+            .await
+            .unwrap();
+        let _endpoint = client.spawn_endpoint();
+        let state = client.status();
+
+        let err = client
+            .process_register()
+            .await
+            .expect_err("permanent failure must propagate");
+        assert!(
+            err.to_string().contains("403"),
+            "reason must reach caller: {err}"
+        );
+        assert!(!state.borrow().registered, "state must stay unregistered");
     }
 }

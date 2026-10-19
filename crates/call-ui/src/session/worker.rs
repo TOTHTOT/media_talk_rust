@@ -174,9 +174,24 @@ async fn run(
         on_incoming_call,
         on_update,
     ));
+    let mut client_status = client.status();
+    let mut status_open = true;
     let mut reg_done = false;
     loop {
         tokio::select! {
+            r = client_status.changed(), if status_open => {
+                match r {
+                    Ok(()) => {
+                        if client_status.borrow_and_update().registered {
+                            ui.post(UiEvent::Registered);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error=?e, "client status change failed, info");
+                        status_open = false
+                    },
+                }
+            }
             r = &mut reg => {
                 warn!(result = ?r, "register loop exited");
                 let reason = match r {

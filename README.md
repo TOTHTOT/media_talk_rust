@@ -227,7 +227,8 @@ cargo run --release --bin media_talk_rust gui --video-src file:./assets/oceans.m
 7. **WebRTC / metrics / `/api/sessions` 鉴权** — 列入 8.x stretch,未实现。
 8. 电话拨打一段时间会自动挂断
 9. 接收视频电话正常，拨打不支持对端和本机都没画面和声音
-
+10. e7f87f98b5b5cc5037fec7c23b4474619fc8d8fc 深入分析这个修改
+11. ui框架和gui的启动命令参数需要整合，有参数传入优先参数否则使用配置
 ## License
 
 仓库内尚未声明 license。所有权保留,在补 `LICENSE` 文件前请勿重新分发。
