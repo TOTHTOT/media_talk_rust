@@ -28,6 +28,16 @@ pub struct CallRecordRow {
     pub duration_secs: i64,
 }
 
+/// 一条保存的网络摄像头 (监控页数据源; 密码明文本机存储, 见设计文档风险节)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraRow {
+    pub id: i64,
+    pub name: String,
+    pub uri: String,
+    pub username: String,
+    pub password: String,
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -63,6 +73,14 @@ impl Store {
                 time          TEXT NOT NULL,
                 duration_secs INTEGER NOT NULL,
                 created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE TABLE IF NOT EXISTS cameras (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL,
+                uri        TEXT NOT NULL,
+                username   TEXT NOT NULL DEFAULT '',
+                password   TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );",
         )
         .context("建表失败")?;
@@ -104,6 +122,38 @@ impl Store {
     pub fn delete_contact(&self, id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM contacts WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// 全部已保存摄像头, 按名称排序
+    pub fn cameras(&self) -> Result<Vec<CameraRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, uri, username, password FROM cameras
+             ORDER BY name COLLATE NOCASE, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(CameraRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                uri: r.get(2)?,
+                username: r.get(3)?,
+                password: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn add_camera(&self, name: &str, uri: &str, username: &str, password: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO cameras (name, uri, username, password) VALUES (?1, ?2, ?3, ?4)",
+            params![name, uri, username, password],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn delete_camera(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM cameras WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -181,6 +231,31 @@ mod tests {
 
         s.delete_contact(id2).unwrap();
         assert_eq!(s.contacts().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cameras_crud_roundtrip() {
+        let s = mem_store();
+        assert!(s.cameras().unwrap().is_empty());
+
+        let id = s
+            .add_camera("大门", "rtsp://192.168.1.64:554/ch01", "admin", "123456")
+            .unwrap();
+        let id2 = s
+            .add_camera("后院", "rtsp://192.168.1.65/11", "", "")
+            .unwrap();
+        let all = s.cameras().unwrap();
+        assert_eq!(all.len(), 2);
+        let c = all.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(
+            (c.name.as_str(), c.uri.as_str(), c.username.as_str()),
+            ("大门", "rtsp://192.168.1.64:554/ch01", "admin")
+        );
+
+        s.delete_camera(id2).unwrap();
+        let all = s.cameras().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, id);
     }
 
     #[test]
