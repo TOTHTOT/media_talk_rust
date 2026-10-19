@@ -210,7 +210,12 @@ web 支路构建改为条件:
     if let Some(web) = &web {
         let web_refs: Vec<&gst::Element> = web.iter().collect();
         link_chain(&web_refs, "web audio branch")?;
-        let ws_pad = request_ws_pad(ws.expect("web branch implies webrtcsink"), "audio_%u")?;
+        let Some(ws) = ws else {
+            // web 支路只在 ws=Some 时构建, 这里不可达; 库代码禁 expect,
+            // 用防御性返回代替
+            return Err(GstStreamError::Link("web branch without webrtcsink".into()));
+        };
+        let ws_pad = request_ws_pad(ws, "audio_%u")?;
         static_pad(web.last().expect("branch is non-empty"), "src")?
             .link(&ws_pad)
             .map_err(|e| GstStreamError::Link(format!("failed to link opusenc to webrtcsink: {e}")))?;
@@ -218,7 +223,7 @@ web 支路构建改为条件:
     }
 ```
 
-(`request_ws_pad` 处的 expect 是不可达防御, 保留; clippy 接受 expect 以外的写法也行, 但这里用 expect 并注释原因。)
+(`request_ws_pad` 前已用 if-let 防御, 符合"库代码禁 expect"约束。)
 
 - [ ] **Step 6: 跑测试确认通过 + 门禁**
 
