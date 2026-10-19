@@ -138,9 +138,6 @@ msgstr ""
 msgid "通话服务正常"
 msgstr ""
 
-msgid "门口机监视功能开发中"
-msgstr ""
-
 msgid "通讯录"
 msgstr ""
 
@@ -163,4 +160,73 @@ msgid "注册失败"
 msgstr ""
 
 msgid "呼叫失败"
+msgstr ""
+
+msgid "摄像头"
+msgstr ""
+
+msgid "暂无已保存的摄像头"
+msgstr ""
+
+msgid "搜索添加"
+msgstr ""
+
+msgid "手动添加"
+msgstr ""
+
+msgid "搜索添加摄像头"
+msgstr ""
+
+msgid "正在搜索局域网设备 ..."
+msgstr ""
+
+msgid "未发现设备, 可重试或手动添加"
+msgstr ""
+
+msgid "重新搜索"
+msgstr ""
+
+msgid "名称"
+msgstr ""
+
+msgid "用户名"
+msgstr ""
+
+msgid "密码"
+msgstr ""
+
+msgid "用户名 (可空)"
+msgstr ""
+
+msgid "密码 (可空)"
+msgstr ""
+
+msgid "正在读取设备配置 ..."
+msgstr ""
+
+msgid "上一步"
+msgstr ""
+
+msgid "获取配置"
+msgstr ""
+
+msgid "未读到媒体配置, 请检查账号密码"
+msgstr ""
+
+msgid "手动添加摄像头"
+msgstr ""
+
+msgid "暂无摄像头\n请到设置页添加"
+msgstr ""
+
+msgid "录制"
+msgstr ""
+
+msgid "录制功能暂不支持"
+msgstr ""
+
+msgid "截图"
+msgstr ""
+
+msgid "截图功能暂不支持"
 msgstr ""

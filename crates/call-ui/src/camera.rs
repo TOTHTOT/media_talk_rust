@@ -227,6 +227,19 @@ impl MonitorController {
     }
 }
 
+/// 停止监控查看并把 UI 的 monitor-selected-id 复位为 -1.
+/// 停监控的所有路径 (拨打/接听抢视频通路, 离开监控页) 都要走这里,
+/// 否则侧边栏会残留高亮一个已停播的摄像头
+pub(crate) fn stop_and_reset_ui(
+    monitor: &Rc<RefCell<MonitorController>>,
+    weak: &slint::Weak<MainWindow>,
+) {
+    monitor.borrow_mut().stop();
+    if let Some(ui) = weak.upgrade() {
+        ui.set_monitor_selected_id(-1);
+    }
+}
+
 /// 监控页装配: 选中查看 / 离开停止
 pub(crate) fn wire_monitor(
     ui: &MainWindow,
@@ -261,9 +274,9 @@ pub(crate) fn wire_monitor(
         });
     }
     {
-        let monitor = monitor.clone();
+        let (monitor, weak) = (monitor.clone(), ui.as_weak());
         ui.on_monitor_leave(move || {
-            monitor.borrow_mut().stop();
+            stop_and_reset_ui(&monitor, &weak);
         });
     }
 }

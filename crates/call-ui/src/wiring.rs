@@ -39,8 +39,9 @@ pub(crate) fn wire_callbacks(
         let (app, cmd_tx, weak, monitor) =
             (app.clone(), cmd_tx.clone(), ui.as_weak(), monitor.clone());
         ui.on_dial(move |number| {
-            // 监控查看与通话共用视频通路: 起通话前必须停掉监控 ingest
-            monitor.borrow_mut().stop();
+            // 监控查看与通话共用视频通路: 起通话前必须停掉监控 ingest,
+            // 并复位监控页选中高亮 (stop_and_reset_ui)
+            crate::camera::stop_and_reset_ui(&monitor, &weak);
             let cmd = app.lock().dial(number.as_str().to_string());
             apply(&weak, &app, &cmd_tx, cmd);
         });
@@ -49,8 +50,9 @@ pub(crate) fn wire_callbacks(
         let (app, cmd_tx, weak, monitor) =
             (app.clone(), cmd_tx.clone(), ui.as_weak(), monitor.clone());
         ui.on_accept_call(move || {
-            // 监控查看与通话共用视频通路: 起通话前必须停掉监控 ingest
-            monitor.borrow_mut().stop();
+            // 监控查看与通话共用视频通路: 起通话前必须停掉监控 ingest,
+            // 并复位监控页选中高亮 (stop_and_reset_ui)
+            crate::camera::stop_and_reset_ui(&monitor, &weak);
             let cmd = app.lock().accept();
             apply(&weak, &app, &cmd_tx, cmd);
         });

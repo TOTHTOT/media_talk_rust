@@ -138,9 +138,6 @@ msgstr "Call service not registered"
 msgid "通话服务正常"
 msgstr "Call service OK"
 
-msgid "门口机监视功能开发中"
-msgstr "Door station monitoring under development"
-
 msgid "通讯录"
 msgstr "Contacts"
 
@@ -212,3 +209,72 @@ msgstr "{2}, {0}/{1}"
 
 msgid "{}  {} {}/{}"
 msgstr "{0}  {1} {2}/{3}"
+
+msgid "摄像头"
+msgstr "Cameras"
+
+msgid "暂无已保存的摄像头"
+msgstr "No saved cameras"
+
+msgid "搜索添加"
+msgstr "Search and Add"
+
+msgid "手动添加"
+msgstr "Add Manually"
+
+msgid "搜索添加摄像头"
+msgstr "Add Camera via Search"
+
+msgid "正在搜索局域网设备 ..."
+msgstr "Searching LAN devices ..."
+
+msgid "未发现设备, 可重试或手动添加"
+msgstr "No devices found; retry or add manually"
+
+msgid "重新搜索"
+msgstr "Search Again"
+
+msgid "名称"
+msgstr "Name"
+
+msgid "用户名"
+msgstr "Username"
+
+msgid "密码"
+msgstr "Password"
+
+msgid "用户名 (可空)"
+msgstr "Username (optional)"
+
+msgid "密码 (可空)"
+msgstr "Password (optional)"
+
+msgid "正在读取设备配置 ..."
+msgstr "Reading device profiles ..."
+
+msgid "上一步"
+msgstr "Previous"
+
+msgid "获取配置"
+msgstr "Get Profiles"
+
+msgid "未读到媒体配置, 请检查账号密码"
+msgstr "No media profiles read; check username and password"
+
+msgid "手动添加摄像头"
+msgstr "Add Camera Manually"
+
+msgid "暂无摄像头\n请到设置页添加"
+msgstr "No cameras\nAdd one in Settings"
+
+msgid "录制"
+msgstr "Record"
+
+msgid "录制功能暂不支持"
+msgstr "Recording not supported yet"
+
+msgid "截图"
+msgstr "Snapshot"
+
+msgid "截图功能暂不支持"
+msgstr "Snapshot not supported yet"
