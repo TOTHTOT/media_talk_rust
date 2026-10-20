@@ -6,6 +6,7 @@ import {
     MaterialText,
     MaterialTypography,
     MaterialPalette,
+    FilledButton,
     OutlineButton,
 } from "../material-1.1.0/material.slint";
 import { ScrollView } from "std-widgets.slint";
@@ -20,85 +21,101 @@ export component MonitorPage inherits Rectangle {
     callback show-toast(string);
 
     property <bool> sidebar-open: true;
-    background: MaterialPalette.background;
+    // 测试用 mock 数据, 完成后删除
+    property <[CameraEntry]> mock-cameras: [
+        { id: 1, name: "门口机", uri: "rtsp://192.168.1.10/stream1" },
+        { id: 2, name: "车库摄像头", uri: "rtsp://192.168.1.11/stream1" },
+        { id: 3, name: "后花园", uri: "rtsp://192.168.1.12/stream1" },
+    ];
+    property <[CameraEntry]> display-cameras: root.cameras.length > 0 ? root.cameras : root.mock-cameras;
 
-    HorizontalLayout {
-        // ===== 可折叠侧边栏 =====
-        if root.sidebar-open: Rectangle {
-            width: 260px;
-            background: MaterialPalette.surface_container;
-            VerticalLayout {
-                padding: 12px;
-                spacing: 4px;
-                MaterialText {
-                    text: @tr("摄像头");
-                    style: MaterialTypography.title_medium;
-                }
+    // ===== 视频区 =====
+    Rectangle {
+        background: #000000;
 
-                if root.cameras.length == 0: MaterialText {
-                    text: @tr("暂无摄像头\n请到设置页添加");
-                    style: MaterialTypography.body_medium;
-                    color: MaterialPalette.on_surface_variant;
-                }
+        Image {
+            width: 100%;
+            height: 100%;
+            source: root.video-frame;
+            image-fit: contain;
+        }
 
-                ScrollView {
-                    vertical-stretch: 1;
-                    for cam in root.cameras: Rectangle {
-                        height: 56px;
+        // 点击视频区唤出侧边栏
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => { root.sidebar-open = !root.sidebar-open; }
+        }
+
+        // 返回: 左上角
+        IconButton {
+            inverse: true;
+            icon: @image-url("icons/arrow-left.svg");
+            x: 24px;
+            y: 24px;
+            width: 40px;
+            height: 40px;
+            z: 2;
+            clicked => { root.back(); }
+        }
+
+        // 底部操作: 录制/截图, 收缩到内容尺寸后定位到右下角
+        HorizontalLayout {
+            width: self.preferred-width;
+            height: self.preferred-height;
+            x: parent.width - self.width - 24px;
+            y: parent.height - self.height - 24px;
+            spacing: 12px;
+            z: 2;
+            OutlineButton {
+                text: @tr("录制");
+                clicked => { root.show-toast(@tr("录制功能暂不支持")); }
+            }
+
+            FilledButton {
+                text: @tr("截图");
+                clicked => { root.show-toast(@tr("截图功能暂不支持")); }
+            }
+        }
+    }
+
+    // ===== 侧边栏: 悬浮在视频上方 =====
+    if root.sidebar-open: Rectangle {
+        x: 0;
+        y: 0;
+        width: 260px;
+        height: 100%;
+        z: 1;
+        background: MaterialPalette.surface_container;
+        VerticalLayout {
+            padding: 12px;
+            spacing: 4px;
+            MaterialText {
+                text: @tr("摄像头");
+                style: MaterialTypography.title_medium;
+            }
+
+            if root.display-cameras.length == 0: MaterialText {
+                text: @tr("暂无摄像头\n请到设置页添加");
+                style: MaterialTypography.body_medium;
+                color: MaterialPalette.on_surface_variant;
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 8px;
+                    for cam in root.display-cameras: Rectangle {
+                        height: 32px;
                         background: cam.id == root.selected-id ? MaterialPalette.secondary_container : transparent;
                         border-radius: 8px;
                         ListTile {
                             width: 100%;
+                            height: 100%;
                             text: cam.name;
                             clicked => { root.select-camera(cam.id); }
                         }
                     }
-                }
-            }
-        }
-
-        // ===== 视频区 =====
-        Rectangle {
-            horizontal-stretch: 1;
-            background: #000000;
-
-            Image {
-                width: 100%;
-                height: 100%;
-                source: root.video-frame;
-                image-fit: contain;
-            }
-
-            // 顶部工具条: 折叠/返回
-            HorizontalLayout {
-                y: 8px;
-                x: 8px;
-                spacing: 4px;
-                IconButton {
-                    icon: @image-url("icons/menu.svg");
-                    clicked => { root.sidebar-open = !root.sidebar-open; }
-                }
-
-                IconButton {
-                    icon: @image-url("icons/arrow-left.svg");
-                    clicked => { root.back(); }
-                }
-            }
-
-            // 底部操作: 录制/截图 (占位)
-            HorizontalLayout {
-                y: parent.height - 56px;
-                width: 100%;
-                alignment: center;
-                spacing: 16px;
-                OutlineButton {
-                    text: @tr("录制");
-                    clicked => { root.show-toast(@tr("录制功能暂不支持")); }
-                }
-
-                OutlineButton {
-                    text: @tr("截图");
-                    clicked => { root.show-toast(@tr("截图功能暂不支持")); }
                 }
             }
         }
