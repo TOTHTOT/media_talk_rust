@@ -230,3 +230,12 @@ msgstr ""
 
 msgid "截图功能暂不支持"
 msgstr ""
+
+msgid "摄像头已保存"
+msgstr ""
+
+msgid "摄像头保存失败"
+msgstr ""
+
+msgid "摄像头连接失败"
+msgstr ""

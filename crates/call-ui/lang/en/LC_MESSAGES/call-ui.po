@@ -278,3 +278,12 @@ msgstr "Snapshot"
 
 msgid "截图功能暂不支持"
 msgstr "Snapshot not supported yet"
+
+msgid "摄像头已保存"
+msgstr "Camera saved"
+
+msgid "摄像头保存失败"
+msgstr "Failed to save camera"
+
+msgid "摄像头连接失败"
+msgstr "Failed to connect to camera"

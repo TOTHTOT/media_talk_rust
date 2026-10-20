@@ -80,6 +80,13 @@ pub enum NoticeKind {
     Raw = 0,
     RegisterFailed = 1,
     CallFailed = 2,
+    /// 摄像头已保存 (设置页添加成功)
+    CameraSaved = 3,
+    /// 摄像头保存失败 (ONVIF 取流地址/入库), detail 为错误原文
+    CameraSaveFailed = 4,
+    /// 监控页摄像头连接失败 (同步构建错或异步 RTSP 失败/超时),
+    /// detail 为错误原文
+    CameraConnectFailed = 5,
 }
 
 /// 后端 → UI 的通知 (toast/错误条统一走它): 分级 + 结构化 kind.

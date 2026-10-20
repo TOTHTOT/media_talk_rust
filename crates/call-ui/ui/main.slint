@@ -103,13 +103,23 @@ export component MainWindow inherits MaterialWindow {
     }
 
     // 通知文案: kind 与 app.rs NoticeKind 一一对应 (0=Raw 1=RegisterFailed
-    // 2=CallFailed), 按 kind 出本地化文案; detail 可选, 原样附加不翻译
+    // 2=CallFailed 3=CameraSaved 4=CameraSaveFailed 5=CameraConnectFailed),
+    // 按 kind 出本地化文案; detail 可选, 原样附加不翻译
     function notice-msg(kind: int, detail: string) -> string {
         if (kind == 1) {
             return detail == "" ? @tr("注册失败") : @tr("注册失败") + ": " + detail;
         }
         if (kind == 2) {
             return detail == "" ? @tr("呼叫失败") : @tr("呼叫失败") + ": " + detail;
+        }
+        if (kind == 3) {
+            return @tr("摄像头已保存");
+        }
+        if (kind == 4) {
+            return detail == "" ? @tr("摄像头保存失败") : @tr("摄像头保存失败") + ": " + detail;
+        }
+        if (kind == 5) {
+            return detail == "" ? @tr("摄像头连接失败") : @tr("摄像头连接失败") + ": " + detail;
         }
         return detail;
     }

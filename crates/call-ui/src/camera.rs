@@ -4,12 +4,14 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use ipcam_gst::VideoFrameSink;
 use slint::ComponentHandle;
 use tracing::{error, warn};
 
 use crate::MainWindow;
+use crate::app::{NoticeKind, NoticeLevel};
 use crate::props;
 use crate::store::Store;
 
@@ -148,14 +150,18 @@ pub(crate) fn wire_settings(ui: &MainWindow, store: &Rc<Store>) {
                     match saved {
                         Ok(list) => {
                             props::set_camera_entries(&ui, &list);
-                            ui.invoke_notify(0, 0, slint::SharedString::from("摄像头已保存"));
+                            ui.invoke_notify(
+                                NoticeLevel::Info as i32,
+                                NoticeKind::CameraSaved as i32,
+                                "".into(),
+                            );
                         }
                         Err(e) => {
                             warn!(error = %e, "save discovered camera failed");
                             ui.invoke_notify(
-                                1,
-                                0,
-                                slint::SharedString::from(format!("保存失败: {e}")),
+                                NoticeLevel::Warn as i32,
+                                NoticeKind::CameraSaveFailed as i32,
+                                slint::SharedString::from(e.to_string()),
                             );
                         }
                     }
@@ -225,6 +231,83 @@ impl MonitorController {
         }
         self.selected = None;
     }
+
+    /// 当前流的句柄克隆 (看门狗线程轮询状态用; GstStreamHandle 是
+    /// Arc 包装, 克隆与控制器内这份指向同一路会话)
+    pub fn current_handle(&self) -> Option<ipcam_gst::GstStreamHandle> {
+        self.current.clone()
+    }
+}
+
+/// 宽限窗看门狗单次轮询的判定 (纯逻辑, 单测覆盖)
+#[derive(Debug)]
+enum WatchVerdict {
+    /// 还在连接中且宽限窗未用完, 继续等
+    Wait,
+    /// 已出流, 静默退出
+    Connected,
+    /// 流已终结 (用户切台/停止/通话抢占), 静默退出
+    Stopped,
+    /// 失败: 停流 + 复位选中 + toast (detail 为错误原文, 可空)
+    Failed(Option<String>),
+}
+
+/// RTSP 启动是异步的: start_with_taps 只报同步构建错误, 网络不通走无限
+/// 重连 (Reconnecting 循环, 永远不到 Failed), 认证错才直接 Failed.
+/// 所以宽限窗内到 Playing = 成功; Failed 或超时未出流都按失败处理
+fn watch_verdict(
+    state: ipcam_gst::StreamState,
+    last_error: Option<&str>,
+    elapsed: Duration,
+    grace: Duration,
+) -> WatchVerdict {
+    use ipcam_gst::StreamState as S;
+    match state {
+        S::Playing => WatchVerdict::Connected,
+        S::Ended => WatchVerdict::Stopped,
+        S::Failed => WatchVerdict::Failed(last_error.map(str::to_owned)),
+        S::Connecting | S::Reconnecting if elapsed < grace => WatchVerdict::Wait,
+        S::Connecting | S::Reconnecting => WatchVerdict::Failed(last_error.map(str::to_owned)),
+    }
+}
+
+/// select 成功后的异步失败兜底: 起看门狗线程在有界宽限窗 (5s) 内轮询
+/// handle.state(). 失败/超时 → 停掉本路流 (句柄是本次 select 自己的,
+/// 不会误伤新一次 select) 并回 UI 线程; 出流或流已终结则静默退出.
+/// UI 侧用 monitor-selected-id 属性做代次校验: 所有停监控路径 (切台/
+/// 离开/通话抢占) 都已复位它为 -1, 属性不再是本路 id 就静默丢弃
+fn spawn_monitor_watch(handle: ipcam_gst::GstStreamHandle, id: i32, weak: slint::Weak<MainWindow>) {
+    const GRACE: Duration = Duration::from_secs(5);
+    const INTERVAL: Duration = Duration::from_millis(300);
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        loop {
+            let state = handle.state();
+            let last_error = handle.stats().last_error;
+            match watch_verdict(state, last_error.as_deref(), started.elapsed(), GRACE) {
+                WatchVerdict::Wait => std::thread::sleep(INTERVAL),
+                WatchVerdict::Connected | WatchVerdict::Stopped => return,
+                WatchVerdict::Failed(detail) => {
+                    // 停掉本路流 (含重试中的): 用户已切台时它早已 Ended,
+                    // 这里的 stop 是幂等 no-op
+                    handle.stop();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(ui) = weak.upgrade() else { return };
+                        if ui.get_monitor_selected_id() != id {
+                            return; // 已切台/离开/被通话抢占, 静默丢弃
+                        }
+                        ui.set_monitor_selected_id(-1);
+                        ui.invoke_notify(
+                            NoticeLevel::Warn as i32,
+                            NoticeKind::CameraConnectFailed as i32,
+                            detail.unwrap_or_default().into(),
+                        );
+                    });
+                    return;
+                }
+            }
+        }
+    });
 }
 
 /// 停止监控查看并把 UI 的 monitor-selected-id 复位为 -1.
@@ -262,12 +345,21 @@ pub(crate) fn wire_monitor(
                     if let Some(ui) = weak.upgrade() {
                         ui.set_monitor_selected_id(id);
                     }
+                    // 同步构建成功不代表 RTSP 连上了 (异步 bus 事件):
+                    // 起看门狗盯宽限窗, 失败兜底 toast
+                    if let Some(handle) = m.current_handle() {
+                        spawn_monitor_watch(handle, id, weak.clone());
+                    }
                 }
                 Err(e) => {
                     warn!(error = %e, uri = %cam.uri, "monitor select failed");
                     if let Some(ui) = weak.upgrade() {
                         ui.set_monitor_selected_id(-1);
-                        ui.invoke_notify(1, 0, slint::SharedString::from("摄像头连接失败"));
+                        ui.invoke_notify(
+                            NoticeLevel::Warn as i32,
+                            NoticeKind::CameraConnectFailed as i32,
+                            slint::SharedString::from(e.to_string()),
+                        );
                     }
                 }
             }
@@ -344,6 +436,45 @@ mod tests {
         assert!(c.selected_id().is_none());
         c.stop(); // 空状态 stop 不 panic
         assert!(c.selected_id().is_none());
+    }
+
+    #[test]
+    fn watch_verdict_decides_by_state_and_grace() {
+        use ipcam_gst::StreamState as S;
+        let grace = Duration::from_secs(5);
+        // 出流 = 成功, 静默
+        assert!(matches!(
+            watch_verdict(S::Playing, None, Duration::ZERO, grace),
+            WatchVerdict::Connected
+        ));
+        // 用户切台/停止 (Ended) = 静默
+        assert!(matches!(
+            watch_verdict(S::Ended, None, Duration::ZERO, grace),
+            WatchVerdict::Stopped
+        ));
+        // Failed (认证错等不可恢复) 立即失败, 带错误原文
+        assert!(matches!(
+            watch_verdict(S::Failed, Some("auth"), Duration::ZERO, grace),
+            WatchVerdict::Failed(Some(d)) if d == "auth"
+        ));
+        // 宽限窗内 Connecting/Reconnecting 继续等
+        assert!(matches!(
+            watch_verdict(S::Connecting, None, Duration::from_secs(1), grace),
+            WatchVerdict::Wait
+        ));
+        assert!(matches!(
+            watch_verdict(S::Reconnecting, None, Duration::from_secs(4), grace),
+            WatchVerdict::Wait
+        ));
+        // 超时未出流按失败处理 (网络不通走无限重连, 永远到不了 Failed)
+        assert!(matches!(
+            watch_verdict(S::Reconnecting, None, grace, grace),
+            WatchVerdict::Failed(None)
+        ));
+        assert!(matches!(
+            watch_verdict(S::Connecting, Some("timeout"), grace, grace),
+            WatchVerdict::Failed(Some(d)) if d == "timeout"
+        ));
     }
 
     #[test]
