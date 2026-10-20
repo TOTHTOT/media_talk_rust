@@ -1,0 +1,29 @@
+// 呼出中覆盖层: 显示被叫号码, 可取消
+import {
+    MaterialText,
+    MaterialTypography,
+    OutlineButton,
+} from "../../material-1.1.0/material.slint";
+
+export component OutgoingCallOverlay inherits Rectangle {
+    in property <string> peer;
+    callback hangup();
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 24px;
+        MaterialText {
+            text: @tr("呼叫 {} ...", root.peer);
+            style: MaterialTypography.headline_medium;
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            OutlineButton {
+                text: @tr("取消");
+                clicked => { root.hangup(); }
+            }
+        }
+    }
+}

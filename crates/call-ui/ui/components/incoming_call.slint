@@ -1,0 +1,37 @@
+// 来电覆盖层: 显示主叫号码, 可接听或拒接
+import {
+    MaterialText,
+    MaterialTypography,
+    FilledButton,
+    OutlineButton,
+} from "../../material-1.1.0/material.slint";
+
+export component IncomingCallOverlay inherits Rectangle {
+    in property <string> peer;
+    callback accept-call();
+    callback reject-call();
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 24px;
+        MaterialText {
+            text: @tr("来电: {}", root.peer);
+            style: MaterialTypography.headline_medium;
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 24px;
+            FilledButton {
+                text: @tr("接听");
+                clicked => { root.accept-call(); }
+            }
+
+            OutlineButton {
+                text: @tr("拒接");
+                clicked => { root.reject-call(); }
+            }
+        }
+    }
+}

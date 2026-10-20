@@ -5,16 +5,13 @@
 // Idle 下再分子页面 page: 0=主页 1=拨号 2=设置 3=监控 (纯 UI 状态, 不进状态机)
 import {
     MaterialWindow,
-    MaterialText,
-    MaterialTypography,
     MaterialPalette,
-    FilledButton,
-    TextButton,
-    OutlineButton,
 } from "../material-1.1.0/material.slint";
 // Material 主题全局状态需要链接进二进制, 模板同款写法
 export { MaterialWindowAdapter } from "../material-1.1.0/material.slint";
 import { CallLogEntry, ContactEntry, CameraEntry, DiscoveredEntry, ProfileEntry, AppToast, ErrorBanner } from "components.slint";
+import { OutgoingCallOverlay } from "components/outgoing_call.slint";
+import { IncomingCallOverlay } from "components/incoming_call.slint";
 import { StatusBar } from "status_bar.slint";
 import { HomePage } from "home_page.slint";
 import { DialPage } from "dial_page.slint";
@@ -37,22 +34,16 @@ export component MainWindow inherits MaterialWindow {
     in property <int> date-month: 1;
     in property <int> date-day: 1;
     in property <int> weekday-index: 0; // 0=周一 .. 6=周日
-    property <string> weekday-short:
-        weekday-index == 0 ? @tr("周一") :
-        weekday-index == 1 ? @tr("周二") :
-        weekday-index == 2 ? @tr("周三") :
-        weekday-index == 3 ? @tr("周四") :
-        weekday-index == 4 ? @tr("周五") :
-        weekday-index == 5 ? @tr("周六") :
-        @tr("周日");
-    property <string> weekday-long:
-        weekday-index == 0 ? @tr("星期一") :
-        weekday-index == 1 ? @tr("星期二") :
-        weekday-index == 2 ? @tr("星期三") :
-        weekday-index == 3 ? @tr("星期四") :
-        weekday-index == 4 ? @tr("星期五") :
-        weekday-index == 5 ? @tr("星期六") :
-        @tr("星期日");
+    property <[string]> weekdays-short: [
+        @tr("周一"), @tr("周二"), @tr("周三"),
+        @tr("周四"), @tr("周五"), @tr("周六"), @tr("周日")
+    ];
+    property <[string]> weekdays-long: [
+        @tr("星期一"), @tr("星期二"), @tr("星期三"),
+        @tr("星期四"), @tr("星期五"), @tr("星期六"), @tr("星期日")
+    ];
+    property <string> weekday-short: weekdays-short[weekday-index];
+    property <string> weekday-long:  weekdays-long[weekday-index];
     property <string> clock-text: clock-hour < 0 ? "--:--" :
         (clock-hour < 10 ? "0" : "") + clock-hour + ":" +
         (clock-minute < 10 ? "0" : "") + clock-minute;
@@ -248,47 +239,16 @@ export component MainWindow inherits MaterialWindow {
             }
 
             // 呼出中
-            if root.phase == 1: VerticalLayout {
-                alignment: center;
-                spacing: 24px;
-                MaterialText {
-                    text: @tr("呼叫 {} ...", root.peer);
-                    style: MaterialTypography.headline_medium;
-                    horizontal-alignment: center;
-                }
-
-                HorizontalLayout {
-                    alignment: center;
-                    OutlineButton {
-                        text: @tr("取消");
-                        clicked => { root.hangup(); }
-                    }
-                }
+            if root.phase == 1: OutgoingCallOverlay {
+                peer: root.peer;
+                hangup => { root.hangup(); }
             }
 
             // 来电
-            if root.phase == 2: VerticalLayout {
-                alignment: center;
-                spacing: 24px;
-                MaterialText {
-                    text: @tr("来电: {}", root.peer);
-                    style: MaterialTypography.headline_medium;
-                    horizontal-alignment: center;
-                }
-
-                HorizontalLayout {
-                    alignment: center;
-                    spacing: 24px;
-                    FilledButton {
-                        text: @tr("接听");
-                        clicked => { root.accept-call(); }
-                    }
-
-                    OutlineButton {
-                        text: @tr("拒接");
-                        clicked => { root.reject-call(); }
-                    }
-                }
+            if root.phase == 2: IncomingCallOverlay {
+                peer: root.peer;
+                accept-call => { root.accept-call(); }
+                reject-call => { root.reject-call(); }
             }
         }
     }
