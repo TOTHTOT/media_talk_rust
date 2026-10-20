@@ -1,11 +1,13 @@
 // 主页: 组装左侧时钟卡片 + 右侧 4x2 应用网格 + 底部最近通话
 // 子组件在 home/ 目录: ClockCard / AppGrid / RecentCalls
+import { MaterialPalette } from "../material-1.1.0/material.slint";
 import { CallLogEntry } from "components.slint";
 import { ClockCard } from "home/clock_card.slint";
 import { AppGrid } from "home/app_grid.slint";
 import { RecentCalls } from "home/recent_calls.slint";
 
 export component HomePage inherits Rectangle {
+    background: MaterialPalette.background;
     in property <bool> sip-registered;
     in property <string> clock-text;
     in property <string> date-text;

@@ -1,11 +1,12 @@
 // 拨号页: 组装左侧通讯录卡 + 右侧拨号盘
 // 子组件在 dial/ 目录: ContactsCard / Dialpad
-import { TextButton } from "../material-1.1.0/material.slint";
+import { MaterialPalette, TextButton } from "../material-1.1.0/material.slint";
 import { ContactEntry } from "components.slint";
 import { ContactsCard } from "dial/contacts_card.slint";
 import { Dialpad } from "dial/dialpad.slint";
 
 export component DialPage inherits Rectangle {
+    background: MaterialPalette.background;
     in property <[ContactEntry]> contacts: [];
     callback back();
     callback dial(string);
@@ -16,7 +17,9 @@ export component DialPage inherits Rectangle {
     callback delete-contact(int);
 
     VerticalLayout {
-        padding: 24px;
+        padding-left: 24px;
+        padding-bottom: 24px;
+        padding-right: 24px;
         spacing: 12px;
         HorizontalLayout {
             alignment: start;

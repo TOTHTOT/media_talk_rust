@@ -190,6 +190,13 @@ media_talk_rust serve --rtsp-url "rtsp://..." --audio-out hw:0,0
 - **呈现层** — `web-display` 把 NAL 拼成 access unit 后整组写进 `mdat`
   (这是 MSE H.264 唯一接受的样本格式),`init segment` 走 `avcC` 自动嵌
   SPS/PPS,WebSocket 推流。
+- **视频处理链路** — `rtp_send`（SIP 发送前）、`rtp_recv`（SIP 接收 tap 分支）、
+  `ingest`（RTSP 拉流 tap 分支）三处均使用 `videoconvert + videoscale +
+  capsfilter`，但目的不同、不构成重复：`rtp_send` 在编码前统一 I420 方像素
+  + 限宽防门口机黑屏；`rtp_recv`/`ingest` 在解码后转 RGBA + 限宽省 Slint
+  纹理上传带宽。三路数据流不同（GST Па/BGR 域 vs 编码域），GStreamer 元件链
+  各司其职。限宽时必须同步锁 `pixel-aspect-ratio=1/1`，否则 videoscale
+  只压宽度导致画面变形（踩坑记录见 `docs/pitfalls.md`）。
 
 ## OpenSpec 工作流
 

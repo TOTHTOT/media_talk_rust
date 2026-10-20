@@ -167,136 +167,133 @@ export component MainWindow inherits MaterialWindow {
     min-width: 1024px;
     min-height: 600px;
 
-    // ===== 状态栏 (通话视频全屏时隐藏) =====
-    if root.phase != 3: StatusBar {
-        y: 0;
-        width: 100%;
-        z: 1;
-        sip-registered: root.sip-registered;
-        account: root.account;
-        status-time-text: root.status-time-text;
-        show-toast(t) => { root.show-toast(t); }
-    }
+    // ===== 根布局: 状态栏 + 主页区域, 靠 spacing 控制间距 =====
+    VerticalLayout {
+        spacing: 0;
+        padding: 0;
 
-    // ===== 主页 =====
-    if root.phase == 0 && root.page == 0: HomePage {
-        y: 30px;
-        width: 100%;
-        height: parent.height - 30px;
-        sip-registered: root.sip-registered;
-        clock-text: root.clock-text;
-        date-text: root.date-text;
-        unread-messages: root.unread-messages;
-        today-visitors: root.today-visitors;
-        call-log: root.call-log;
-        show-toast(t) => { root.show-toast(t); }
-        open-page(p) => { root.page = p; }
-        redial(num) => { root.dial(num); }
-    }
-
-    // ===== 拨号页 =====
-    if root.phase == 0 && root.page == 1: DialPage {
-        y: 30px;
-        width: 100%;
-        height: parent.height - 30px;
-        contacts: root.contacts;
-        back => { root.page = 0; }
-        dial(num) => { root.dial(num); }
-        add-contact(name, num) => { root.add-contact(name, num); }
-        update-contact(id, name, num) => { root.update-contact(id, name, num); }
-        delete-contact(id) => { root.delete-contact(id); }
-    }
-
-    // ===== 设置页 =====
-    if root.phase == 0 && root.page == 2: SettingsPage {
-        y: 30px;
-        width: 100%;
-        height: parent.height - 30px;
-        settings-text: root.settings-text;
-        cameras: root.cameras;
-        camera-busy: root.camera-busy;
-        discovered-devices: root.discovered-devices;
-        camera-profiles: root.camera-profiles;
-        back => { root.page = 0; }
-        set-language(lang) => { root.set-language(lang); }
-        add-camera(n, u, user, p) => { root.add-camera(n, u, user, p); }
-        delete-camera(id) => { root.delete-camera(id); }
-        search-cameras => { root.search-cameras(); }
-        fetch-camera-profiles(x, user, p) => { root.fetch-camera-profiles(x, user, p); }
-        save-discovered-camera(x, n, user, p, t) => { root.save-discovered-camera(x, n, user, p, t); }
-        show-toast(t) => { root.show-toast(t); }
-    }
-
-    // ===== 监控页 =====
-    if root.phase == 0 && root.page == 3: MonitorPage {
-        y: 30px;
-        width: 100%;
-        height: parent.height - 30px;
-        cameras: root.cameras;
-        video-frame: root.video-frame;
-        selected-id: root.monitor-selected-id;
-        back => {
-            root.monitor-leave();
-            root.page = 0;
-        }
-        select-camera(id) => { root.monitor-select(id); }
-        show-toast(t) => { root.show-toast(t); }
-    }
-
-    // ===== 通话中 =====
-    if root.phase == 3: InCallPage {
-        width: 100%;
-        height: 100%;
-        video-frame: root.video-frame;
-        hangup => { root.hangup(); }
-        show-toast(t) => { root.show-toast(t); }
-    }
-
-    // ===== 呼出中 =====
-    if root.phase == 1: VerticalLayout {
-        alignment: center;
-        spacing: 24px;
-        MaterialText {
-            text: @tr("呼叫 {} ...", root.peer);
-            style: MaterialTypography.headline_medium;
-            horizontal-alignment: center;
+        // 状态栏 (通话视频全屏时隐藏)
+        if root.phase != 3: StatusBar {
+            sip-registered: root.sip-registered;
+            account: root.account;
+            status-time-text: root.status-time-text;
+            show-toast(t) => { root.show-toast(t); }
         }
 
-        HorizontalLayout {
-            alignment: center;
-            OutlineButton {
-                text: @tr("取消");
-                clicked => { root.hangup(); }
+        // 主页内容区: 根据 phase / page 切换子页面,
+        // Rectangle 撑满剩余空间, 背景随主题色
+        Rectangle {
+            background: MaterialPalette.background;
+
+            // 主页
+            if root.phase == 0 && root.page == 0: HomePage {
+                sip-registered: root.sip-registered;
+                clock-text: root.clock-text;
+                date-text: root.date-text;
+                unread-messages: root.unread-messages;
+                today-visitors: root.today-visitors;
+                call-log: root.call-log;
+                show-toast(t) => { root.show-toast(t); }
+                open-page(p) => { root.page = p; }
+                redial(num) => { root.dial(num); }
+            }
+
+            // 拨号页
+            if root.phase == 0 && root.page == 1: DialPage {
+                contacts: root.contacts;
+                back => { root.page = 0; }
+                dial(num) => { root.dial(num); }
+                add-contact(name, num) => { root.add-contact(name, num); }
+                update-contact(id, name, num) => { root.update-contact(id, name, num); }
+                delete-contact(id) => { root.delete-contact(id); }
+            }
+
+            // 设置页
+            if root.phase == 0 && root.page == 2: SettingsPage {
+                settings-text: root.settings-text;
+                cameras: root.cameras;
+                camera-busy: root.camera-busy;
+                discovered-devices: root.discovered-devices;
+                camera-profiles: root.camera-profiles;
+                back => { root.page = 0; }
+                set-language(lang) => { root.set-language(lang); }
+                add-camera(n, u, user, p) => { root.add-camera(n, u, user, p); }
+                delete-camera(id) => { root.delete-camera(id); }
+                search-cameras => { root.search-cameras(); }
+                fetch-camera-profiles(x, user, p) => { root.fetch-camera-profiles(x, user, p); }
+                save-discovered-camera(x, n, user, p, t) => { root.save-discovered-camera(x, n, user, p, t); }
+                show-toast(t) => { root.show-toast(t); }
+            }
+
+            // 监控页
+            if root.phase == 0 && root.page == 3: MonitorPage {
+                cameras: root.cameras;
+                video-frame: root.video-frame;
+                selected-id: root.monitor-selected-id;
+                back => {
+                    root.monitor-leave();
+                    root.page = 0;
+                }
+                select-camera(id) => { root.monitor-select(id); }
+                show-toast(t) => { root.show-toast(t); }
+            }
+
+            // 通话中 (全屏, 无状态栏)
+            if root.phase == 3: InCallPage {
+                width: 100%;
+                height: 100%;
+                video-frame: root.video-frame;
+                hangup => { root.hangup(); }
+                show-toast(t) => { root.show-toast(t); }
+            }
+
+            // 呼出中
+            if root.phase == 1: VerticalLayout {
+                alignment: center;
+                spacing: 24px;
+                MaterialText {
+                    text: @tr("呼叫 {} ...", root.peer);
+                    style: MaterialTypography.headline_medium;
+                    horizontal-alignment: center;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    OutlineButton {
+                        text: @tr("取消");
+                        clicked => { root.hangup(); }
+                    }
+                }
+            }
+
+            // 来电
+            if root.phase == 2: VerticalLayout {
+                alignment: center;
+                spacing: 24px;
+                MaterialText {
+                    text: @tr("来电: {}", root.peer);
+                    style: MaterialTypography.headline_medium;
+                    horizontal-alignment: center;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 24px;
+                    FilledButton {
+                        text: @tr("接听");
+                        clicked => { root.accept-call(); }
+                    }
+
+                    OutlineButton {
+                        text: @tr("拒接");
+                        clicked => { root.reject-call(); }
+                    }
+                }
             }
         }
     }
 
-    // ===== 来电 =====
-    if root.phase == 2: VerticalLayout {
-        alignment: center;
-        spacing: 24px;
-        MaterialText {
-            text: @tr("来电: {}", root.peer);
-            style: MaterialTypography.headline_medium;
-            horizontal-alignment: center;
-        }
-
-        HorizontalLayout {
-            alignment: center;
-            spacing: 24px;
-            FilledButton {
-                text: @tr("接听");
-                clicked => { root.accept-call(); }
-            }
-
-            OutlineButton {
-                text: @tr("拒接");
-                clicked => { root.reject-call(); }
-            }
-        }
-    }
-
-    // ===== 错误条: 5s 自动消失, 内部 Timer 消化 (ErrorBanner 组件) =====
+    // ===== 错误条: 顶层浮层, 不参与主布局 =====
     ErrorBanner {
         y: 0;
         width: 100%;
@@ -304,7 +301,7 @@ export component MainWindow inherits MaterialWindow {
         text: root.displayed-error;
     }
 
-    // ===== toast 浮条 (最后声明, 绘制在最上层; 纯 Rectangle 不挡点击) =====
+    // ===== toast 浮条: 顶层浮层, 不参与主布局 =====
     AppToast {
         width: 100%;
         height: 100%;
