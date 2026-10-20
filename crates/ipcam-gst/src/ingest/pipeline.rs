@@ -166,6 +166,11 @@ mod tests {
     #[test]
     fn local_mode_skips_webrtcsink() {
         crate::ensure_init_internal().unwrap();
+        // CI 环境可能没有 gst-plugins-bad，webrtcsink 不可用时跳过
+        if gst::ElementFactory::find("webrtcsink").is_none() {
+            tracing::warn!("webrtcsink not available (gst-plugins-bad not installed), skipping test");
+            return;
+        }
         let local = GstStreamConfig {
             webrtc: false,
             ..Default::default()
