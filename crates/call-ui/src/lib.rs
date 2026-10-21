@@ -36,25 +36,8 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     info!(gui_cfg = ?cfg,"start gui");
 
     let ui = MainWindow::new()?;
-    // 主页静态配置信息 (账号/设置页), cfg 随后 move 进 worker
+    // 状态栏账号信息, cfg 随后 move 进 worker
     ui.set_account(format!("{}@{}", cfg.username, cfg.server.ip()).into());
-    ui.set_settings_text(
-        format!(
-            "SIP 服务器    {}\nSIP 账号      {}\n视频源        {}\n音频源        {}\nRTP 端口      音频 {} / 视频 {} (被叫)\n视频限宽      {}",
-            cfg.server,
-            cfg.username,
-            props::src_label(&cfg.video_src),
-            props::src_label(&cfg.audio_src),
-            cfg.rtp_ports.audio,
-            cfg.rtp_ports.video,
-            if cfg.max_width > 0 {
-                cfg.max_width.to_string()
-            } else {
-                "不限".into()
-            },
-        )
-        .into(),
-    );
     let _clock_timer = props::start_clock_timer(&ui); // 保活到 ui.run() 返回
 
     let app: bridge::SharedApp =

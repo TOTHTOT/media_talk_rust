@@ -287,3 +287,6 @@ msgstr "Failed to save camera"
 
 msgid "摄像头连接失败"
 msgstr "Failed to connect to camera"
+
+msgid "该设备已存在, 未重复添加"
+msgstr "Camera already exists, skipped"

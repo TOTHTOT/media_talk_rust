@@ -36,6 +36,19 @@ pub struct CameraRow {
     pub uri: String,
     pub username: String,
     pub password: String,
+    /// 流类型标签: "h264" / "h265" / "jpeg" / "" (未知)
+    pub kind: String,
+}
+
+/// add_camera 的结果 (同 IP 合并策略, 见 add_camera 注释)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraSaveOutcome {
+    /// 新设备, 已插入
+    Inserted,
+    /// 同 IP 已有记录, 新流画质更高 (视频流覆盖 jpeg/未知), 已更新
+    Updated,
+    /// 同 IP 已有同等或更高画质记录, 未重复添加
+    Skipped,
 }
 
 pub struct Store {
@@ -80,11 +93,59 @@ impl Store {
                 uri        TEXT NOT NULL,
                 username   TEXT NOT NULL DEFAULT '',
                 password   TEXT NOT NULL DEFAULT '',
+                kind       TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );",
         )
         .context("建表失败")?;
-        Ok(Self { conn })
+        let store = Self { conn };
+        store.migrate_cameras()?;
+        Ok(store)
+    }
+
+    /// cameras 表老库迁移: 补 kind 列, 合并同 IP 重复行
+    /// (ONVIF 搜索保存曾把同一设备的 h264/jpeg 两个 profile 各存一行)
+    fn migrate_cameras(&self) -> Result<()> {
+        let has_kind: bool = self
+            .conn
+            .prepare("PRAGMA table_info(cameras)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .any(|c| c.is_ok_and(|name| name == "kind"));
+        if !has_kind {
+            self.conn.execute(
+                "ALTER TABLE cameras ADD COLUMN kind TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        // 同 IP 重复行: 保留画质最高的 (kind_rank 高者), 并列保留 id 最小的
+        let rows = self.cameras()?;
+        let mut best: std::collections::HashMap<String, &CameraRow> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            let Some(host) = rtsp_host(&row.uri) else {
+                continue;
+            };
+            let keep = match best.get(&host) {
+                Some(old) => {
+                    kind_rank(&row.kind) > kind_rank(&old.kind)
+                        || (kind_rank(&row.kind) == kind_rank(&old.kind) && row.id < old.id)
+                }
+                None => true,
+            };
+            if keep {
+                best.insert(host, row);
+            }
+        }
+        for row in &rows {
+            let Some(host) = rtsp_host(&row.uri) else {
+                continue;
+            };
+            if best.get(&host).is_some_and(|b| b.id != row.id) {
+                self.delete_camera(row.id)?;
+                info!(id = row.id, uri = %row.uri, "merged duplicate camera row");
+            }
+        }
+        Ok(())
     }
 
     /// 全部联系人, 按姓名排序
@@ -128,7 +189,7 @@ impl Store {
     /// 全部已保存摄像头, 按名称排序
     pub fn cameras(&self) -> Result<Vec<CameraRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, uri, username, password FROM cameras
+            "SELECT id, name, uri, username, password, kind FROM cameras
              ORDER BY name COLLATE NOCASE, id",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -138,17 +199,44 @@ impl Store {
                 uri: r.get(2)?,
                 username: r.get(3)?,
                 password: r.get(4)?,
+                kind: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn add_camera(&self, name: &str, uri: &str, username: &str, password: &str) -> Result<i64> {
+    /// 保存摄像头, 同 IP (uri host) 合并: 已存在时画质更高才覆盖
+    /// (kind_rank 视频流 > jpeg > 未知), 否则跳过避免一设备多行
+    pub fn add_camera(
+        &self,
+        name: &str,
+        uri: &str,
+        username: &str,
+        password: &str,
+        kind: &str,
+    ) -> Result<CameraSaveOutcome> {
+        if let Some(host) = rtsp_host(uri) {
+            let existing = self
+                .cameras()?
+                .into_iter()
+                .find(|c| rtsp_host(&c.uri).as_deref() == Some(host.as_str()));
+            if let Some(old) = existing {
+                if kind_rank(kind) > kind_rank(&old.kind) {
+                    self.conn.execute(
+                        "UPDATE cameras SET name=?2, uri=?3, username=?4, password=?5, kind=?6
+                         WHERE id=?1",
+                        params![old.id, name, uri, username, password, kind],
+                    )?;
+                    return Ok(CameraSaveOutcome::Updated);
+                }
+                return Ok(CameraSaveOutcome::Skipped);
+            }
+        }
         self.conn.execute(
-            "INSERT INTO cameras (name, uri, username, password) VALUES (?1, ?2, ?3, ?4)",
-            params![name, uri, username, password],
+            "INSERT INTO cameras (name, uri, username, password, kind) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![name, uri, username, password, kind],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(CameraSaveOutcome::Inserted)
     }
 
     pub fn delete_camera(&self, id: i64) -> Result<()> {
@@ -199,6 +287,27 @@ impl Store {
     }
 }
 
+/// 从 rtsp uri 提取 host (设备 IP): 剥 scheme / userinfo / 端口.
+/// 解析失败 (非 rtsp 或畸形) 返回 None, 调用方按"无同设备"处理
+fn rtsp_host(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("rtsp://")?;
+    let after_auth = rest.rsplit('@').next()?;
+    let host = after_auth
+        .split([':', '/'])
+        .next()
+        .filter(|h| !h.is_empty())?;
+    Some(host.to_string())
+}
+
+/// 流类型画质排序: 视频流 > jpeg 抓图 > 未知
+fn kind_rank(kind: &str) -> u8 {
+    match kind {
+        "h264" | "h265" => 2,
+        "jpeg" => 1,
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,24 +347,104 @@ mod tests {
         let s = mem_store();
         assert!(s.cameras().unwrap().is_empty());
 
-        let id = s
-            .add_camera("大门", "rtsp://192.168.1.64:554/ch01", "admin", "123456")
+        let r = s
+            .add_camera(
+                "大门",
+                "rtsp://192.168.1.64:554/ch01",
+                "admin",
+                "123456",
+                "h264",
+            )
             .unwrap();
-        let id2 = s
-            .add_camera("后院", "rtsp://192.168.1.65/11", "", "")
+        assert_eq!(r, CameraSaveOutcome::Inserted);
+        let r2 = s
+            .add_camera("后院", "rtsp://192.168.1.65/11", "", "", "")
             .unwrap();
+        assert_eq!(r2, CameraSaveOutcome::Inserted);
         let all = s.cameras().unwrap();
         assert_eq!(all.len(), 2);
-        let c = all.iter().find(|c| c.id == id).unwrap();
+        let c = all.iter().find(|c| c.name == "大门").unwrap();
         assert_eq!(
-            (c.name.as_str(), c.uri.as_str(), c.username.as_str()),
-            ("大门", "rtsp://192.168.1.64:554/ch01", "admin")
+            (c.uri.as_str(), c.username.as_str(), c.kind.as_str()),
+            ("rtsp://192.168.1.64:554/ch01", "admin", "h264")
         );
 
-        s.delete_camera(id2).unwrap();
+        s.delete_camera(all.iter().find(|c| c.name == "后院").unwrap().id)
+            .unwrap();
+        assert_eq!(s.cameras().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cameras_same_host_merged() {
+        let s = mem_store();
+        // 先存 jpeg 抓图 profile, 再存 h264 视频 profile: 应覆盖更新
+        s.add_camera("门", "rtsp://192.168.11.168:8558/ch01", "a", "b", "jpeg")
+            .unwrap();
+        let r = s
+            .add_camera("门", "rtsp://192.168.11.168:8554/ch01", "a", "b", "h264")
+            .unwrap();
+        assert_eq!(r, CameraSaveOutcome::Updated);
         let all = s.cameras().unwrap();
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0].id, id);
+        assert_eq!(all[0].kind, "h264");
+        assert_eq!(all[0].uri, "rtsp://192.168.11.168:8554/ch01");
+
+        // 反向: 已有视频流, 再存 jpeg/未知 应跳过
+        let r = s
+            .add_camera("门", "rtsp://192.168.11.168:8558/ch01", "a", "b", "jpeg")
+            .unwrap();
+        assert_eq!(r, CameraSaveOutcome::Skipped);
+        assert_eq!(s.cameras().unwrap().len(), 1);
+
+        // 不同 IP 不受影响; 同 IP 带凭据的 uri 也认同一台
+        let r = s
+            .add_camera("新", "rtsp://admin:pw@192.168.11.122:8554/ch01", "", "", "")
+            .unwrap();
+        assert_eq!(r, CameraSaveOutcome::Inserted);
+        assert_eq!(s.cameras().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn migrate_old_cameras_table() {
+        // 模拟 kind 列之前的老库: 手工建旧表 + 塞同 IP 重复行, 再 reopen
+        let dir = std::env::temp_dir().join(format!("store-mig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE cameras (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL, uri TEXT NOT NULL,
+                    username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+                );
+                INSERT INTO cameras (name, uri) VALUES
+                    ('门-jpeg', 'rtsp://192.168.11.168:8558/ch01'),
+                    ('门-h264', 'rtsp://192.168.11.168:8554/ch01');",
+            )
+            .unwrap();
+        }
+        let s = Store::open_at(&path).unwrap();
+        let all = s.cameras().unwrap();
+        // 迁移后: kind 列存在 (默认可读), 同 IP 合并剩一行
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].kind, "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rtsp_host_parse() {
+        assert_eq!(
+            rtsp_host("rtsp://192.168.1.64:554/ch01").as_deref(),
+            Some("192.168.1.64")
+        );
+        assert_eq!(
+            rtsp_host("rtsp://admin:pw@192.168.1.64/ch01").as_deref(),
+            Some("192.168.1.64")
+        );
+        assert_eq!(rtsp_host("http://x/1"), None);
+        assert_eq!(rtsp_host("rtsp:///ch01"), None);
     }
 
     #[test]

@@ -87,6 +87,8 @@ pub enum NoticeKind {
     /// 监控页摄像头连接失败 (同步构建错或异步 RTSP 失败/超时),
     /// detail 为错误原文
     CameraConnectFailed = 5,
+    /// 同 IP 设备已保存过同等/更高画质的流, 本次未重复添加
+    CameraDuplicate = 6,
 }
 
 /// 后端 → UI 的通知 (toast/错误条统一走它): 分级 + 结构化 kind.

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use ipcam_gst::VideoFrameSink;
 use slint::ComponentHandle;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::MainWindow;
 use crate::app::{NoticeKind, NoticeLevel};
@@ -23,8 +23,13 @@ fn device_label(d: &ipcam_core::DiscoveredDevice) -> String {
     }
 }
 
-/// profile 行文案: "H264 1920x1080"; 未知分辨率只写编码
+/// profile 行文案: "H264 1920x1080"; 未知分辨率只写编码;
+/// 编码也未知 (oxvif 后端没解析 VideoEncoderConfiguration 时) 退化用 profile_id,
+/// 至少能区分多条 profile (实测狄耐克设备 token 形如 h264_profile/jpeg_profile)
 fn profile_label(p: &ipcam_core::VideoProfile) -> String {
+    if matches!(p.codec, ipcam_core::VideoCodec::Unknown) {
+        return p.profile_id.clone();
+    }
     if p.width > 0 {
         format!("{:?} {}x{}", p.codec, p.width, p.height)
     } else {
@@ -32,19 +37,40 @@ fn profile_label(p: &ipcam_core::VideoProfile) -> String {
     }
 }
 
+/// 空凭据补出厂默认 admin/123456: 输入框只给 placeholder 提示不预填,
+/// 留空即默认 (placeholder 只是 UI 提示, 生效逻辑在这里)
+fn creds_or_default(user: &str, pass: &str) -> (String, String) {
+    (
+        if user.is_empty() { "admin" } else { user }.to_string(),
+        if pass.is_empty() { "123456" } else { pass }.to_string(),
+    )
+}
+
 /// 设置页摄像头管理: CRUD 全量重刷 (通讯录模式) + ONVIF 搜索线程桥
 pub(crate) fn wire_settings(ui: &MainWindow, store: &Rc<Store>) {
     props::refresh_cameras(ui, store);
 
-    // 手动添加
+    // 手动添加 (无 profile 信息, kind 记未知 "")
     {
         let (store, weak) = (store.clone(), ui.as_weak());
         ui.on_add_camera(move |name, uri, user, pass| {
-            if let Err(e) = store.add_camera(&name, &uri, &user, &pass) {
-                error!(err = %e, "add camera failed");
-            }
+            let (user, pass) = creds_or_default(&user, &pass);
+            let r = store.add_camera(&name, &uri, &user, &pass, "");
             if let Some(ui) = weak.upgrade() {
-                props::refresh_cameras(&ui, &store);
+                match r {
+                    Ok(outcome) => {
+                        props::refresh_cameras(&ui, &store);
+                        toast_save_outcome(&ui, outcome);
+                    }
+                    Err(e) => {
+                        error!(err = %e, "add camera failed");
+                        ui.invoke_notify(
+                            NoticeLevel::Warn as i32,
+                            NoticeKind::CameraSaveFailed as i32,
+                            e.to_string().into(),
+                        );
+                    }
+                }
             }
         });
     }
@@ -98,6 +124,7 @@ pub(crate) fn wire_settings(ui: &MainWindow, store: &Rc<Store>) {
     {
         let weak = ui.as_weak();
         ui.on_fetch_camera_profiles(move |xaddr, user, pass| {
+            let (user, pass) = creds_or_default(&user, &pass);
             let Some(ui) = weak.upgrade() else { return };
             ui.set_camera_busy(true);
             // 清空上次结果, busy 期间步骤 2 显示"正在读取"
@@ -129,32 +156,29 @@ pub(crate) fn wire_settings(ui: &MainWindow, store: &Rc<Store>) {
         });
     }
     // 保存搜索到的设备: 取 profile 的 RTSP URI (profile 自带 uri 优先,
-    // 否则 get_stream_uri 现取) → 入库 → 重刷列表 + toast.
+    // 否则 get_stream_uri 现取) → 入库 (同 IP 合并) → 重刷列表 + toast.
     // Rc<Store> 不能跨线程 (invoke_from_event_loop 要求 Send), worker
     // 线程自开一条连接写库, 只把最新列表 (纯数据) 带回 UI 线程
     {
         let weak = ui.as_weak();
         ui.on_save_discovered_camera(move |xaddr, name, user, pass, token| {
+            let (user, pass) = creds_or_default(&user, &pass);
             let weak = weak.clone();
             std::thread::spawn(move || {
-                let saved: anyhow::Result<Vec<crate::store::CameraRow>> =
+                let saved: anyhow::Result<(Vec<crate::store::CameraRow>, _)> =
                     save_discovered_blocking(&xaddr, &user, &pass, &token)
                         .map_err(|e| anyhow::anyhow!(e))
-                        .and_then(|uri| {
+                        .and_then(|(uri, kind)| {
                             let store = Store::open()?;
-                            store.add_camera(&name, &uri, &user, &pass)?;
-                            store.cameras()
+                            let outcome = store.add_camera(&name, &uri, &user, &pass, &kind)?;
+                            store.cameras().map(|list| (list, outcome))
                         });
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = weak.upgrade() else { return };
                     match saved {
-                        Ok(list) => {
+                        Ok((list, outcome)) => {
                             props::set_camera_entries(&ui, &list);
-                            ui.invoke_notify(
-                                NoticeLevel::Info as i32,
-                                NoticeKind::CameraSaved as i32,
-                                "".into(),
-                            );
+                            toast_save_outcome(&ui, outcome);
                         }
                         Err(e) => {
                             warn!(error = %e, "save discovered camera failed");
@@ -169,6 +193,17 @@ pub(crate) fn wire_settings(ui: &MainWindow, store: &Rc<Store>) {
             });
         });
     }
+}
+
+/// add_camera 合并结果 → toast: 插入/覆盖更新都报已保存, 跳过提示设备已存在
+fn toast_save_outcome(ui: &MainWindow, outcome: crate::store::CameraSaveOutcome) {
+    let kind = match outcome {
+        crate::store::CameraSaveOutcome::Inserted | crate::store::CameraSaveOutcome::Updated => {
+            NoticeKind::CameraSaved
+        }
+        crate::store::CameraSaveOutcome::Skipped => NoticeKind::CameraDuplicate,
+    };
+    ui.invoke_notify(NoticeLevel::Info as i32, kind as i32, "".into());
 }
 
 /// 监控查看控制器: 任一时刻最多一路 ingest 在跑 (单路全屏形态).
@@ -341,7 +376,11 @@ pub(crate) fn wire_monitor(
                 .cameras()
                 .ok()
                 .and_then(|list| list.into_iter().find(|c| c.id == id as i64));
-            let Some(cam) = cam else { return };
+            info!(?id, camera = ?cam, "selected monitor");
+            let Some(cam) = cam else {
+                warn!("cam is none");
+                return;
+            };
             let mut m = monitor.borrow_mut();
             match m.select(&cam, &tap) {
                 Ok(()) => {
@@ -398,13 +437,14 @@ fn fetch_profiles_blocking(
 }
 
 /// 阻塞版保存: 重拉 profile 列表找到 token 对应项, 自带 uri 优先,
-/// 否则 get_stream_uri 现取 (凭据此时必然有效, 上一步刚验证过)
+/// 否则 get_stream_uri 现取 (凭据此时必然有效, 上一步刚验证过).
+/// 返回 (uri, kind) — kind 供 cameras 表同 IP 合并排序用
 fn save_discovered_blocking(
     xaddr: &str,
     user: &str,
     pass: &str,
     token: &str,
-) -> Result<String, ipcam_discovery::DiscoveryError> {
+) -> Result<(String, String), ipcam_discovery::DiscoveryError> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -418,10 +458,14 @@ fn save_discovered_blocking(
         );
         let profiles = client.list_profiles().await?;
         match profiles.iter().find(|p| p.profile_id == token) {
-            Some(p) => match &p.uri {
-                Some(uri) => Ok(uri.clone()),
-                None => client.get_stream_uri(token).await,
-            },
+            Some(p) => {
+                let kind = kind_tag(p);
+                let uri = match &p.uri {
+                    Some(uri) => uri.clone(),
+                    None => client.get_stream_uri(token).await?,
+                };
+                Ok((uri, kind))
+            }
             None => Err(ipcam_discovery::DiscoveryError::DeviceMgmt(format!(
                 "profile {token} not found on device"
             ))),
@@ -429,9 +473,66 @@ fn save_discovered_blocking(
     })
 }
 
+/// profile → 流类型标签 ("h264"/"h265"/"jpeg"/""): codec 已知直接用;
+/// 未知时从 token 猜 (狄耐克设备 token 形如 h264_profile/jpeg_profile)
+fn kind_tag(p: &ipcam_core::VideoProfile) -> String {
+    use ipcam_core::VideoCodec;
+    match p.codec {
+        VideoCodec::H264 => return "h264".into(),
+        VideoCodec::H265 => return "h265".into(),
+        _ => {}
+    }
+    let t = p.profile_id.to_ascii_lowercase();
+    if t.contains("h265") || t.contains("hevc") {
+        "h265".into()
+    } else if t.contains("h264") {
+        "h264".into()
+    } else if t.contains("jpeg") || t.contains("jpg") {
+        "jpeg".into()
+    } else {
+        String::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kind_tag_from_codec_or_token() {
+        use ipcam_core::{VideoCodec, VideoProfile};
+        let p = |codec, token: &str| VideoProfile {
+            profile_id: token.into(),
+            uri: None,
+            codec,
+            width: 0,
+            height: 0,
+            fps: 0.0,
+        };
+        // codec 已知直接用
+        assert_eq!(kind_tag(&p(VideoCodec::H264, "whatever")), "h264");
+        assert_eq!(kind_tag(&p(VideoCodec::H265, "whatever")), "h265");
+        // codec 未知从 token 猜 (狄耐克风格)
+        assert_eq!(kind_tag(&p(VideoCodec::Unknown, "h264_profile")), "h264");
+        assert_eq!(kind_tag(&p(VideoCodec::Unknown, "jpeg_profile")), "jpeg");
+        assert_eq!(kind_tag(&p(VideoCodec::Unknown, "profile_1")), "");
+    }
+
+    #[test]
+    fn creds_or_default_fills_empty() {
+        assert_eq!(
+            creds_or_default("", ""),
+            ("admin".to_string(), "123456".to_string())
+        );
+        assert_eq!(
+            creds_or_default("root", ""),
+            ("root".to_string(), "123456".to_string())
+        );
+        assert_eq!(
+            creds_or_default("u", "p"),
+            ("u".to_string(), "p".to_string())
+        );
+    }
 
     #[test]
     fn monitor_stop_is_idempotent_and_clears_selection() {
@@ -528,5 +629,13 @@ mod tests {
             ..p
         };
         assert_eq!(profile_label(&unknown), "H264");
+
+        // 编码未知时退化到 profile_id, 避免多条 profile 都显示 "Unknown"
+        let meta_missing = ipcam_core::VideoProfile {
+            profile_id: "h264_profile".into(),
+            codec: ipcam_core::VideoCodec::Unknown,
+            ..unknown
+        };
+        assert_eq!(profile_label(&meta_missing), "h264_profile");
     }
 }

@@ -29,6 +29,8 @@ export struct CameraEntry {
     id: int,
     name: string,
     uri: string,
+    // 流类型显示标签 ("H264"/"H265"/"JPEG"/"" 未知), 列表里区分同设备多流
+    kind: string,
 }
 
 // ONVIF 搜索到的设备 (未保存; index 是 Rust 侧列表下标)

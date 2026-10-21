@@ -55,16 +55,6 @@ pub(crate) fn start_clock_timer(ui: &MainWindow) -> slint::Timer {
     timer
 }
 
-/// 设置页的媒体源可读标签
-pub(crate) fn src_label(src: &ipcam_gst::TrackSource) -> String {
-    match src {
-        ipcam_gst::TrackSource::File(p) => format!("文件 {}", p.display()),
-        ipcam_gst::TrackSource::Rtsp { .. } => "RTSP 相机".into(),
-        ipcam_gst::TrackSource::LocalCamera { .. } => "本机摄像头".into(),
-        ipcam_gst::TrackSource::Mic => "麦克风".into(),
-    }
-}
-
 /// 从 SQLite 全量刷新通讯录到 slint 属性 (数据量小, 每次变更后整体重刷)
 pub(crate) fn refresh_contacts(ui: &MainWindow, store: &store::Store) {
     match store.contacts() {
@@ -100,9 +90,20 @@ pub(crate) fn set_camera_entries(ui: &MainWindow, list: &[store::CameraRow]) {
             id: c.id as i32,
             name: c.name.as_str().into(),
             uri: c.uri.as_str().into(),
+            kind: kind_label(&c.kind).into(),
         })
         .collect();
     ui.set_cameras(slint::ModelRc::new(slint::VecModel::from(entries)));
+}
+
+/// kind 标签 → 显示文案 (空表示未知, 列表不显示)
+fn kind_label(kind: &str) -> &'static str {
+    match kind {
+        "h264" => "H264",
+        "h265" => "H265",
+        "jpeg" => "JPEG",
+        _ => "",
+    }
 }
 
 /// store 行 → 状态机记录 (启动回填用); 两类型同构, 分开放是避免 store 依赖 app

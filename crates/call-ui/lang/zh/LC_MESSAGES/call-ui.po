@@ -239,3 +239,6 @@ msgstr ""
 
 msgid "摄像头连接失败"
 msgstr ""
+
+msgid "该设备已存在, 未重复添加"
+msgstr ""
