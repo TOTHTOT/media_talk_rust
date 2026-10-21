@@ -4,36 +4,38 @@ use std::time::Duration;
 
 use crate::GstStreamError;
 
-/// Configuration for one RTSP streaming session (the `StreamSource`
-/// entity from the data model).
+/// 单路 RTSP 流配置参数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GstStreamConfig {
-    /// Full RTSP URI; userinfo is allowed (`rtspsrc` supports it).
+    /// RTSP 完整地址，如 `rtsp://192.168.1.10/stream`。
+    /// URI 里可以带用户名密码（`rtspsrc` 支持）。
     pub uri: String,
-    /// Explicit credentials; when set they override any URI userinfo.
+    /// 显式凭据 (用户名, 密码)。如果设了，会覆盖 URI 里的 userinfo。
     pub credentials: Option<(String, String)>,
-    /// Jitter-buffer depth in milliseconds.
+    /// Jitter buffer 深度（毫秒），越大越能抗网络抖动，但延迟增加。范围 [0, 5000]。
     pub latency_ms: u32,
-    /// Optional decoded playback branch tee'd off the pipeline.
+    /// 音频输出到哪里：
+    /// - `Disabled`：不放音，仅给浏览器（默认）
+    /// - `Alsa { device }`：同时从本机扬声器播放
     pub audio_output: AudioOutput,
-    /// Reconnect/back-off policy after a stream failure.
+    /// 断流重连策略（指数退避）。
     pub reconnect: ReconnectPolicy,
-    /// Producer name announced on the WebRTC signalling channel
-    /// (`meta,name=...`); browser consumers match on this exact string.
+    /// WebRTC 信令频道上广播的流名称，浏览器据此匹配要拉哪个流。
+    /// 对应 webrtcsink 的 `meta,name=...` 属性。
     pub stream_name: String,
-    /// Signalling server the stream's webrtcsink registers with
-    /// (started once per process by [`crate::ensure_signalling_server`]).
+    /// WebRTC 信令服务器地址。
     pub signalling_host: String,
-    /// Signalling server port.
+    /// WebRTC 信令服务器端口。
     pub signalling_port: u16,
-    /// 是否创建 webrtcsink 转推支路. true = RTSP → WebRTC 转推 (web 端
-    /// 查看, 现状); false = 仅本地 tap (GUI 监控页), 不建 webrtcsink,
-    /// 不需要信令服务器. false 且 RawTaps.video 为 None 时视频轨无消费者,
-    /// link_video 会报 Link 错误
+    /// 是否创建 webrtcsink 转推支路。
+    /// - `true`：RTSP → WebRTC 转推（网页观看，需要信令服务器）
+    /// - `false`：仅本地 tap（GUI 监控页），不需要信令服务器
+    /// 注意：`false` 且 `RawTaps.video` 为 `None` 时视频轨无消费者，`link_video` 会报 Link 错误。
     pub webrtc: bool,
-    /// tap 分支显示限宽: Some(w) 时解码后 videoscale 降采样到 w 以内
-    /// (保持宽高比, capsfilter 锁 PAR=1/1) 再吐回调; None = 不缩放.
-    /// 1080p 摄像头全尺寸 RGBA @30fps ≈ 165MB/s, ARM 板上必须限
+    /// GUI tap 分支显示限宽。
+    /// - `Some(w)`：解码后 videoscale 降采样到 w 以内（保持宽高比，capsfilter 锁 PAR=1/1）
+    /// - `None`：不缩放
+    /// 1080p@30fps 全尺寸 RGBA ≈ 165MB/s，ARM 板上必须限宽。
     pub tap_max_width: Option<u32>,
 }
 
@@ -56,27 +58,25 @@ impl Default for GstStreamConfig {
     }
 }
 
-/// Where decoded audio goes for on-device playback. The browser always
-/// receives audio (transcoded to Opus into webrtcsink) whenever the
-/// camera provides an audio track; this only controls the additional
-/// local speaker branch.
+/// 解码后音频的输出目标。浏览器始终能收到音频（通过 WebRTC 转推）；
+/// 此字段仅控制是否同时从本机扬声器播放。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum AudioOutput {
-    /// No local playback; browser-only audio.
+    /// 不从本机扬声器播放，仅给浏览器（默认）。
     #[default]
     Disabled,
-    /// Additionally tee off a decode-and-play branch to an ALSA device.
+    /// 同时从指定 ALSA 设备播放。
     Alsa { device: String },
 }
 
-/// Exponential back-off reconnect policy.
+/// 指数退避重连策略。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconnectPolicy {
-    /// Delay before the first reconnect attempt.
+    /// 首次重连前的等待时间。
     pub initial_delay: Duration,
-    /// Upper bound for the per-attempt delay.
+    /// 每次退避的上限。
     pub max_delay: Duration,
-    /// `None` = retry forever.
+    /// 最大重试次数。`None` = 无限重试。
     pub max_attempts: Option<u32>,
 }
 
