@@ -24,18 +24,34 @@ pub(super) async fn probe_all_with_config_oxvif(config: &DiscoveryConfig) -> Vec
     let mut out: Vec<DiscoveredDevice> = Vec::with_capacity(ox_devices.len());
     for ox_dev in ox_devices {
         let mut d = oxvif_to_core_device(&ox_dev);
-        match fill_profiles_and_uris(&ox_dev, config.credentials.as_ref(), config.timeout).await {
+        // 无凭据 = 纯发现模式: 跳过逐台 SOAP 验证. 匿名 get_profiles
+        // 会被大多数设备拒绝 (authorization fault), 刷 warning 且
+        // 19 台设备 × 2 次 SOAP 往返严重拖慢扫描; 需要凭据的场景
+        // (GUI 选中设备后拉 profile) 会带凭据单独调
+        let Some(creds) = config.credentials.as_ref() else {
+            out.push(d);
+            continue;
+        };
+        match fill_profiles_and_uris(&ox_dev, Some(creds), config.timeout).await {
             Ok(profiles) => {
                 d.profiles = profiles;
                 d.auth_status = AuthStatus::Valid;
             }
             Err(e) => {
+                // 错误文本可能带整段 SOAP envelope (401 fault 把 XML 全文塞进
+                // message), 日志只留第一行并截断, 全文对排查没增量价值
+                let err_text = e.to_string();
+                let mut short = err_text.lines().next().unwrap_or("").to_string();
+                if short.len() > 160 {
+                    short.truncate(160);
+                    short.push('…');
+                }
                 warn!(
                     endpoint = %ox_dev.endpoint,
-                    err = %e,
+                    err = %short,
                     "oxvif: profiles/stream-uri fetch failed"
                 );
-                d.auth_status = classify_auth_error(&e.to_string());
+                d.auth_status = classify_auth_error(&err_text);
             }
         }
         out.push(d);
