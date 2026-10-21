@@ -4,6 +4,13 @@
 
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
+/// 清空视频帧: 流停止后最后一帧会残留在 video-frame 属性上, 停流路径
+/// (通话结束/监控停止) 必须调本函数复位. 两个消费页 (in_call/monitor) 的
+/// Image 都包在黑底 Rectangle 里, 设空 Image 即恢复黑屏
+pub fn clear_frame(ui: &crate::MainWindow) {
+    ui.set_video_frame(Image::default());
+}
+
 /// 构造视频帧 tap: 每帧拷进 slint::Image 推到 MainWindow.video_frame.
 /// 回调跑在 GStreamer 流线程 — 只拷数据 + invoke, 别碰 UI 状态
 pub fn make_frame_sink(ui: slint::Weak<crate::MainWindow>) -> ipcam_gst::VideoFrameSink {

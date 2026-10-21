@@ -59,6 +59,9 @@ impl UiHandle {
         let weak = self.weak.clone();
         let app = self.app.clone();
         let ev_clone = ev.clone();
+        // 通话终结事件: 接收器随后停止, 但 video-frame 属性会残留最后一
+        // 帧, 回主线程时一并清掉 (监控画面不走这里, 停监控在 camera.rs)
+        let call_ended = matches!(ev, UiEvent::Terminated { .. } | UiEvent::Failed { .. });
         if let Err(e) = slint::invoke_from_event_loop(move || {
             let notice = app.lock().on_event(ev);
             if let Some(ui) = weak.upgrade() {
@@ -70,6 +73,9 @@ impl UiHandle {
                     );
                 }
                 crate::props::sync_props(&ui, &app.lock());
+                if call_ended {
+                    crate::video::clear_frame(&ui);
+                }
             }
         }) {
             // 事件循环已停 (窗口关闭流程中): 事件丢弃即可
