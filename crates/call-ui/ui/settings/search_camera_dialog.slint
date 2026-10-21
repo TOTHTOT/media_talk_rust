@@ -1,0 +1,182 @@
+// 搜索添加摄像头对话框内容: 三步向导 (设备列表 → 凭据 → 选 profile)
+// 默认即渲染步骤 0, 可在 slint 预览器直接查看
+import {
+    FilledButton,
+    TextButton,
+    TextField,
+    ListTile,
+    HorizontalDivider,
+    MaterialText,
+    MaterialTypography,
+    MaterialPalette,
+} from "../../material-1.1.0/material.slint";
+import { ScrollView } from "std-widgets.slint";
+import { DiscoveredEntry, ProfileEntry } from "../components.slint";
+
+export component SearchCameraDialog inherits VerticalLayout {
+    in property <bool> camera-busy: false;
+    in property <[DiscoveredEntry]> discovered-devices: [];
+    in property <[ProfileEntry]> camera-profiles: [];
+    // 步骤与选中状态双向绑定到外层 (条件块内 id 跨块不可见,
+    // 步骤 2 保存时用快照值而不是引用输入框)
+    in-out property <int> step: 0;
+    in-out property <string> sel-xaddr: "";
+    in-out property <string> sel-label: "";
+    in-out property <string> sel-name: "";
+    in-out property <string> sel-user: "";
+    in-out property <string> sel-pass: "";
+    callback search-cameras();
+    callback fetch-camera-profiles(string, string, string);
+    callback save-discovered-camera(string, string, string, string, string);
+    callback cancelled();
+
+    padding: 24px;
+    spacing: 12px;
+
+    MaterialText {
+        text: @tr("搜索添加摄像头");
+        style: MaterialTypography.title_large;
+    }
+
+    // 步骤 0: 设备列表
+    if root.step == 0: VerticalLayout {
+        spacing: 8px;
+        vertical-stretch: 1;
+        if root.camera-busy: MaterialText {
+            text: @tr("正在搜索局域网设备 ...");
+            style: MaterialTypography.body_large;
+            color: MaterialPalette.on_surface_variant;
+        }
+        if !root.camera-busy && root.discovered-devices.length == 0: MaterialText {
+            text: @tr("未发现设备, 可重试或手动添加");
+            style: MaterialTypography.body_large;
+            color: MaterialPalette.on_surface_variant;
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 2px;
+                for dev in root.discovered-devices: ListTile {
+                    width: 100%;
+                    height: 72px;
+                    text: dev.label;
+                    supporting-text: dev.xaddr;
+                    clicked => {
+                        root.sel-xaddr = dev.xaddr;
+                        root.sel-label = dev.label;
+                        root.step = 1;
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 0; // 不定死会被拉伸成巨型按钮 (vertical-stretch 默认非 0)
+            spacing: 12px;
+            alignment: end;
+            TextButton {
+                text: @tr("重新搜索");
+                clicked => { root.search-cameras(); }
+            }
+        }
+    }
+
+    // 步骤 1: 凭据
+    if root.step == 1: VerticalLayout {
+        spacing: 12px;
+        vertical-stretch: 1;
+        MaterialText {
+            text: root.sel-label;
+            style: MaterialTypography.body_large;
+        }
+
+        name-input := TextField {
+            label: @tr("名称");
+            text: root.sel-label;
+        }
+
+        user-input := TextField {
+            label: @tr("用户名");
+            // 这套 material TextField 不渲染 placeholder, 提示走 supporting-text
+            supporting-text: @tr("留空使用默认 admin");
+        }
+
+        pass-input := TextField {
+            label: @tr("密码");
+            supporting-text: @tr("留空使用默认 123456");
+            input-type: password;
+        }
+
+        if root.camera-busy: MaterialText {
+            text: @tr("正在读取设备配置 ...");
+            style: MaterialTypography.body_large;
+            color: MaterialPalette.on_surface_variant;
+        }
+
+        Rectangle { vertical-stretch: 1; } // 顶开, 按钮沉底
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 12px;
+            alignment: end;
+            TextButton {
+                text: @tr("上一步");
+                clicked => { root.step = 0; }
+            }
+
+            FilledButton {
+                text: @tr("获取配置");
+                enabled: name-input.text != "";
+                clicked => {
+                    root.sel-name = name-input.text;
+                    root.sel-user = user-input.text;
+                    root.sel-pass = pass-input.text;
+                    root.fetch-camera-profiles(root.sel-xaddr, root.sel-user, root.sel-pass);
+                    root.step = 2;
+                }
+            }
+        }
+    }
+
+    // 步骤 2: 选 profile 保存
+    if root.step == 2: VerticalLayout {
+        spacing: 8px;
+        vertical-stretch: 1;
+        if root.camera-profiles.length == 0: MaterialText {
+            text: root.camera-busy ? @tr("正在读取设备配置 ...") : @tr("未读到媒体配置, 请检查账号密码");
+            style: MaterialTypography.body_large;
+            color: MaterialPalette.on_surface_variant;
+        }
+
+        for prof in root.camera-profiles: ListTile {
+            width: 100%;
+            height: 72px;
+            text: prof.label;
+            clicked => {
+                root.save-discovered-camera(root.sel-xaddr, root.sel-name, root.sel-user, root.sel-pass, prof.token);
+            }
+        }
+
+        Rectangle { vertical-stretch: 1; } // 顶开, 按钮沉底
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 12px;
+            alignment: end;
+            TextButton {
+                text: @tr("上一步");
+                clicked => { root.step = 1; }
+            }
+        }
+    }
+
+    HorizontalDivider {}
+
+    HorizontalLayout {
+        alignment: end;
+        TextButton {
+            text: @tr("取消");
+            clicked => { root.cancelled(); }
+        }
+    }
+}

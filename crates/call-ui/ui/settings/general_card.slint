@@ -1,0 +1,46 @@
+// 设置页通用卡: 语言切换
+import {
+    FilledCard,
+    TextButton,
+    HorizontalDivider,
+    MaterialText,
+    MaterialTypography,
+    MaterialPalette,
+} from "../../material-1.1.0/material.slint";
+
+export component GeneralSettingsCard inherits FilledCard {
+    callback set-language(string); // "zh" | "en"
+
+    VerticalLayout {
+        padding: 28px;
+        spacing: 20px;
+        MaterialText {
+            text: @tr("设置");
+            style: MaterialTypography.headline_small;
+        }
+
+        HorizontalDivider {}
+
+        // 语言切换: 立即生效 (bundled translations), 重启后回系统 locale
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            MaterialText {
+                text: @tr("语言");
+                style: MaterialTypography.body_large;
+                color: MaterialPalette.on_surface_variant;
+                vertical-alignment: center;
+            }
+
+            TextButton {
+                text: "中文";
+                clicked => { root.set-language("zh"); }
+            }
+
+            TextButton {
+                text: "English";
+                clicked => { root.set-language("en"); }
+            }
+        }
+    }
+}

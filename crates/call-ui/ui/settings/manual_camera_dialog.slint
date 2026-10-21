@@ -1,0 +1,60 @@
+// 手动添加摄像头对话框内容, 可在 slint 预览器直接查看
+import {
+    FilledButton,
+    TextButton,
+    TextField,
+    MaterialText,
+    MaterialTypography,
+} from "../../material-1.1.0/material.slint";
+
+export component ManualCameraDialog inherits VerticalLayout {
+    callback add-camera(string, string, string, string);
+    callback cancelled();
+
+    padding: 24px;
+    spacing: 12px;
+
+    MaterialText {
+        text: @tr("手动添加摄像头");
+        style: MaterialTypography.title_large;
+    }
+
+    m-name := TextField {
+        label: @tr("名称");
+    }
+
+    m-uri := TextField {
+        label: "RTSP URL";
+    }
+
+    m-user := TextField {
+        label: @tr("用户名");
+        // 这套 material TextField 不渲染 placeholder, 提示走 supporting-text
+        supporting-text: @tr("留空使用默认 admin");
+    }
+
+    m-pass := TextField {
+        label: @tr("密码");
+        supporting-text: @tr("留空使用默认 123456");
+        input-type: password;
+    }
+
+    Rectangle { vertical-stretch: 1; }
+
+    HorizontalLayout {
+        spacing: 12px;
+        alignment: end;
+        TextButton {
+            text: @tr("取消");
+            clicked => { root.cancelled(); }
+        }
+
+        FilledButton {
+            text: @tr("保存");
+            enabled: m-name.text != "" && m-uri.text != "";
+            clicked => {
+                root.add-camera(m-name.text, m-uri.text, m-user.text, m-pass.text);
+            }
+        }
+    }
+}

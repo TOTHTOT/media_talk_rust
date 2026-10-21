@@ -243,12 +243,6 @@ msgstr "Username"
 msgid "密码"
 msgstr "Password"
 
-msgid "用户名 (可空)"
-msgstr "Username (optional)"
-
-msgid "密码 (可空)"
-msgstr "Password (optional)"
-
 msgid "正在读取设备配置 ..."
 msgstr "Reading device profiles ..."
 
@@ -290,3 +284,9 @@ msgstr "Failed to connect to camera"
 
 msgid "该设备已存在, 未重复添加"
 msgstr "Camera already exists, skipped"
+
+msgid "留空使用默认 admin"
+msgstr "Leave empty for default admin"
+
+msgid "留空使用默认 123456"
+msgstr "Leave empty for default 123456"

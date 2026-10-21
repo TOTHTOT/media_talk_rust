@@ -195,12 +195,6 @@ msgstr ""
 msgid "密码"
 msgstr ""
 
-msgid "用户名 (可空)"
-msgstr ""
-
-msgid "密码 (可空)"
-msgstr ""
-
 msgid "正在读取设备配置 ..."
 msgstr ""
 
@@ -241,4 +235,10 @@ msgid "摄像头连接失败"
 msgstr ""
 
 msgid "该设备已存在, 未重复添加"
+msgstr ""
+
+msgid "留空使用默认 admin"
+msgstr ""
+
+msgid "留空使用默认 123456"
 msgstr ""

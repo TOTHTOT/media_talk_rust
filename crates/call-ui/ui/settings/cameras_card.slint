@@ -1,0 +1,66 @@
+// 设置页摄像头管理卡: 已保存列表 (增删; 查看在监控页)
+import {
+    FilledCard,
+    FilledButton,
+    TextButton,
+    IconButton,
+    ListTile,
+    HorizontalDivider,
+    MaterialText,
+    MaterialTypography,
+    MaterialPalette,
+} from "../../material-1.1.0/material.slint";
+import { CameraEntry } from "../components.slint";
+
+export component CamerasCard inherits FilledCard {
+    in property <[CameraEntry]> cameras: [];
+    callback delete-camera(int);
+    // 弹对话框由页面统一编排 (对话框覆盖层挂在页面根部)
+    callback search-clicked();
+    callback manual-clicked();
+
+    VerticalLayout {
+        padding: 28px;
+        spacing: 16px;
+        MaterialText {
+            text: @tr("摄像头");
+            style: MaterialTypography.headline_small;
+        }
+
+        HorizontalDivider {}
+
+        if root.cameras.length == 0: MaterialText {
+            text: @tr("暂无已保存的摄像头");
+            style: MaterialTypography.body_large;
+            color: MaterialPalette.on_surface_variant;
+        }
+
+        for cam in root.cameras: ListTile {
+            width: 100%;
+            // 必须显式定高: ListTile 内部 min_height 与头像盒互为依赖, 不定死成环 panic
+            // 56px: 摄像头列表行距紧凑 (通讯录用 72px 因为有头像)
+            height: 56px;
+            text: cam.name;
+            supporting-text: cam.kind == "" ? cam.uri : cam.kind + " · " + cam.uri;
+            IconButton {
+                inline: true;
+                icon: @image-url("../icons/trash-2.svg");
+                clicked => { root.delete-camera(cam.id); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            FilledButton {
+                text: @tr("搜索添加");
+                clicked => { root.search-clicked(); }
+            }
+
+            TextButton {
+                text: @tr("手动添加");
+                clicked => { root.manual-clicked(); }
+            }
+        }
+    }
+}

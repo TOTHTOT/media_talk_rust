@@ -1,0 +1,85 @@
+// 设置页摄像头对话框壳: 遮罩 + 开关状态, 内容组件在 search_camera_dialog / manual_camera_dialog
+// (内容组件默认可见, 可单独预览; 本壳默认 mode=0 不可见, 不适合直接预览)
+// 打开方式: 页面调 open-search() / open-manual() 公开函数
+import {
+    FilledCard,
+} from "../../material-1.1.0/material.slint";
+import { DiscoveredEntry, ProfileEntry } from "../components.slint";
+import { SearchCameraDialog } from "search_camera_dialog.slint";
+import { ManualCameraDialog } from "manual_camera_dialog.slint";
+
+export component CameraDialogs inherits Rectangle {
+    in property <bool> camera-busy: false;
+    in property <[DiscoveredEntry]> discovered-devices: [];
+    in property <[ProfileEntry]> camera-profiles: [];
+    callback search-cameras();
+    callback fetch-camera-profiles(string, string, string);
+    callback save-discovered-camera(string, string, string, string, string);
+    callback add-camera(string, string, string, string);
+
+    // 对话框: 0=无 1=搜索添加 2=手动添加
+    property <int> mode: 0;
+    // 搜索向导状态放壳里, 子组件双向绑定读写 (条件块内 id 跨块不可见)
+    property <int> search-step: 0;
+    property <string> sel-xaddr: "";
+    property <string> sel-label: "";
+    property <string> sel-name: "";
+    property <string> sel-user: "";
+    property <string> sel-pass: "";
+
+    public function open-search() {
+        root.search-step = 0;
+        root.mode = 1;
+    }
+
+    public function open-manual() {
+        root.mode = 2;
+    }
+
+    // 隐藏时不占位不吃点击
+    visible: mode != 0;
+
+    // ===== 对话框遮罩 =====
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000080;
+        TouchArea {} // 吃掉点击, 不穿透到下层
+
+        FilledCard {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 560px;
+            height: 480px;
+
+            if root.mode == 1: SearchCameraDialog {
+                camera-busy: root.camera-busy;
+                discovered-devices: root.discovered-devices;
+                camera-profiles: root.camera-profiles;
+                step <=> root.search-step;
+                sel-xaddr <=> root.sel-xaddr;
+                sel-label <=> root.sel-label;
+                sel-name <=> root.sel-name;
+                sel-user <=> root.sel-user;
+                sel-pass <=> root.sel-pass;
+                search-cameras => { root.search-cameras(); }
+                fetch-camera-profiles(xaddr, user, pass) => {
+                    root.fetch-camera-profiles(xaddr, user, pass);
+                }
+                save-discovered-camera(xaddr, name, user, pass, token) => {
+                    root.save-discovered-camera(xaddr, name, user, pass, token);
+                    root.mode = 0;
+                }
+                cancelled => { root.mode = 0; }
+            }
+
+            if root.mode == 2: ManualCameraDialog {
+                add-camera(name, uri, user, pass) => {
+                    root.add-camera(name, uri, user, pass);
+                    root.mode = 0;
+                }
+                cancelled => { root.mode = 0; }
+            }
+        }
+    }
+}

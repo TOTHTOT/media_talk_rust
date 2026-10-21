@@ -60,7 +60,6 @@ export component MainWindow inherits MaterialWindow {
     in property <[DiscoveredEntry]> discovered-devices: [];
     in property <[ProfileEntry]> camera-profiles: [];
     in property <int> monitor-selected-id: -1;
-    in property <string> settings-text: "";
     callback dial(string);
     callback accept-call();
     callback reject-call();
@@ -205,7 +204,6 @@ export component MainWindow inherits MaterialWindow {
 
             // 设置页
             if root.phase == 0 && root.page == 2: SettingsPage {
-                settings-text: root.settings-text;
                 cameras: root.cameras;
                 camera-busy: root.camera-busy;
                 discovered-devices: root.discovered-devices;

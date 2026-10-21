@@ -419,6 +419,25 @@ latch 未过期可能仍不通, 稍候重拨自愈; 反复 0 包时先看日志�
 触发根 token，各子系统（注册循环、流管线、web 服务）共用 token 收尾，二次
 信号强退。细节见 [shutdown.md](shutdown.md)。
 
+## Slint UI
+
+这套 UI 用 material-1.1.0 组件库, 有几个反直觉点都实踩过:
+
+- **TextField 的 placeholder_text 不渲染** (组件源码注释自认"误公开,
+  已废弃"): 只转发给 accessibility, 界面上看不到. 要提示文案用
+  `supporting-text` (输入框下方小字), 别用 placeholder-text
+- **VerticalLayout 的 alignment 只管纵轴**: 想水平居中要套一层
+  `HorizontalLayout { alignment: center }`
+- **ScrollView 里子元素宽度不能以父布局为基准** (`parent.width` 构成
+  flickable content-width 绑定环, 编译期报错): 用页面/窗口宽度做基准
+- **条件块 (`if`) 内的 id 跨块不可见**: 向导类对话框的步骤间传值要
+  快照到外层属性或用 `in-out` + `<=>` 双向绑定
+- **ListTile 必须显式定高**: 内部 min_height 与头像盒互为依赖,
+  不定死构成绑定环 panic (通讯录 72px / 摄像头列表 56px)
+- **弹窗用 Rectangle 覆盖层不用 PopupWindow**: 覆盖层声明在最后自然
+  绘制在上层, 根元素 `visible: mode != 0` 控制显隐; 但默认隐藏的
+  组件在 slint 预览器里是空白, 可预览性要靠内容组件默认可见
+
 ## 环境 / CI
 
 - CI runner 要装 `libgstreamer1.0-dev` + `plugins-base` + `pkg-config`
