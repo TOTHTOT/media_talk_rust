@@ -30,11 +30,13 @@ pub struct GstStreamConfig {
     /// 是否创建 webrtcsink 转推支路。
     /// - `true`：RTSP → WebRTC 转推（网页观看，需要信令服务器）
     /// - `false`：仅本地 tap（GUI 监控页），不需要信令服务器
+    ///
     /// 注意：`false` 且 `RawTaps.video` 为 `None` 时视频轨无消费者，`link_video` 会报 Link 错误。
     pub webrtc: bool,
     /// GUI tap 分支显示限宽。
     /// - `Some(w)`：解码后 videoscale 降采样到 w 以内（保持宽高比，capsfilter 锁 PAR=1/1）
     /// - `None`：不缩放
+    ///
     /// 1080p@30fps 全尺寸 RGBA ≈ 165MB/s，ARM 板上必须限宽。
     pub tap_max_width: Option<u32>,
 }
