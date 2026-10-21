@@ -203,6 +203,20 @@ impl AppState {
     /// 无条件回 Idle 并清 peer, 但 Failed 仅在非 Idle 时才产生通知
     /// (Idle 下属于迟到事件, 不弹错误条) — 通知的唯一发源点在这里,
     /// bridge 不再自行判断
+    ///
+    ///
+    ///
+    /// # Arguments
+    ///
+    /// * `ev`: SIP 后台发来的 UI 事件
+    ///
+    /// returns: Option<Notice>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub fn on_event(&mut self, ev: UiEvent) -> Option<Notice> {
         info!(?ev, "deal with a event");
         match ev {
@@ -248,6 +262,20 @@ impl AppState {
     }
 
     /// 拨打: 仅 Idle 且号码非空; 返回 WorkerCmd 给 worker
+    ///
+    ///
+    ///
+    /// # Arguments
+    ///
+    /// * `number`: 用户输入的号码 (内部先 trim, 全空白视为未输入)
+    ///
+    /// returns: Option<WorkerCmd>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub fn dial(&mut self, number: String) -> Option<WorkerCmd> {
         let number = number.trim().to_string();
         if self.phase != Phase::Idle || number.is_empty() {
@@ -266,6 +294,16 @@ impl AppState {
     }
 
     /// 拒接: 仅 Incoming, 立即回 Idle
+    ///
+    ///
+    ///
+    /// returns: Option<WorkerCmd>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub fn reject(&mut self) -> Option<WorkerCmd> {
         if self.phase != Phase::Incoming {
             return None;
@@ -276,6 +314,16 @@ impl AppState {
 
     /// 挂断/取消: Outgoing 或 InCall 有效, 立即回 Idle
     /// (不等 worker 确认, 界面对讲机场景手感优先; worker 失败会再报 Failed)
+    ///
+    ///
+    ///
+    /// returns: Option<WorkerCmd>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     pub fn hangup(&mut self) -> Option<WorkerCmd> {
         if !matches!(self.phase, Phase::Outgoing | Phase::InCall) {
             return None;

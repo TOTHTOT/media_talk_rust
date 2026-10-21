@@ -23,7 +23,7 @@ pub enum WorkerCmd {
 
 /// UI → SIP worker 命令通道工厂.
 ///
-/// returns: (UnboundedSender<WorkerCmd>, UnboundedReceiver<WorkerCmd>) — 发送端给 UI，接收端给 worker
+/// returns: (UnboundedSender<WorkerCmd>, UnboundedReceiver<WorkerCmd>) — 发送端给 UI, 接收端给 worker
 ///
 /// # Examples
 ///

@@ -12,6 +12,14 @@ use crate::props;
 use crate::store::Store;
 
 /// 打开 (不存在则创建) 数据目录下的库
+///
+/// returns: anyhow::Result<Rc<Store>> — 已打开的库句柄; Err 是 SQLite 打开失败
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(crate) fn open_store() -> anyhow::Result<Rc<Store>> {
     Ok(Rc::new(Store::open()?))
 }

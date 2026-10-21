@@ -7,8 +7,12 @@
 //! 的 audio_src/video_src 采集回传, 视频发送链只有 H264 (x264enc),
 //! 对端协商成其他编码时该路只收不发. 单路失败只 warn 不抛错,
 //! 通话不因一路媒体挂掉 (同 answer.rs 原则).
+//!
+//! 协商计划 (MediaPlan/VideoDest/codec 谓词) 在子模块 plan.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+mod plan;
+
+use std::net::{IpAddr, Ipv4Addr};
 
 use ipcam_core::{AudioCodec, VideoCodec};
 use ipcam_gst::{
@@ -16,66 +20,13 @@ use ipcam_gst::{
     VideoFrameSink, start_rtp_receiver, start_rtp_sender,
 };
 use ipcam_sip::negotiate;
-use ipcam_sip::sdp::{OfferMedias, PeerMedia, PeerMedias, parse_offer_all};
+use ipcam_sip::sdp::{OfferMedias, PeerMedias, parse_offer_all};
 use tracing::{info, warn};
 
 use crate::session::types::{GuiSipConfig, RecvSockets, RtpPorts};
 
-/// 视频发送目标: 对端收视频地址, pt, 编码, 限宽.
-/// 限宽 = min(本端配置, 对端 fmtp 声明的解码上限), 只收紧不放宽.
-/// 参与 fingerprint 比对: 编码/限宽变了才重启发送链.
-#[derive(Debug, Clone, PartialEq)]
-pub struct VideoDest {
-    pub addr: SocketAddr,
-    pub payload_type: u8,
-    pub codec: VideoCodec,
-    pub max_width: Option<u32>,
-}
-
-/// 一路协商的全部产物: 收端指纹 (音频/视频编码) + 两路发送目标.
-/// 从 offer 协商时 picks 只跑一次 (start_incoming / renegotiate 共用),
-/// 主叫侧从 answer 直接收窄构造 (见 start_outgoing)
-#[derive(Debug, Clone, PartialEq)]
-pub struct MediaPlan {
-    /// 接收指纹: (音频编码, 视频编码). pt 不参与 — udpsrc 不按 pt
-    /// 过滤, 端口是我们在 answer 里声明的固定值, 不会变
-    pub recv: (Option<AudioCodec>, Option<VideoCodec>),
-    /// 音频发送目标/指纹: 对端收音频地址/pt/编码
-    pub send_audio: Option<AudioDest>,
-    /// 视频发送目标/指纹: 对端收视频地址/pt/编码/限宽
-    pub send_video: Option<VideoDest>,
-}
-
-/// 从 offer 跑一次 picks, 同时产出收端指纹和两路发送目标.
-/// 发送目标地址/pt 取自 offer 对应媒体行与选中编码; 视频限宽取
-/// min(cfg_max_width, 对端选中编码 fmtp 声明的解码上限) — 只收紧不放宽
-fn plan_from_offer(offer: &OfferMedias, cfg_max_width: u32) -> MediaPlan {
-    let (audio, video) = negotiate::picks(offer, audio_pred, video_pred);
-    let recv = (audio.map(|(_, c)| c), video.as_ref().map(|(_, c, _)| *c));
-    let send_audio = audio.and_then(|(pt, codec)| {
-        offer.audio.as_ref().map(|a| AudioDest {
-            addr: SocketAddr::new(a.addr, a.port),
-            payload_type: pt,
-            codec,
-        })
-    });
-    let send_video = video.and_then(|(pt, codec, fmtp)| {
-        offer.video.as_ref().map(|v| VideoDest {
-            addr: SocketAddr::new(v.addr, v.port),
-            payload_type: pt,
-            codec,
-            max_width: ipcam_sip::sdp::clamp_max_width(
-                (cfg_max_width > 0).then_some(cfg_max_width),
-                fmtp.as_deref(),
-            ),
-        })
-    });
-    MediaPlan {
-        recv,
-        send_audio,
-        send_video,
-    }
-}
+use plan::{MediaPlan, VideoDest, peer_audio_send_params, peer_video_send_params, plan_from_offer};
+pub(crate) use plan::{audio_pred, video_pred};
 
 /// 一路通话的媒体句柄: 接收器 + 发送器 + 协商方案. re-INVITE 时按
 /// MediaPlan 比对 (recv 编码对 / send 地址/pt/编码), 变了才重启
@@ -102,6 +53,22 @@ pub struct MediaHandles {
 impl MediaHandles {
     /// 按协商方案起接收器和发送器. 单路不可用时该路 None (只收不发 /
     /// 只发不收), 不抛错.
+    ///
+    /// # Arguments
+    ///
+    /// * `recv_ports`: 本机 RTP 接收端口 (音频, 视频)
+    /// * `cfg`: 本机媒体源与视频限宽配置
+    /// * `tap`: 视频帧回调 (GUI 纹理通路), 接收器重启时 Arc clone 复用
+    /// * `plan`: 协商产物 (收端指纹 + 两路发送目标)
+    /// * `sockets`: 对称 RTP 共享 socket (音频, 视频), udpsrc/udpsink 复用
+    ///
+    /// returns: MediaHandles — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     fn new(
         recv_ports: RtpPorts,
         cfg: &GuiSipConfig,
@@ -190,52 +157,6 @@ impl MediaHandles {
     }
 }
 
-/// 可收发音频谓词 (复用 ipcam-gst 发送白名单 G.711): session 协商与
-/// 本模块指纹比对共用这一个, 防漂移
-pub(crate) fn audio_pred(name: &str) -> Option<AudioCodec> {
-    ipcam_gst::sendable_audio_codec(name)
-}
-
-/// 可收视频谓词: H264/H265
-pub(crate) fn video_pred(name: &str) -> Option<VideoCodec> {
-    match VideoCodec::from_name(name) {
-        vc @ (VideoCodec::H264 | VideoCodec::H265) => Some(vc),
-        _ => None,
-    }
-}
-
-/// 从 answer 的已选中音频 codec 提取发送参数.
-/// 只在 answer 的 codec 属于本机可发送白名单时返回 Some, 否则 None.
-fn peer_audio_send_params(peer: &PeerMedia) -> Option<AudioDest> {
-    ipcam_gst::sendable_audio_codec(&peer.codec).map(|codec| AudioDest {
-        addr: peer.addr,
-        payload_type: peer.payload_type,
-        codec,
-    })
-}
-
-/// 从 answer 的已选中视频 codec 提取发送参数.
-/// answer 只选了 codec, 地址/pt 取自 PeerMedia; 限宽取
-/// min(cfg_max_width, 对端 fmtp 声明的解码上限) — 只收紧不放宽
-fn peer_video_send_params(
-    peer: &ipcam_sip::sdp::PeerMedia,
-    cfg_max_width: u32,
-) -> Option<VideoDest> {
-    let codec = VideoCodec::from_name(&peer.codec);
-    match codec {
-        VideoCodec::Unknown => None,
-        _ => Some(VideoDest {
-            addr: peer.addr,
-            payload_type: peer.payload_type,
-            codec,
-            max_width: ipcam_sip::sdp::clamp_max_width(
-                (cfg_max_width > 0).then_some(cfg_max_width),
-                peer.fmtp.as_deref(),
-            ),
-        }),
-    }
-}
-
 /// 处理 re-INVITE 新 offer: 按当前配置重新协商 answer, 并驱动媒体层按
 /// 指纹比对重启管线; 主叫/被叫通话 loop 共用. offer 解析失败返回 None
 /// (调用方回不带 SDP 的 200, 不动本地媒体).
@@ -248,6 +169,12 @@ fn peer_video_send_params(
 /// * `media`: 媒体句柄, 协商结果变了由它重启对应管线
 ///
 /// returns: Option<Vec<u8>> — answer SDP body, 解析失败返回 None
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn reinvite_answer(
     offer_body: &[u8],
     local: Ipv4Addr,
@@ -292,6 +219,12 @@ pub fn reinvite_answer(
 /// * `max_width`: tap 显示限宽, 0 表示不限 (透传成 None)
 ///
 /// returns: Option<RtpReceiver> — 运行中的接收器句柄, stop 即拆管线
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 fn start_receiver(
     tap: VideoFrameSink,
     ports: RtpPorts,
@@ -339,6 +272,12 @@ fn start_receiver(
 ///   (源端口 == SDP 声明的接收端口)
 ///
 /// returns: Option<RtpSender> — 运行中的发送器句柄, stop 即拆管线
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 fn start_sender(
     audio_src: &TrackSource,
     video_src: &TrackSource,
@@ -394,6 +333,12 @@ fn start_sender(
 /// * `tap`: 视频帧回调, 接收器视频路经它上屏, 重启时复用
 ///
 /// returns: Option<MediaHandles> — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn start_incoming(
     offer: &OfferMedias,
     recv_ports: RtpPorts,
@@ -421,6 +366,12 @@ pub fn start_incoming(
 /// * `tap`: 视频帧回调, 接收器视频路经它上屏
 ///
 /// returns: Option<MediaHandles> — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub fn start_outgoing(
     peers: &PeerMedias,
     rtp_ports: &RtpPorts,
@@ -462,144 +413,4 @@ pub fn start_outgoing(
         },
         sockets,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ipcam_sip::sdp::{OfferCodec, OfferMedia};
-    use std::net::{IpAddr, Ipv4Addr};
-
-    /// 构造一路 offer 媒体: 按给定 (pt, 编码名) 列表填 codecs
-    fn offer_media(codecs: &[(u8, &str)]) -> OfferMedia {
-        OfferMedia {
-            addr: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
-            port: 5000,
-            codecs: codecs
-                .iter()
-                .map(|(pt, name)| OfferCodec {
-                    payload_type: *pt,
-                    codec: (*name).to_string(),
-                    clock_rate: 8000,
-                    encoding_params: None,
-                    fmtp: None,
-                })
-                .collect(),
-        }
-    }
-
-    /// 音频按对端偏好序挑第一个我们支持的: opus 打头也要跳过选 PCMU
-    #[test]
-    fn pick_audio_skips_unsupported_head() {
-        let offer = OfferMedias {
-            audio: Some(offer_media(&[(111, "opus"), (0, "PCMU"), (8, "PCMA")])),
-            video: None,
-        };
-        assert_eq!(
-            negotiate::pick_audio(&offer, audio_pred),
-            Some((0, AudioCodec::G711U))
-        );
-    }
-
-    /// offer 里全是不支持的音频编码时返回 None
-    #[test]
-    fn pick_audio_none_when_all_unsupported() {
-        let offer = OfferMedias {
-            audio: Some(offer_media(&[(111, "opus")])),
-            video: None,
-        };
-        assert_eq!(negotiate::pick_audio(&offer, audio_pred), None);
-    }
-
-    /// 视频跳过 VP8 选 H264; 全不支持时整路拒收
-    #[test]
-    fn pick_video_h264_only() {
-        let offer = OfferMedias {
-            audio: None,
-            video: Some(offer_media(&[(96, "VP8"), (97, "H264")])),
-        };
-        let picked = negotiate::pick_video(&offer, video_pred);
-        assert!(matches!(picked, Some((97, VideoCodec::H264, None))));
-
-        let offer = OfferMedias {
-            audio: None,
-            video: Some(offer_media(&[(96, "VP8")])),
-        };
-        assert_eq!(negotiate::pick_video(&offer, video_pred), None);
-    }
-
-    /// 音频发送目标: 地址取 offer 媒体的 addr/port, pt/编码取选中项
-    #[test]
-    fn plan_send_audio_from_offer() {
-        let offer = OfferMedias {
-            audio: Some(offer_media(&[(8, "PCMA")])),
-            video: None,
-        };
-        let plan = plan_from_offer(&offer, 640);
-        assert_eq!(plan.recv, (Some(AudioCodec::G711A), None));
-        assert_eq!(
-            plan.send_audio,
-            Some(AudioDest {
-                addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 5000),
-                payload_type: 8,
-                codec: AudioCodec::G711A,
-            })
-        );
-        assert_eq!(plan.send_video, None);
-    }
-
-    /// 视频发送目标: 地址/pt/编码三要素 + 限宽 (min(配置, 对端 fmtp 声明));
-    /// 无视频路时 None
-    #[test]
-    fn plan_send_video_from_offer() {
-        let offer = OfferMedias {
-            audio: None,
-            video: Some(offer_media(&[(97, "H264")])),
-        };
-        // 对端没写 fmtp → 限宽用配置值
-        let plan = plan_from_offer(&offer, 640);
-        assert_eq!(plan.recv, (None, Some(VideoCodec::H264)));
-        assert_eq!(
-            plan.send_video,
-            Some(VideoDest {
-                addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 5000),
-                payload_type: 97,
-                codec: VideoCodec::H264,
-                max_width: Some(640),
-            })
-        );
-
-        let plan = plan_from_offer(&OfferMedias::default(), 640);
-        assert_eq!(plan.recv, (None, None));
-        assert_eq!(plan.send_video, None);
-    }
-
-    /// 对端 fmtp 声明低 level (L2.2 → D1 720 宽) 时, 限宽收紧到对端能力;
-    /// 对端声明高 level (L3.1 → 720p) 时保持配置值, 不放宽
-    #[test]
-    fn plan_send_video_clamps_to_peer_capability() {
-        let mut media = offer_media(&[(96, "H264")]);
-        media.codecs[0].fmtp = Some("profile-level-id=42c016".into());
-        let offer = OfferMedias {
-            audio: None,
-            video: Some(media),
-        };
-        let max_width = plan_from_offer(&offer, 1280)
-            .send_video
-            .expect("video picked")
-            .max_width;
-        assert_eq!(max_width, Some(720), "peer D1 capability must tighten");
-
-        let mut media = offer_media(&[(96, "H264")]);
-        media.codecs[0].fmtp = Some("profile-level-id=42e01f".into());
-        let offer = OfferMedias {
-            audio: None,
-            video: Some(media),
-        };
-        let max_width = plan_from_offer(&offer, 640)
-            .send_video
-            .expect("video picked")
-            .max_width;
-        assert_eq!(max_width, Some(640), "peer 720p must not widen config");
-    }
 }

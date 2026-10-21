@@ -9,6 +9,21 @@ use crate::props::sync_props;
 
 /// 装配 UI 回调: 四个通话回调同一形态 — 状态机决策出 Effect, 翻译成
 /// worker 命令发出, 再把状态刷到界面属性
+///
+/// # Arguments
+///
+/// * `ui`: 主窗口句柄 (注册 on_* 回调)
+/// * `app`: 共享状态机, 回调里决策出 Effect
+/// * `cmd_tx`: UI → SIP worker 命令通道发送端
+/// * `monitor`: 监控控制器 (起通话前停监控 ingest)
+///
+/// returns: ()
+///
+/// # Examples
+///
+/// ```
+///
+/// ```
 pub(crate) fn wire_callbacks(
     ui: &MainWindow,
     app: &bridge::SharedApp,
@@ -19,6 +34,21 @@ pub(crate) fn wire_callbacks(
     /// 注意必须先 `let cmd = app.lock().xxx();` 绑定再调本函数 —
     /// 锁守卫若作为实参表达式存活到调用结束, 这里再 lock 会死锁
     /// (parking_lot Mutex 不可重入)
+    ///
+    /// # Arguments
+    ///
+    /// * `weak`: 主窗口弱引用 (刷属性用)
+    /// * `app`: 共享状态机 (刷属性时短暂加锁)
+    /// * `cmd_tx`: UI → SIP worker 命令通道发送端
+    /// * `cmd`: 状态机决策出的命令, None 表示无需下发
+    ///
+    /// returns: ()
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
     fn apply(
         weak: &slint::Weak<MainWindow>,
         app: &bridge::SharedApp,
