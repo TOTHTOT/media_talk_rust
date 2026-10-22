@@ -91,6 +91,41 @@ Notice::error(NoticeKind::CallFailed).with_detail(e)  // "呼叫失败: 486 Busy
 画面嵌在通话页里）。接收器重启（re-INVITE 改编码）时 tap 是 Arc，
 clone 复用不断流。
 
+## 监控页的 RTSP 终态通道
+
+监控页（`camera/mod.rs`）复用第 4 条通道的 tap，它的失败通报**不走
+小灶回调，而是收进 UiHandle 事件漏斗**（与 SIP 事件同一条路）：
+
+```text
+ipcam-gst 会话线程
+    │ 重试耗尽 / 认证错 → 失败终态
+    ▼
+on_terminal 回调（ingest 会话线程）
+    │ UiHandle::post(UiEvent::MonitorFailed { id, error })
+    ▼
+bridge 投递点（UI 主线程）
+    │ 代次校验 → 复位 monitor-selected-id + 清 video-frame
+    ▼
+AppState::on_event → Notice(CameraConnectFailed) → toast
+```
+
+关键纪律：**"多久算失败"只有一处标准** —— ingest 侧的
+`ReconnectPolicy::max_attempts`（监控页设 3 次，退避 1s→2s→4s，约 7s 后
+放弃）。UI 侧不维护宽限窗常数，也不轮询流状态；之前那套「5s 宽限窗 +
+300ms 轮询看门狗线程」已删除。
+
+代次校验用 UI 的 `monitor-selected-id` 属性（在 bridge 投递点做，只有
+那里有窗口句柄）：所有停监控路径（切台 / 离开监控页 / 通话抢占）都已把
+它复位为 -1，属性不再是本路 id 就说明这次终态已过期，静默丢弃 —— 用户
+自己停的流不会误弹"连接失败"。
+
+通知裁决（级别/种类/detail）在 `AppState::on_event` 里，纯状态机逻辑，
+可单测；`on_terminal` 回调只做一次事件投递就返回，不阻塞会话线程。
+
+**新增失败上报源的方法**：加一个 `UiEvent` 变体（如 `RecordFailed`），
+后端拿到 `UiHandle` clone 投递即可，不要自己捕获 `Weak<MainWindow>`
+开回调小灶。
+
 ## 分层纪律
 
 | 层 | 能做什么 | 不能做什么 |

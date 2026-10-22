@@ -39,7 +39,7 @@ pub struct CallRecord {
     pub duration_secs: i64,
 }
 
-/// SIP 后台 → UI 的事件
+/// 后台 → UI 的事件 (SIP 会话 / 监控流等, 统一走 UiHandle 漏斗投递)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
     Registered,
@@ -61,6 +61,13 @@ pub enum UiEvent {
     /// 与通话生命周期无关的提示/警告 (如端口回退): 不进状态机,
     /// on_event 原样透传给通知管线
     Notify(Notice),
+    /// 监控流失败终态 (ingest 侧重试耗尽/认证错): 不进状态机.
+    /// 代次校验与复位在 bridge 投递点完成 (依赖 monitor-selected-id
+    /// 属性), 到这里只负责出通知; error 为错误原文快照
+    MonitorFailed {
+        id: i32,
+        error: Option<String>,
+    },
 }
 
 /// 通知级别: 决定呈现方式 (Info/Warn → toast 气泡, Error → 顶部错误条)
@@ -258,6 +265,10 @@ impl AppState {
                 notify
             }
             UiEvent::Notify(n) => Some(n),
+            UiEvent::MonitorFailed { error, .. } => Some(
+                Notice::warn(NoticeKind::CameraConnectFailed)
+                    .with_detail(error.unwrap_or_default()),
+            ),
         }
     }
 
@@ -536,5 +547,26 @@ mod tests {
         assert!(app.call_log[0].outgoing);
         assert!(app.call_log[0].connected);
         assert!(app.call_log[0].duration_secs >= 0);
+    }
+
+    #[test]
+    fn monitor_failed_yields_warn_notice_without_touching_call_state() {
+        let mut app = AppState::default();
+        let n = app
+            .on_event(UiEvent::MonitorFailed {
+                id: 7,
+                error: Some("401 Unauthorized".into()),
+            })
+            .expect("notice");
+        assert_eq!(n.level, NoticeLevel::Warn);
+        assert_eq!(n.kind, NoticeKind::CameraConnectFailed);
+        assert_eq!(n.detail.as_deref(), Some("401 Unauthorized"));
+        // 无错误原文时 detail 为 None, 前端只显示 kind 本地化文案
+        let n2 = app
+            .on_event(UiEvent::MonitorFailed { id: 7, error: None })
+            .expect("notice");
+        assert!(n2.detail.is_none());
+        // 不进状态机: 通话状态不受监控事件影响
+        assert_eq!(app.phase, Phase::Idle);
     }
 }
