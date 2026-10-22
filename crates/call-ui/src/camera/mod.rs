@@ -254,10 +254,10 @@ mod tests {
     fn terminal_hook_posts_failed_and_ignores_ended() {
         // Ended 静默不投递; Failed 经 UiHandle 漏斗投递 (测试无事件循环,
         // 投递失败被吞成 warn, 不 panic). 通知文案/级别的断言在
-        // app::tests::monitor_failed_yields_warn_notice_without_touching_call_state
-        let ui = MainWindow::new().expect("window");
+        // app::tests::monitor_failed_yields_warn_notice_without_touching_call_state.
+        // 用空 Weak 而非真窗口: CI 是无头环境, MainWindow::new() 起不来
         let app: crate::bridge::SharedApp = Default::default();
-        let handle = crate::bridge::UiHandle::new(ui.as_weak(), app);
+        let handle = crate::bridge::UiHandle::new(slint::Weak::default(), app);
         let hook = on_monitor_terminal(7, handle);
         hook(ipcam_gst::StreamTerminal::Ended);
         hook(ipcam_gst::StreamTerminal::Failed {
