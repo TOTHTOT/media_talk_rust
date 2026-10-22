@@ -177,14 +177,18 @@ mod tests {
             webrtc: false,
             ..Default::default()
         };
-        let (p, _t) = build_pipeline(&local, GstStreamHandle::new(), RawTaps::default())
-            .expect("local pipeline builds");
+        let (p, _t) = build_pipeline(
+            &local,
+            GstStreamHandle::with_terminal(None),
+            RawTaps::default(),
+        )
+        .expect("local pipeline builds");
         assert!(has_factory(&p, "rtspsrc"));
         assert!(!has_factory(&p, "webrtcsink"));
 
         let (p2, _t2) = build_pipeline(
             &GstStreamConfig::default(),
-            GstStreamHandle::new(),
+            GstStreamHandle::with_terminal(None),
             RawTaps::default(),
         )
         .expect("webrtc pipeline builds");

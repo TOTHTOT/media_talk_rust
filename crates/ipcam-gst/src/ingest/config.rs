@@ -2,10 +2,11 @@
 
 use std::time::Duration;
 
+use super::stats::TerminalHook;
 use crate::GstStreamError;
 
 /// 单路 RTSP 流配置参数。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct GstStreamConfig {
     /// RTSP 完整地址，如 `rtsp://192.168.1.10/stream`。
     /// URI 里可以带用户名密码（`rtspsrc` 支持）。
@@ -39,7 +40,34 @@ pub struct GstStreamConfig {
     ///
     /// 1080p@30fps 全尺寸 RGBA ≈ 165MB/s，ARM 板上必须限宽。
     pub tap_max_width: Option<u32>,
+    /// 终态回调: 会话到达终态（失败 / 结束）时触发一次。
+    ///
+    /// 回调在 ingest 的会话线程上触发, 应尽快返回 —— 需要回 UI 线程的
+    /// 调用方自己 `invoke_from_event_loop` 摆渡.
+    ///
+    /// 不设回调时, 调用方仍可用 `GstStreamHandle::wait_for_terminal`
+    /// 阻塞等终态 (两者语义等价, 二选一).
+    pub on_terminal: Option<TerminalHook>,
 }
+
+// 闭包无法比较: 回调字段按"有没有设"比较, 不比较回调内容.
+impl PartialEq for GstStreamConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.uri == other.uri
+            && self.credentials == other.credentials
+            && self.latency_ms == other.latency_ms
+            && self.audio_output == other.audio_output
+            && self.reconnect == other.reconnect
+            && self.stream_name == other.stream_name
+            && self.signalling_host == other.signalling_host
+            && self.signalling_port == other.signalling_port
+            && self.webrtc == other.webrtc
+            && self.tap_max_width == other.tap_max_width
+            && self.on_terminal.is_some() == other.on_terminal.is_some()
+    }
+}
+
+impl Eq for GstStreamConfig {}
 
 impl Default for GstStreamConfig {
     fn default() -> Self {
@@ -56,6 +84,7 @@ impl Default for GstStreamConfig {
             signalling_port: 8443,
             webrtc: true,
             tap_max_width: None,
+            on_terminal: None,
         }
     }
 }

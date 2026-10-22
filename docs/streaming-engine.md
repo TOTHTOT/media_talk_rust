@@ -24,6 +24,7 @@ let handle = ipcam_gst::start(cfg)?;
 handle.state();        // StreamState: Connecting / Playing / Reconnecting / Ended / Failed
 handle.stats();        // StreamStats: frames_video / frames_audio / bytes / reconnects ...
 handle.stop();         // 幂等；立即停止（打断重连退避）
+handle.wait_for_terminal(Duration::from_secs(10)); // 阻塞等终态（见下文「终态通知」）
 ```
 
 需要原始帧时用 `start_with_taps(cfg, taps)`，见下文 [RawTaps](#rawtaps-原始帧出口)。
@@ -39,6 +40,7 @@ handle.stop();         // 幂等；立即停止（打断重连退避）
 | `reconnect` | 1s→30s，无限 | 指数退避策略（`ReconnectPolicy`） |
 | `stream_name` | `"stream"` | 信令频道上的 producer 名（`meta,name=...`），浏览器按它匹配 |
 | `signalling_host/port` | `127.0.0.1:8443` | 进程内信令服务器地址 |
+| `on_terminal` | `None` | 终态回调（见下文「终态通知」） |
 
 `ipcam_gst::validate(&cfg)` 可做无网络静态校验（URI 前缀、latency 范围、退避参数等）。
 
@@ -118,6 +120,58 @@ producer（`meta,name = stream_name`）。浏览器作为 listener 连同一个�
 - 401/Unauthorized → 不重试，直接 `Failed`。
 - `handle.stop()` → 打断退避，`Ended`。`stop` 幂等。
 - 统计探针挂在 depay/parse 出口：视频数 AU，音频数 depay 输出帧。
+
+## 终态通知
+
+会话的"结束"有两类：**失败**（认证错、重试耗尽）和**结束**（用户主动 stop
+或 EOS 后收尾）。两者都是**终态**，都只判定一次。
+
+**失败时限只有一处权威标准**：ingest 侧的 `ReconnectPolicy::max_attempts`。
+调用方**不要**自己搞宽限窗 / 轮询超时那套 —— 重连策略说了算，重试耗尽就
+转 `Failed`。
+
+### 回调式（推荐 GUI 用）
+
+```rust
+let cfg = ipcam_gst::GstStreamConfig {
+    uri: "rtsp://192.168.1.10/stream".into(),
+    reconnect: ipcam_gst::ReconnectPolicy {
+        max_attempts: Some(3),   // 退避 1s→2s→4s，约 7s 后放弃
+        ..Default::default()
+    },
+    on_terminal: Some(ipcam_gst::TerminalHook::new(move |t| {
+        match t {
+            ipcam_gst::StreamTerminal::Failed { error } => { /* 提示用户 */ }
+            ipcam_gst::StreamTerminal::Ended => { /* 用户自己停的，静默 */ }
+        }
+    })),
+    ..Default::default()
+};
+```
+
+回调在 **ingest 的会话线程**上触发，应尽快返回；需要回 UI 线程的调用方自己
+摆渡（`call-ui` 的监控页是投递给 `UiHandle` 事件漏斗，由漏斗
+`invoke_from_event_loop` 回主线程）。
+
+### 阻塞式
+
+```rust
+let handle = ipcam_gst::start(cfg)?;
+if let Some(ipcam_gst::StreamTerminal::Failed { error }) =
+    handle.wait_for_terminal(Duration::from_secs(60))
+{
+    tracing::warn!("{error:?}");
+}
+```
+
+`wait_for_terminal` 超时返回 `None`，不改变会话状态。回调与阻塞二选一，
+语义等价。
+
+### 错误原文是快照
+
+`StreamTerminal::Failed { error }` 里的错误原文是**失败瞬间**冻结下来的，
+之后句柄被 `stop()` 改写也不影响已发出的内容 —— 不会出现"回调说失败，
+但读到的 `stats().last_error` 已经是别的错误"的错位。
 
 ## RawTaps 原始帧出口
 

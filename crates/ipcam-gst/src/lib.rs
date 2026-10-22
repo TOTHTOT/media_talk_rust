@@ -23,7 +23,7 @@ mod rtp_recv;
 mod rtp_send;
 
 pub use ingest::config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
-pub use ingest::stats::{GstStreamHandle, StreamState, StreamStats};
+pub use ingest::stats::{GstStreamHandle, StreamState, StreamStats, StreamTerminal, TerminalHook};
 pub use ingest::tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};
 pub use ipcam_core::AudioCodec;
 pub use pkt_stats::PktStats;

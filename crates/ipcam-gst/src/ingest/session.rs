@@ -15,7 +15,7 @@ use tracing::{error, info};
 use super::bus::{BusOutcome, is_auth_error, spawn_stats_ticker, watch_bus as bus_watch};
 use super::config::GstStreamConfig;
 use super::pipeline::{TrackState, build_pipeline, try_rebuild_pipeline};
-use super::stats::{GstStreamHandle, StopSignal, StreamState, wait_or_stop};
+use super::stats::{GstStreamHandle, StopSignal, StreamState, is_terminal, wait_or_stop};
 use super::tap::RawTaps;
 use crate::GstStreamError;
 
@@ -45,7 +45,7 @@ pub(crate) fn start(
 ) -> Result<GstStreamHandle, GstStreamError> {
     gst::init().map_err(|e| GstStreamError::Init(format!("gst init: {e}")))?;
 
-    let handle = GstStreamHandle::new();
+    let handle = GstStreamHandle::with_terminal(cfg.on_terminal.clone());
     let (pipeline, tracks) = build_pipeline(&cfg, handle.clone(), taps.clone())?;
     pipeline
         .set_state(gst::State::Playing)
@@ -134,6 +134,16 @@ fn spawn_session_loop(
 
         let _ = pipeline.set_state(gst::State::Null);
         *current.lock() = None;
+        // 终态收口: 会话线程退出时若状态还停在中间态 (例如退避期间被
+        // stop() 打断), 补一次 Ended 转移, 让等待终态的调用方不会
+        // 永远阻塞. 失败路径已在上面转过 Failed, 这里不动.
+        if !is_terminal(handle.state()) {
+            handle.transition(StreamState::Ended);
+        }
+        // 终态回调只触发一次 (失败瞬间的错误原文已冻结在结论里).
+        if let Some(terminal) = handle.terminal() {
+            handle.fire_terminal(terminal);
+        }
     });
 }
 
