@@ -46,6 +46,12 @@ pub async fn run(
     audio_out: Option<String>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
+    // 设备可能没装 gst-plugins-rs: 缺 webrtcsink 时启动期直接报错,
+    // 不要等到浏览器连上、起流时才在深层挂掉
+    anyhow::ensure!(
+        ipcam_gst::element_available("webrtcsink"),
+        "缺少 webrtcsink 元件 (gst-plugins-rs), serve 不可用"
+    );
     info!(bind = %format_args!("http://{}", bind), local_ip = %format_args!("http://{}:8080", local_ip()), discovery_timeout_secs, ?username, manual = rtsp_urls.len(), audio_out = ?audio_out, "starting media server");
     let timeout = std::time::Duration::from_secs(discovery_timeout_secs);
     let (user, pass) = match (username, password) {

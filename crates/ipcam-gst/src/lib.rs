@@ -39,6 +39,13 @@ fn ensure_init_internal() -> Result<(), GstStreamError> {
         .clone()
 }
 
+/// 探测 GStreamer 元件是否可用 (内部先确保 gst 已初始化).
+/// 供二进制入口在启动期做缺件早报, 如 serve 依赖 webrtcsink
+/// (gst-plugins-rs), 设备没装时直接报错而不是等流起来才挂
+pub fn element_available(name: &str) -> bool {
+    ensure_init_internal().is_ok() && gst::ElementFactory::find(name).is_some()
+}
+
 #[derive(Debug, Clone, Error)]
 pub enum GstStreamError {
     /// Static configuration error, reported by [`validate`].
