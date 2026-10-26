@@ -290,3 +290,9 @@ msgstr "Leave empty for default admin"
 
 msgid "留空使用默认 123456"
 msgstr "Leave empty for default 123456"
+
+msgid "城市"
+msgstr "City"
+
+msgid "留空自动定位"
+msgstr "Leave empty for auto location"

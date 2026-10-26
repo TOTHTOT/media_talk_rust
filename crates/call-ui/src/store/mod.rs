@@ -251,6 +251,56 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+
+    /// 读 kv 配置项; 不存在返回 None
+    ///
+    ///
+    ///
+    /// # Arguments
+    ///
+    /// * `key`: 配置键 (如 "weather_city")
+    ///
+    /// returns: Result<Option<String>> — None 表示未配置
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
+    pub fn kv_get(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare("SELECT value FROM kv WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// 写 kv 配置项 (upsert)
+    ///
+    ///
+    ///
+    /// # Arguments
+    ///
+    /// * `key`: 配置键
+    /// * `value`: 配置值
+    ///
+    /// returns: Result<()>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
+    pub fn kv_set(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![key, value],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -259,6 +309,17 @@ mod tests {
 
     fn mem_store() -> Store {
         Store::open_at(std::path::Path::new(":memory:")).unwrap()
+    }
+
+    #[test]
+    fn kv_roundtrip() {
+        let s = mem_store();
+        assert_eq!(s.kv_get("weather_city").unwrap(), None);
+        s.kv_set("weather_city", "深圳").unwrap();
+        assert_eq!(s.kv_get("weather_city").unwrap().as_deref(), Some("深圳"));
+        // upsert: 覆盖不报错
+        s.kv_set("weather_city", "广州").unwrap();
+        assert_eq!(s.kv_get("weather_city").unwrap().as_deref(), Some("广州"));
     }
 
     #[test]

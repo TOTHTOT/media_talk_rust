@@ -20,3 +20,11 @@ phone-off
 pencil
 trash-2
 menu
+# 天气 (status_bar 天气块)
+sun
+cloud-sun
+cloud
+cloud-fog
+cloud-rain
+cloud-snow
+cloud-lightning

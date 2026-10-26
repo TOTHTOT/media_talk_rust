@@ -68,6 +68,12 @@ pub enum UiEvent {
         id: i32,
         error: Option<String>,
     },
+    /// 天气刷新结果 (weather worker → 状态栏): 只覆盖天气字段,
+    /// 不动通话状态; temp_c 为摄氏度, 文本在这里格式化
+    Weather {
+        icon: i32,
+        temp_c: i32,
+    },
 }
 
 /// 通知级别: 决定呈现方式 (Info/Warn → toast 气泡, Error → 顶部错误条)
@@ -153,6 +159,9 @@ pub struct AppState {
     call_dir: Option<CallDir>,
     /// Confirmed 时刻, 通话时长从它算
     confirmed_at: Option<DateTime<Local>>,
+    /// 天气: (lucide 图标索引, 温度文本 "23°"), None = 无数据 (从未拉取
+    /// 成功), 状态栏隐藏天气块. 更新只覆盖, 拉取失败保留旧值
+    pub weather: Option<(i32, String)>,
 }
 
 impl AppState {
@@ -269,6 +278,10 @@ impl AppState {
                 Notice::warn(NoticeKind::CameraConnectFailed)
                     .with_detail(error.unwrap_or_default()),
             ),
+            UiEvent::Weather { icon, temp_c } => {
+                self.weather = Some((icon, format!("{temp_c}°")));
+                None
+            }
         }
     }
 
@@ -567,6 +580,25 @@ mod tests {
             .expect("notice");
         assert!(n2.detail.is_none());
         // 不进状态机: 通话状态不受监控事件影响
+        assert_eq!(app.phase, Phase::Idle);
+    }
+
+    #[test]
+    fn weather_updates_fields_without_touching_call_state() {
+        let mut app = AppState::default();
+        assert!(app.weather.is_none());
+        let n = app.on_event(UiEvent::Weather {
+            icon: 4,
+            temp_c: 23,
+        });
+        assert!(n.is_none());
+        assert_eq!(app.weather, Some((4, "23°".to_string())));
+        // 覆盖更新, 不动通话状态
+        app.on_event(UiEvent::Weather {
+            icon: 0,
+            temp_c: -2,
+        });
+        assert_eq!(app.weather, Some((0, "-2°".to_string())));
         assert_eq!(app.phase, Phase::Idle);
     }
 }

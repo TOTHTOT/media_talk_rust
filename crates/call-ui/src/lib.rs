@@ -1,7 +1,8 @@
 //! 通话 GUI: Slint 三态界面 (拨号/来电/通话中), SIP 信令在后台线程.
 //! 本文件只做编排 (run/smoke); 各职责在子模块:
 //! app=状态机, bridge=UI↔worker 桥, props=状态→属性, wiring=回调装配,
-//! persist=SQLite 装配, session=SIP worker, store=库, video=视频帧
+//! persist=SQLite 装配, session=SIP worker, store=库, video=视频帧,
+//! weather=天气拉取 (Open-Meteo)
 slint::include_modules!();
 
 pub mod app;
@@ -13,6 +14,7 @@ mod props;
 pub mod session;
 pub mod store;
 pub mod video;
+mod weather;
 mod wiring;
 pub use app::Phase;
 pub use session::GuiSipConfig;
@@ -49,6 +51,13 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     let _persist_timer = persist::start_persist_timer(&app, &store); // 保活
 
     let handle = bridge::UiHandle::new(ui.as_weak(), app.clone());
+    // 天气 worker: 启动即拉, 30min 周期; 城市变更经 wake channel 唤醒
+    let (weather_wake_tx, weather_wake_rx) = std::sync::mpsc::channel();
+    let _weather_worker = weather::spawn(handle.clone(), weather_wake_rx);
+    // 城市输入框初始值 (kv 读不到就是空串 = IP 自动定位)
+    if let Ok(city) = store.kv_get(weather::KV_CITY) {
+        ui.set_weather_city(city.unwrap_or_default().into());
+    }
     // 前端控件和后端程序通信
     let (cmd_tx, cmd_rx) = bridge::cmd_channel();
     // 视频接收的闭包 (监控查看与对讲通话共享同一个 tap)
@@ -58,6 +67,7 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     // UI 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性
     let monitor = std::rc::Rc::new(std::cell::RefCell::new(camera::MonitorController::new()));
     wiring::wire_callbacks(&ui, &app, &cmd_tx, &monitor);
+    wiring::wire_weather_settings(&ui, &store, weather_wake_tx);
     persist::wire_contacts(&ui, &store);
     camera::wire_settings(&ui, &store);
     camera::wire_monitor(&ui, &store, &monitor, &tap, &handle);

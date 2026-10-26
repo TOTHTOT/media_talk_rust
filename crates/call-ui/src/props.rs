@@ -13,6 +13,17 @@ pub(crate) fn sync_props(ui: &MainWindow, app: &app::AppState) {
     ui.set_peer(app.peer.as_str().into());
     ui.set_sip_registered(app.registered);
     ui.set_today_visitors(app.today_visitors as i32);
+    // 天气: 无数据时 icon=-1, 状态栏隐藏天气块
+    match &app.weather {
+        Some((icon, temp)) => {
+            ui.set_weather_icon(*icon);
+            ui.set_weather_temp(temp.as_str().into());
+        }
+        None => {
+            ui.set_weather_icon(-1);
+            ui.set_weather_temp("".into());
+        }
+    }
     // 主页"最近通话": 全量传给 ScrollView 渲染, 每条 72px, 溢出自动滚动
     let entries: Vec<CallLogEntry> = app
         .call_log

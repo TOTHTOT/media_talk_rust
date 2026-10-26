@@ -1,5 +1,7 @@
 //! UI 回调装配: 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性.
 
+use std::rc::Rc;
+
 use slint::ComponentHandle;
 use tracing::error;
 
@@ -106,5 +108,28 @@ pub(crate) fn wire_callbacks(
         if let Err(e) = slint::select_bundled_translation(&lang) {
             error!(lang = %lang, err = %e, "set language failed");
         }
+    });
+}
+
+/// 天气城市设置: 写 kv (weather worker 自己读库) + 清定位缓存 +
+/// 唤醒 worker 立即重定位. 留空 = IP 自动定位
+pub(crate) fn wire_weather_settings(
+    ui: &MainWindow,
+    store: &Rc<crate::store::Store>,
+    wake: std::sync::mpsc::Sender<()>,
+) {
+    let store = store.clone();
+    ui.on_set_city(move |city| {
+        let city = city.trim();
+        if let Err(e) = store.kv_set("weather_city", city) {
+            error!(err = %e, "save weather city failed");
+            return;
+        }
+        // 城市变了, 旧经纬度缓存作废
+        if let Err(e) = store.kv_set("weather_geo", "") {
+            error!(err = %e, "clear geo cache failed");
+        }
+        // 唤醒失败只丢一次立即重拉, 下一轮周期仍会刷, 不算错误
+        let _ = wake.send(());
     });
 }

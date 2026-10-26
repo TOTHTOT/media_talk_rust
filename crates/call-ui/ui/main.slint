@@ -52,6 +52,11 @@ export component MainWindow inherits MaterialWindow {
     property <string> status-time-text: @tr("{}  {} {}/{}", clock-text, weekday-short, date-month, date-day);
     in property <int> today-visitors: 0;
     in property <int> unread-messages: 0;
+    // 天气: icon 为 lucide 索引, -1 = 无数据 (weather worker 投递)
+    in property <int> weather-icon: -1;
+    in property <string> weather-temp: "";
+    // 设置页城市输入框初始值 (Rust 启动时从 kv 读入)
+    in-out property <string> weather-city: "";
     in property <[CallLogEntry]> call-log: [];
     in property <[ContactEntry]> contacts: [];
     in property <[CameraEntry]> cameras: [];
@@ -65,6 +70,8 @@ export component MainWindow inherits MaterialWindow {
     callback reject-call();
     callback hangup();
     callback set-language(string); // "zh" | "en"
+    // 天气城市设置 (留空 = IP 自动定位), 持久化在 kv 表
+    callback set-city(string);
     // 通讯录 CRUD (SQLite 持久化在 Rust store.rs)
     callback add-contact(string, string);
     callback update-contact(int, string, string);
@@ -171,6 +178,8 @@ export component MainWindow inherits MaterialWindow {
             sip-registered: root.sip-registered;
             account: root.account;
             status-time-text: root.status-time-text;
+            weather-icon: root.weather-icon;
+            weather-temp: root.weather-temp;
             show-toast(t) => { root.show-toast(t); }
         }
 
@@ -208,8 +217,10 @@ export component MainWindow inherits MaterialWindow {
                 camera-busy: root.camera-busy;
                 discovered-devices: root.discovered-devices;
                 camera-profiles: root.camera-profiles;
+                city: root.weather-city;
                 back => { root.page = 0; }
                 set-language(lang) => { root.set-language(lang); }
+                set-city(city) => { root.set-city(city); }
                 add-camera(n, u, user, p) => { root.add-camera(n, u, user, p); }
                 delete-camera(id) => { root.delete-camera(id); }
                 search-cameras => { root.search-cameras(); }

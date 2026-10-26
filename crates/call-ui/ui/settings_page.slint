@@ -15,8 +15,10 @@ export component SettingsPage inherits Rectangle {
     in property <bool> camera-busy: false;
     in property <[DiscoveredEntry]> discovered-devices: [];
     in property <[ProfileEntry]> camera-profiles: [];
+    in-out property <string> city: ""; // 天气城市, 主窗口从 kv 读入
     callback back();
     callback set-language(string); // "zh" | "en"
+    callback set-city(string); // 留空 = IP 自动定位
     callback add-camera(string, string, string, string);
     callback delete-camera(int);
     callback search-cameras();
@@ -52,7 +54,9 @@ export component SettingsPage inherits Rectangle {
                         // 宽度基准用页面宽度, 不能用父布局 (ScrollView 内容宽度
                         // 反过来依赖子元素, 构成绑定环)
                         width: min(640px, root.width - 48px);
+                        city <=> root.city;
                         set-language(lang) => { root.set-language(lang); }
+                        set-city(city) => { root.set-city(city); }
                     }
                 }
 

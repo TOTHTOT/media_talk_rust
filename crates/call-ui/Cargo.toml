@@ -29,6 +29,9 @@ ipcam-sip = { path = "../ipcam-sip" }
 parking_lot = { workspace = true }
 rusqlite = { workspace = true }
 directories = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [build-dependencies]
 slint-build = "1"

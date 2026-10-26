@@ -7,7 +7,7 @@ use tracing::info;
 use super::Store;
 use super::cameras::{CameraRow, kind_rank, rtsp_host};
 
-/// 建表 (IF NOT EXISTS, 新库老库幂等): contacts / call_records / cameras
+/// 建表 (IF NOT EXISTS, 新库老库幂等): contacts / call_records / cameras / kv
 ///
 ///
 ///
@@ -47,6 +47,10 @@ pub(super) fn create_tables(conn: &Connection) -> Result<()> {
             password   TEXT NOT NULL DEFAULT '',
             kind       TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        );
+        CREATE TABLE IF NOT EXISTS kv (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         );",
     )
     .context("建表失败")?;

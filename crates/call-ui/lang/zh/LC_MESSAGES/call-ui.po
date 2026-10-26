@@ -242,3 +242,9 @@ msgstr ""
 
 msgid "留空使用默认 123456"
 msgstr ""
+
+msgid "城市"
+msgstr ""
+
+msgid "留空自动定位"
+msgstr ""

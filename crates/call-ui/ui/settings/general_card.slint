@@ -2,6 +2,7 @@
 import {
     FilledCard,
     TextButton,
+    TextField,
     HorizontalDivider,
     MaterialText,
     MaterialTypography,
@@ -10,6 +11,10 @@ import {
 
 export component GeneralSettingsCard inherits FilledCard {
     callback set-language(string); // "zh" | "en"
+    // 天气城市: 回车/失焦提交, 留空 = IP 自动定位. in-out: 输入框
+    // 可编辑, 初始值由 Rust 启动时从 kv 读入
+    callback set-city(string);
+    in-out property <string> city: "";
 
     VerticalLayout {
         padding: 28px;
@@ -41,6 +46,18 @@ export component GeneralSettingsCard inherits FilledCard {
                 text: "English";
                 clicked => { root.set-language("en"); }
             }
+        }
+
+        HorizontalDivider {}
+
+        // 天气城市: 留空走 IP 自动定位. material TextField 的
+        // placeholder_text 不渲染 (只进 accessibility), 提示走 supporting-text
+        TextField {
+            width: 280px;
+            label: @tr("城市");
+            supporting-text: @tr("留空自动定位");
+            text <=> root.city;
+            accepted(city) => { root.set-city(city); }
         }
     }
 }
