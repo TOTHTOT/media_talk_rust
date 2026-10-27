@@ -34,22 +34,18 @@ export component MainWindow inherits MaterialWindow {
     in property <int> date-month: 1;
     in property <int> date-day: 1;
     in property <int> weekday-index: 0; // 0=周一 .. 6=周日
-    property <[string]> weekdays-short: [
+    // 星期只保留一种形式 (短版), 主页日期与状态栏共用
+    property <[string]> weekdays: [
         @tr("周一"), @tr("周二"), @tr("周三"),
         @tr("周四"), @tr("周五"), @tr("周六"), @tr("周日")
     ];
-    property <[string]> weekdays-long: [
-        @tr("星期一"), @tr("星期二"), @tr("星期三"),
-        @tr("星期四"), @tr("星期五"), @tr("星期六"), @tr("星期日")
-    ];
-    property <string> weekday-short: weekdays-short[weekday-index];
-    property <string> weekday-long:  weekdays-long[weekday-index];
+    property <string> weekday: weekdays[weekday-index];
     property <string> clock-text: clock-hour < 0 ? "--:--" :
         (clock-hour < 10 ? "0" : "") + clock-hour + ":" +
         (clock-minute < 10 ? "0" : "") + clock-minute;
     // @tr 只支持顺序占位 {}, 翻译侧可用 {0}/{1}/... 重排 (en: 星期提前)
-    property <string> date-text: @tr("{}月{}日 {}", date-month, date-day, weekday-long);
-    property <string> status-time-text: @tr("{}  {} {}/{}", clock-text, weekday-short, date-month, date-day);
+    property <string> date-text: @tr("{}月{}日 {}", date-month, date-day, weekday);
+    property <string> status-time-text: @tr("{}  {} {}/{}", clock-text, weekday, date-month, date-day);
     in property <int> today-visitors: 0;
     in property <int> unread-messages: 0;
     // 天气: icon 为 lucide 索引, -1 = 无数据 (weather worker 投递)
