@@ -51,8 +51,11 @@ export component MainWindow inherits MaterialWindow {
     // 天气: icon 为 lucide 索引, -1 = 无数据 (weather worker 投递)
     in property <int> weather-icon: -1;
     in property <string> weather-temp: "";
+    // 定位解析出的城市名 (weather worker 投递), 设置页"当前城市"提示
+    in property <string> weather-resolved-city: "";
     // 设置页城市输入框初始值 (Rust 启动时从 kv 读入)
     in-out property <string> weather-city: "";
+    in-out property <string> weather-key: "";
     in property <[CallLogEntry]> call-log: [];
     in property <[ContactEntry]> contacts: [];
     in property <[CameraEntry]> cameras: [];
@@ -68,6 +71,8 @@ export component MainWindow inherits MaterialWindow {
     callback set-language(string); // "zh" | "en"
     // 天气城市设置 (留空 = IP 自动定位), 持久化在 kv 表
     callback set-city(string);
+    // 和风 API KEY (可选), 持久化在 kv 表
+    callback set-weather-key(string);
     // 通讯录 CRUD (SQLite 持久化在 Rust store.rs)
     callback add-contact(string, string);
     callback update-contact(int, string, string);
@@ -174,8 +179,6 @@ export component MainWindow inherits MaterialWindow {
             sip-registered: root.sip-registered;
             account: root.account;
             status-time-text: root.status-time-text;
-            weather-icon: root.weather-icon;
-            weather-temp: root.weather-temp;
             show-toast(t) => { root.show-toast(t); }
         }
 
@@ -191,6 +194,8 @@ export component MainWindow inherits MaterialWindow {
                 date-text: root.date-text;
                 unread-messages: root.unread-messages;
                 today-visitors: root.today-visitors;
+                weather-icon: root.weather-icon;
+                weather-temp: root.weather-temp;
                 call-log: root.call-log;
                 show-toast(t) => { root.show-toast(t); }
                 open-page(p) => { root.page = p; }
@@ -214,9 +219,12 @@ export component MainWindow inherits MaterialWindow {
                 discovered-devices: root.discovered-devices;
                 camera-profiles: root.camera-profiles;
                 city: root.weather-city;
+                weather-key: root.weather-key;
+                resolved-city: root.weather-resolved-city;
                 back => { root.page = 0; }
                 set-language(lang) => { root.set-language(lang); }
                 set-city(city) => { root.set-city(city); }
+                set-weather-key(key) => { root.set-weather-key(key); }
                 add-camera(n, u, user, p) => { root.add-camera(n, u, user, p); }
                 delete-camera(id) => { root.delete-camera(id); }
                 search-cameras => { root.search-cameras(); }

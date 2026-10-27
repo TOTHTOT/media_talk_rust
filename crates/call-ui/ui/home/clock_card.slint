@@ -5,7 +5,7 @@ import {
     HorizontalDivider,
     MaterialText,
     MaterialTypography,
-    MaterialPalette,
+    MaterialPalette, Horizontal,
 } from "../../material-1.1.0/material.slint";
 import { Dot } from "../components.slint";
 
@@ -15,40 +15,99 @@ export component ClockCard inherits FilledCard {
     in property <string> date-text;
     in property <int> unread-messages;
     in property <int> today-visitors;
+    // 天气: icon 为 lucide 索引, -1 = 无数据隐藏 (weather 模块投递)
+    in property <int> weather-icon: -1;
+    in property <string> weather-temp: "";
     // 页面宽度, 用于时钟缩字号; 不能直接用卡片自身宽度 (布局环: 宽度←布局←文字偏好尺寸←字号←宽度)
     in property <length> page-width;
     callback show-toast(string);
 
     VerticalLayout {
-        alignment: center;
+        // 靠上布局: 父级不再整体居中, 顶部留少量内边距,
+        // 避免上半部分空一大片; 各段间距放宽, 避免挤成一团
+        alignment: start;
+        padding-top: 40px;
         padding-left: 28px;
         padding-right: 28px;
-        spacing: 8px;
+        spacing: 20px;
         MaterialText {
             text: root.clock-text;
             style: MaterialTypography.display_large;
             // 窗口变窄时缩字号, 避免时钟溢出卡片
-            font-size: min(64px, root.page-width / 16);
+            font-size: min(100px, root.page-width / 10);
+            horizontal-alignment: center;
         }
 
-        MaterialText {
-            text: root.date-text;
-            style: MaterialTypography.title_medium;
-            color: MaterialPalette.on_surface_variant;
+        // 日期 + 天气同一排, 水平居中, 间距收紧; 无数据时占位提示
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: center;
+
+            MaterialText {
+                text: root.date-text;
+                style: MaterialTypography.title_medium;
+                color: MaterialPalette.on_surface_variant;
+                vertical-alignment: center;
+            }
+
+            if root.weather-icon >= 0: HorizontalLayout {
+                spacing: 4px;
+                alignment: start;
+
+                Image {
+                    width: 20px;
+                    height: 20px;
+                    source: root.weather-icon == 0 ? @image-url("../icons/sun.svg")
+                        : root.weather-icon == 1 ? @image-url("../icons/cloud-sun.svg")
+                        : root.weather-icon == 3 ? @image-url("../icons/cloud-fog.svg")
+                        : root.weather-icon == 4 ? @image-url("../icons/cloud-rain.svg")
+                        : root.weather-icon == 5 ? @image-url("../icons/cloud-snow.svg")
+                        : root.weather-icon == 6 ? @image-url("../icons/cloud-lightning.svg")
+                        : @image-url("../icons/cloud.svg");
+                    colorize: MaterialPalette.on_surface_variant;
+                }
+
+                MaterialText {
+                    text: root.weather-temp;
+                    style: MaterialTypography.title_medium;
+                    color: MaterialPalette.on_surface;
+                    vertical-alignment: center;
+                }
+            }
+
+            // 无天气数据: 占位图标 + 提示, 不然日期行右侧空一片
+            if root.weather-icon < 0: HorizontalLayout {
+                spacing: 4px;
+                alignment: start;
+
+                Image {
+                    width: 20px;
+                    height: 20px;
+                    source: @image-url("../icons/cloud-off.svg");
+                    colorize: MaterialPalette.on_surface_variant;
+                }
+
+                MaterialText {
+                    text: @tr("暂无天气");
+                    style: MaterialTypography.title_medium;
+                    color: MaterialPalette.on_surface_variant;
+                    vertical-alignment: center;
+                }
+            }
         }
 
         Rectangle {
-            height: 4px;
+            height: 12px;
         }
 
         HorizontalDivider { }
 
         Rectangle {
-            height: 4px;
+            height: 12px;
         }
 
         HorizontalLayout {
-            spacing: 12px;
+            spacing: 16px;
             Dot {
                 tint: root.sip-registered ? #4ade80 : MaterialPalette.error;
                 width: 12px;
@@ -99,7 +158,7 @@ export component ClockCard inherits FilledCard {
         }
 
         Rectangle {
-            height: 8px;
+            height: 20px;
         }
         // 一键开锁 (DTMF 未接入, 气泡提示); 居中不满宽
         HorizontalLayout {

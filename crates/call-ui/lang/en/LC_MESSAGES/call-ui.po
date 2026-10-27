@@ -183,7 +183,6 @@ msgstr "Sat"
 msgid "周日"
 msgstr "Sun"
 
-
 msgid "{}月{}日 {}"
 msgstr "{2}, {0}/{1}"
 
@@ -276,3 +275,15 @@ msgstr "City"
 
 msgid "留空自动定位"
 msgstr "Leave empty for auto location"
+
+msgid "和风 Key"
+msgstr "QWeather Key"
+
+msgid "留空使用 Open-Meteo"
+msgstr "Leave empty to use Open-Meteo"
+
+msgid "暂无天气"
+msgstr "No weather"
+
+msgid "当前: {}"
+msgstr "Current: {}"

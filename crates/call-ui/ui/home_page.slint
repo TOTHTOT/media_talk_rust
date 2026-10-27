@@ -14,6 +14,8 @@ export component HomePage inherits Rectangle {
     in property <int> unread-messages;
     in property <int> today-visitors;
     in property <[CallLogEntry]> call-log;
+    in property <int> weather-icon: -1;
+    in property <string> weather-temp: "";
     callback show-toast(string);
     callback open-page(int); // 1=拨号 2=设置
     callback redial(string); // 最近通话点击回拨
@@ -31,6 +33,8 @@ export component HomePage inherits Rectangle {
             date-text: root.date-text;
             unread-messages: root.unread-messages;
             today-visitors: root.today-visitors;
+            weather-icon: root.weather-icon;
+            weather-temp: root.weather-temp;
             page-width: root.width;
             show-toast(t) => { root.show-toast(t); }
         }

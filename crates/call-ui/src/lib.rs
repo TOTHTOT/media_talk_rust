@@ -58,6 +58,10 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     if let Ok(city) = store.kv_get(weather::KV_CITY) {
         ui.set_weather_city(city.unwrap_or_default().into());
     }
+    // 和风 key 初始值 (kv 读不到就是空串 = Open-Meteo)
+    if let Ok(key) = store.kv_get(weather::KV_KEY) {
+        ui.set_weather_key(key.unwrap_or_default().into());
+    }
     // 前端控件和后端程序通信
     let (cmd_tx, cmd_rx) = bridge::cmd_channel();
     // 视频接收的闭包 (监控查看与对讲通话共享同一个 tap)

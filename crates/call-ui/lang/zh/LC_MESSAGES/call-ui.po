@@ -248,3 +248,15 @@ msgstr ""
 
 msgid "留空自动定位"
 msgstr ""
+
+msgid "和风 Key"
+msgstr ""
+
+msgid "留空使用 Open-Meteo"
+msgstr ""
+
+msgid "暂无天气"
+msgstr ""
+
+msgid "当前: {}"
+msgstr ""

@@ -69,10 +69,12 @@ pub enum UiEvent {
         error: Option<String>,
     },
     /// 天气刷新结果 (weather worker → 状态栏): 只覆盖天气字段,
-    /// 不动通话状态; temp_c 为摄氏度, 文本在这里格式化
+    /// 不动通话状态; temp_c 为摄氏度, 文本在这里格式化; city 为定位
+    /// 解析出的城市名 (设置页"当前城市"提示用)
     Weather {
         icon: i32,
         temp_c: i32,
+        city: String,
     },
 }
 
@@ -162,6 +164,8 @@ pub struct AppState {
     /// 天气: (lucide 图标索引, 温度文本 "23°"), None = 无数据 (从未拉取
     /// 成功), 状态栏隐藏天气块. 更新只覆盖, 拉取失败保留旧值
     pub weather: Option<(i32, String)>,
+    /// 定位解析出的城市名, 设置页"当前城市"提示用; 未定位成功为空串
+    pub weather_city: String,
 }
 
 impl AppState {
@@ -278,8 +282,9 @@ impl AppState {
                 Notice::warn(NoticeKind::CameraConnectFailed)
                     .with_detail(error.unwrap_or_default()),
             ),
-            UiEvent::Weather { icon, temp_c } => {
+            UiEvent::Weather { icon, temp_c, city } => {
                 self.weather = Some((icon, format!("{temp_c}°")));
+                self.weather_city = city;
                 None
             }
         }
@@ -587,18 +592,23 @@ mod tests {
     fn weather_updates_fields_without_touching_call_state() {
         let mut app = AppState::default();
         assert!(app.weather.is_none());
+        assert_eq!(app.weather_city, "");
         let n = app.on_event(UiEvent::Weather {
             icon: 4,
             temp_c: 23,
+            city: "深圳".into(),
         });
         assert!(n.is_none());
         assert_eq!(app.weather, Some((4, "23°".to_string())));
+        assert_eq!(app.weather_city, "深圳");
         // 覆盖更新, 不动通话状态
         app.on_event(UiEvent::Weather {
             icon: 0,
             temp_c: -2,
+            city: "广州".into(),
         });
         assert_eq!(app.weather, Some((0, "-2°".to_string())));
+        assert_eq!(app.weather_city, "广州");
         assert_eq!(app.phase, Phase::Idle);
     }
 }

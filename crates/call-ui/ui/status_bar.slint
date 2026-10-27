@@ -18,9 +18,6 @@ export component StatusBar inherits HorizontalLayout {
     in property <bool> sip-registered;
     in property <string> account;
     in property <string> status-time-text;
-    // 天气: icon 为 lucide 索引, -1 = 无数据隐藏 (weather 模块投递)
-    in property <int> weather-icon: -1;
-    in property <string> weather-temp: "";
     callback show-toast(string);
 
     padding-left: MaterialStyleMetrics.padding_12;
@@ -56,48 +53,18 @@ export component StatusBar inherits HorizontalLayout {
         }
     }
 
-    // 中区: 时间 (stretch 撑满，中间对齐), 天气图标在时钟左侧
+    // 中区: 时间 (stretch 撑满，中间对齐)
     VerticalLayout {
         horizontal-stretch: 1;
         alignment: center;
         padding-left: MaterialStyleMetrics.spacing_16;
         padding-right: MaterialStyleMetrics.spacing_16;
 
-        HorizontalLayout {
-            alignment: center;
-            spacing: 6px;
-
-            if root.weather-icon >= 0: HorizontalLayout {
-                spacing: 2px;
-                alignment: center;
-
-                Image {
-                    width: 18px;
-                    height: 18px;
-                    source: root.weather-icon == 0 ? @image-url("icons/sun.svg")
-                        : root.weather-icon == 1 ? @image-url("icons/cloud-sun.svg")
-                        : root.weather-icon == 3 ? @image-url("icons/cloud-fog.svg")
-                        : root.weather-icon == 4 ? @image-url("icons/cloud-rain.svg")
-                        : root.weather-icon == 5 ? @image-url("icons/cloud-snow.svg")
-                        : root.weather-icon == 6 ? @image-url("icons/cloud-lightning.svg")
-                        : @image-url("icons/cloud.svg");
-                    colorize: MaterialPalette.on_surface_variant;
-                }
-
-                MaterialText {
-                    text: root.weather-temp;
-                    style: MaterialTypography.title_medium;
-                    color: MaterialPalette.on_surface;
-                    vertical-alignment: center;
-                }
-            }
-
-            MaterialText {
-                text: root.status-time-text;
-                style: MaterialTypography.title_large;
-                color: MaterialPalette.on_surface;
-                horizontal-alignment: center;
-            }
+        MaterialText {
+            text: root.status-time-text;
+            style: MaterialTypography.title_large;
+            color: MaterialPalette.on_surface;
+            horizontal-alignment: center;
         }
     }
 

@@ -118,18 +118,40 @@ pub(crate) fn wire_weather_settings(
     store: &Rc<crate::store::Store>,
     wake: std::sync::mpsc::Sender<()>,
 ) {
+    {
+        let store = store.clone();
+        let wake = wake.clone();
+        ui.on_set_city(move |city| {
+            let city = city.trim();
+            if let Err(e) = store.kv_set("weather_city", city) {
+                error!(err = %e, "save weather city failed");
+                return;
+            }
+            // 城市变了, 两家定位缓存都作废
+            clear_geo_caches(&store);
+            // 唤醒失败只丢一次立即重拉, 下一轮周期仍会刷, 不算错误
+            let _ = wake.send(());
+        });
+    }
+    // 和风 key: 写 kv + 清缓存 + 唤醒. key 变更时按新 key 重新定位
     let store = store.clone();
-    ui.on_set_city(move |city| {
-        let city = city.trim();
-        if let Err(e) = store.kv_set("weather_city", city) {
-            error!(err = %e, "save weather city failed");
+    let wake = wake.clone();
+    ui.on_set_weather_key(move |key| {
+        let key = key.trim();
+        if let Err(e) = store.kv_set(crate::weather::KV_KEY, key) {
+            error!(err = %e, "save weather key failed");
             return;
         }
-        // 城市变了, 旧经纬度缓存作废
-        if let Err(e) = store.kv_set("weather_geo", "") {
-            error!(err = %e, "clear geo cache failed");
-        }
-        // 唤醒失败只丢一次立即重拉, 下一轮周期仍会刷, 不算错误
+        clear_geo_caches(&store);
         let _ = wake.send(());
     });
+}
+
+/// 清空 Open-Meteo (weather_geo) 与和风 (weather_loc) 两份定位缓存
+fn clear_geo_caches(store: &crate::store::Store) {
+    for k in [crate::weather::KV_GEO, crate::weather::KV_LOC] {
+        if let Err(e) = store.kv_set(k, "") {
+            error!(err = %e, key = k, "clear geo cache failed");
+        }
+    }
 }

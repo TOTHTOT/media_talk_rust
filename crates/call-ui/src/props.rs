@@ -24,6 +24,7 @@ pub(crate) fn sync_props(ui: &MainWindow, app: &app::AppState) {
             ui.set_weather_temp("".into());
         }
     }
+    ui.set_weather_resolved_city(app.weather_city.as_str().into());
     // 主页"最近通话": 全量传给 ScrollView 渲染, 每条 72px, 溢出自动滚动
     let entries: Vec<CallLogEntry> = app
         .call_log

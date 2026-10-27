@@ -28,3 +28,4 @@ cloud-fog
 cloud-rain
 cloud-snow
 cloud-lightning
+cloud-off
