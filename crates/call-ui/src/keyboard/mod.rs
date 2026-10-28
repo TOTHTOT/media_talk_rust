@@ -10,7 +10,7 @@
 mod engine;
 #[cfg(target_os = "linux")]
 mod rime;
-#[cfg(not(target_os = "linux"))]
+// linux 下也编译 stub: rime 初始化失败时降级为直通引擎 (见 rime.rs).
 mod stub;
 
 pub(crate) use engine::{Engine, EngineOutput, Mode};
@@ -63,7 +63,8 @@ impl Default for KeyboardController {
 }
 
 impl KeyboardController {
-    /// 用平台引擎创建控制器 (linux=rime 占位, 其他平台=直通 stub).
+    /// 用平台引擎创建控制器 (linux=librime, 初始化失败时 rime 内部降级直通;
+    /// 其他平台=直通 stub).
     pub fn new() -> Self {
         Self {
             engine: create_engine(),
