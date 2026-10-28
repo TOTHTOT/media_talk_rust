@@ -368,9 +368,7 @@ fn init_api() -> usize {
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        let busy = api
-            .is_maintenance_mode
-            .map_or(false, |f| unsafe { f() } != 0);
+        let busy = api.is_maintenance_mode.is_some_and(|f| unsafe { f() } != 0);
         if !busy {
             break;
         }
@@ -406,12 +404,9 @@ struct RimeEngine {
 impl RimeEngine {
     fn new() -> Option<Self> {
         let api = api()?;
-        let session = if let Some(create_session) = api.create_session {
-            // SAFETY: 初始化已完成 (api() 保证), 无参调用安全.
-            unsafe { create_session() }
-        } else {
-            return None;
-        };
+        let create_session = api.create_session?;
+        // SAFETY: 初始化已完成 (api() 保证), 无参调用安全.
+        let session = unsafe { create_session() };
         if session == 0 {
             tracing::warn!("rime_create_session() returned 0");
             return None;
