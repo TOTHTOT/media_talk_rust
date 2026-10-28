@@ -24,9 +24,11 @@ RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirrors.tuna.tsinghua.
     libgstreamer-plugins-base1.0-dev \
     libgstreamer1.0-dev \
     libinput-dev \
+    librime-dev \
     libudev-dev \
     libxkbcommon-dev \
     pkg-config \
+    rime-data-luna-pinyin \
     && rm -rf /var/lib/apt/lists/*
 
 # rustup / crates.io 换 rsproxy (字节) 镜像

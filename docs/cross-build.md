@@ -77,6 +77,9 @@ Dockerfile.rk3566 的 apt 段; 手工搭构建环境时照这份装):
 sudo apt install -y libgbm-dev libxkbcommon-dev libudev-dev libinput-dev libfontconfig-dev
 ```
 
+屏幕键盘中文输入还需要 `librime-dev` (头文件 + 链接 librime) 和
+`rime-data-luna-pinyin` (月拼音词库), 见下节.
+
 `libfontconfig-dev` 是 slint kms 路径经 `yeslogic-fontconfig-sys` 引入的
 字体查找依赖, build script 用 pkg-config 找 `fontconfig.pc`, 容器里缺它
 cargo build 必败 (focal 仓库里有这个包).
@@ -86,6 +89,22 @@ cargo build 必败 (focal 仓库里有这个包).
 noseat 不走 libseat, 代价是进程要自己拿 DRM master — root 或
 systemd unit 里 `AmbientCapabilities=CAP_SYS_ADMIN`; 板上本来就是
 root 部署, 无额外成本.
+
+### 屏幕键盘中文输入 (librime)
+
+屏幕键盘的中文拼音输入内嵌系统 librime (`call-ui/src/keyboard/rime.rs`,
+仅 linux 编译, `#[link(name = "rime")]` 直链):
+
+```bash
+sudo apt install -y librime-dev rime-data-luna-pinyin
+```
+
+- rime 数据目录默认 `/usr/share/rime-data`, Debian 系的
+  `rime-data-luna-pinyin` 正好装在这里; 用自定义词库路径时设环境变量
+  `RIME_DATA_DIR` 覆盖 (rime.rs 代码内默认值 + env 优先)
+- 首次启动 librime 会做一次部署 (maintenance), 可能阻塞数秒; 之后
+  会话懒加载, 不占启动时间
+- 内存占用约 30-60MB (拼音引擎 + 词库), 嵌入式场景按需评估
 
 ### feature 开关
 
