@@ -1,13 +1,16 @@
 //! 通话 GUI: Slint 三态界面 (拨号/来电/通话中), SIP 信令在后台线程.
 //! 本文件只做编排 (run/smoke); 各职责在子模块:
 //! app=状态机, bridge=UI↔worker 桥, props=状态→属性, wiring=回调装配,
-//! persist=SQLite 装配, session=SIP worker, store=库, video=视频帧,
-//! weather=天气拉取 (Open-Meteo)
+//! keyboard=屏幕键盘引擎与控制器, persist=SQLite 装配, session=SIP worker,
+//! store=库, video=视频帧, weather=天气拉取 (Open-Meteo)
 slint::include_modules!();
 
 pub mod app;
 pub mod bridge;
 mod camera;
+// reason: Task 2 装配 (lib.rs 回调接线) 后自然消费, 此前控制器/引擎仅测试调用方
+#[allow(dead_code)]
+mod keyboard;
 mod media;
 mod persist;
 mod props;
