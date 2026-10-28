@@ -22,6 +22,17 @@ export component ClockCard inherits FilledCard {
     in property <length> page-width;
     callback show-toast(string);
 
+    // 天气图标表: 顺序必须与 Rust weather.rs 的 ICON_* 常量一一对应
+    property <[image]> weather-icons: [
+        @image-url("../icons/sun.svg"), @image-url("../icons/moon-star.svg"),
+        @image-url("../icons/cloud-sun.svg"), @image-url("../icons/cloud-moon.svg"),
+        @image-url("../icons/cloud.svg"), @image-url("../icons/cloud-drizzle.svg"),
+        @image-url("../icons/cloud-rain.svg"), @image-url("../icons/cloud-rain-wind.svg"),
+        @image-url("../icons/cloud-snow.svg"), @image-url("../icons/cloud-lightning.svg"),
+        @image-url("../icons/cloud-hail.svg"), @image-url("../icons/cloud-fog.svg"),
+        @image-url("../icons/haze.svg"), @image-url("../icons/wind.svg"),
+    ];
+
     VerticalLayout {
         // 靠上布局: 父级不再整体居中, 顶部留少量内边距,
         // 避免上半部分空一大片; 各段间距放宽, 避免挤成一团
@@ -57,12 +68,9 @@ export component ClockCard inherits FilledCard {
                 Image {
                     width: 20px;
                     height: 20px;
-                    source: root.weather-icon == 0 ? @image-url("../icons/sun.svg")
-                        : root.weather-icon == 1 ? @image-url("../icons/cloud-sun.svg")
-                        : root.weather-icon == 3 ? @image-url("../icons/cloud-fog.svg")
-                        : root.weather-icon == 4 ? @image-url("../icons/cloud-rain.svg")
-                        : root.weather-icon == 5 ? @image-url("../icons/cloud-snow.svg")
-                        : root.weather-icon == 6 ? @image-url("../icons/cloud-lightning.svg")
+                    // 索引由 Rust 侧保证在表内, 兜底云图标防越界
+                    source: root.weather-icon < root.weather-icons.length
+                        ? root.weather-icons[root.weather-icon]
                         : @image-url("../icons/cloud.svg");
                     colorize: MaterialPalette.on_surface_variant;
                 }

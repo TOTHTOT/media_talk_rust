@@ -20,12 +20,19 @@ phone-off
 pencil
 trash-2
 menu
-# 天气 (status_bar 天气块)
+# 天气 (主页时钟卡天气块, 顺序对应 weather.rs 的 ICON_* 索引)
 sun
+moon-star
 cloud-sun
+cloud-moon
 cloud
-cloud-fog
+cloud-drizzle
 cloud-rain
+cloud-rain-wind
 cloud-snow
 cloud-lightning
+cloud-hail
+cloud-fog
+haze
+wind
 cloud-off
