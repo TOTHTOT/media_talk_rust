@@ -147,6 +147,19 @@ pub(crate) fn wire_weather_settings(
     });
 }
 
+/// 屏幕键盘焦点登记: KbTextField 聚焦/全失焦 → 控制器 set_focus.
+/// 无聚焦输入框时控制器吞掉上屏与删框指令 (见 keyboard/mod.rs)
+pub(crate) fn wire_keyboard(
+    ui: &MainWindow,
+    kb: &Rc<std::cell::RefCell<crate::keyboard::KeyboardController>>,
+) {
+    let kb = kb.clone();
+    ui.on_kb_field_focused(move |id| {
+        kb.borrow_mut()
+            .set_focus(if id >= 0 { Some(id as u32) } else { None });
+    });
+}
+
 /// 清空 Open-Meteo (weather_geo) 与和风 (weather_loc) 两份定位缓存
 fn clear_geo_caches(store: &crate::store::Store) {
     for k in [crate::weather::KV_GEO, crate::weather::KV_LOC] {

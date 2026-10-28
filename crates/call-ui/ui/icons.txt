@@ -20,6 +20,8 @@ phone-off
 pencil
 trash-2
 menu
+# 屏幕键盘退格键
+delete
 # 天气 (主页时钟卡天气块, 顺序对应 weather.rs 的 ICON_* 索引)
 sun
 moon-star

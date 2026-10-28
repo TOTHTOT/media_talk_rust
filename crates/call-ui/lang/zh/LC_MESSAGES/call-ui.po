@@ -260,3 +260,9 @@ msgstr ""
 
 msgid "当前: {}"
 msgstr ""
+
+msgid "完成"
+msgstr ""
+
+msgid "空格"
+msgstr ""

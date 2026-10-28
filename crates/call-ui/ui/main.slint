@@ -13,6 +13,7 @@ import { CallLogEntry, ContactEntry, CameraEntry, DiscoveredEntry, ProfileEntry,
 import { OutgoingCallOverlay } from "components/outgoing_call.slint";
 import { IncomingCallOverlay } from "components/incoming_call.slint";
 import { StatusBar } from "status_bar.slint";
+import { Keyboard } from "keyboard.slint";
 import { HomePage } from "home_page.slint";
 import { DialPage } from "dial_page.slint";
 import { SettingsPage } from "settings_page.slint";
@@ -90,6 +91,27 @@ export component MainWindow inherits MaterialWindow {
     // level 决定呈现 (0 info / 1 warn → toast, 2 error → 顶部错误条),
     // detail 可选 (空串 = 无), 用于系统错误原文或后端指定提示
     callback notify(level: int, kind: int, detail: string);
+
+    // 屏幕键盘属性表 (实施计划 Task 2; Rust 侧 KeyboardController 装配回写,
+    // 聚焦的 KbTextField 监听 kb-commit-seq 拍振完成上屏)
+    in property <bool> kb-visible: false;
+    in property <int> kb-mode: 0; // 0=zh 1=en 2=num
+    in property <bool> kb-zh-available: false;
+    in property <string> kb-preedit: "";
+    in property <[string]> kb-candidates: [];
+    // 上屏拍振: 每次上屏 seq +1, text 为追加文本; delete-field=true 时删输入框末字符
+    in property <int> kb-commit-seq: 0;
+    in property <string> kb-commit-text: "";
+    in property <bool> kb-delete-field: false;
+    callback kb-key-tapped(string);
+    callback kb-backspace();
+    callback kb-candidate(int);
+    callback kb-space();
+    // slint 不允许属性与回调同名, 契约中的 kb-mode(int) 回调改名 kb-set-mode
+    callback kb-set-mode(int);
+    callback kb-dismiss();
+    // 输入框聚焦登记: field-id 聚焦 / -1 全失焦 (wiring.rs → controller.set_focus)
+    callback kb-field-focused(int);
 
     property <string> displayed-error <=> root.error-text;
     error-timer := Timer {
@@ -284,5 +306,34 @@ export component MainWindow inherits MaterialWindow {
         height: 100%;
         text: root.toast;
         shown: root.toast != "";
+    }
+
+    // ===== 屏幕键盘: 底部滑出浮层, 不参与主布局 (z 序最高的同级层) =====
+    if root.kb-visible: Keyboard {
+        width: 100%;
+        y: parent.height - self.height;
+        height: 45%;
+        kb-mode: root.kb-mode;
+        kb-zh-available: root.kb-zh-available;
+        kb-preedit: root.kb-preedit;
+        kb-candidates: root.kb-candidates;
+        key-tapped(k) => {
+            root.kb-key-tapped(k);
+        }
+        backspace => {
+            root.kb-backspace();
+        }
+        candidate(i) => {
+            root.kb-candidate(i);
+        }
+        space => {
+            root.kb-space();
+        }
+        mode(m) => {
+            root.kb-set-mode(m);
+        }
+        dismiss => {
+            root.kb-dismiss();
+        }
     }
 }

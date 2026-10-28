@@ -287,3 +287,9 @@ msgstr "No weather"
 
 msgid "当前: {}"
 msgstr "Current: {}"
+
+msgid "完成"
+msgstr "Done"
+
+msgid "空格"
+msgstr "Space"

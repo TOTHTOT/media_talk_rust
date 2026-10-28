@@ -1,0 +1,270 @@
+// 屏幕键盘: 底部滑出面板, 纯触屏 (QWERTY 字母区 zh/en 共用 + 数字符号页)
+// 结构: 候选栏 (仅中文模式) + 键盘主体 + 底行功能键
+// 上屏走 main.slint 根部 kb-commit-* 属性拍振, 由聚焦的 KbTextField 消费
+import {
+    MaterialText,
+    MaterialTypography,
+    ScrollView,
+} from "../material-1.1.0/material.slint";
+
+// 单个按键: Rectangle + TouchArea + MaterialText, 按压时整体 opacity 反馈
+component KbKey inherits Rectangle {
+    in property <string> label: "";
+    in property <image> icon;
+
+    callback tapped(string);
+
+    height: 44px;
+    horizontal-stretch: 1; // 默认等宽铺满整行, 实例可覆盖 (空格 4 键宽等)
+    background: #2b2b2b;
+    border-radius: 8px;
+    clip: true;
+    opacity: touch.pressed ? 0.55 : 1;
+
+    touch := TouchArea {
+        clicked => {
+            root.tapped(root.label);
+        }
+    }
+
+    if root.label != "": MaterialText {
+        width: 100%;
+        height: 100%;
+        text: root.label;
+        style: MaterialTypography.body_large;
+        color: #e6e6e6;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    if root.icon.width > 0 && root.icon.height > 0: Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 22px;
+        height: 22px;
+        source: root.icon;
+        colorize: #e6e6e6;
+    }
+}
+
+export component Keyboard inherits Rectangle {
+    // 属性表见实施计划 Task 2 (main.slint 根部同名属性透传)
+    in property <int> kb-mode: 0; // 0=zh 1=en 2=num
+    in property <bool> kb-zh-available: false;
+    in property <string> kb-preedit: "";
+    in property <[string]> kb-candidates: [];
+
+    callback key-tapped(string);
+    callback backspace();
+    callback candidate(int);
+    callback space();
+    callback mode(int);
+    callback dismiss();
+
+    // 模式循环: zh → en → num → 回卷; 中文不可用时跳过 zh
+    function cycle-mode(m: int) -> int {
+        if m == 0 {
+            return 1;
+        }
+        if m == 1 {
+            return 2;
+        }
+        return root.kb-zh-available ? 0 : 1;
+    }
+
+    background: #1f1f1fe0;
+    border-top-left-radius: 16px;
+    border-top-right-radius: 16px;
+    clip: true;
+
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 8px;
+
+        // ===== 候选栏: 仅中文模式且有预编辑/候选时显示, en/num 隐藏整行 =====
+        if root.kb-mode == 0 && (root.kb-preedit != "" || root.kb-candidates.length > 0): HorizontalLayout {
+            spacing: 8px;
+            height: 40px;
+
+            // 预编辑拼音串: 点击退一步 (发 backspace)
+            Rectangle {
+                horizontal-stretch: 0;
+                min-width: 72px;
+                height: 40px;
+                background: #2b2b2b;
+                border-radius: 8px;
+
+                preedit-touch := TouchArea {
+                    clicked => {
+                        root.backspace();
+                    }
+                }
+
+                MaterialText {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text: root.kb-preedit;
+                    style: MaterialTypography.body_large;
+                    color: #9ec1ff;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            // 候选词横向排布, 触摸滑动, 点击上屏 candidate(index)
+            ScrollView {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                min-height: 0px;
+                vertical_scrollbar_policy: ScrollBarPolicy.always_off;
+                horizontal_scrollbar_policy: ScrollBarPolicy.always_off;
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    for word[i] in root.kb-candidates: KbKey {
+                        label: word;
+                        height: 40px;
+                        min-width: 64px;
+                        horizontal-stretch: 0; // 候选键按内容定宽, 不拉伸
+                        tapped => {
+                            root.candidate(i);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===== 键盘主体: zh/en 共用 QWERTY 三行, num 切数字符号页 =====
+        if root.kb-mode != 2: VerticalLayout {
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                for letter in ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"]: KbKey {
+                    label: letter;
+                    tapped => {
+                        root.key-tapped(letter);
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Rectangle {
+                    horizontal-stretch: 0.5;
+                }
+
+                for letter in ["a", "s", "d", "f", "g", "h", "j", "k", "l"]: KbKey {
+                    label: letter;
+                    tapped => {
+                        root.key-tapped(letter);
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 0.5;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Rectangle {
+                    horizontal-stretch: 1.5;
+                }
+
+                for letter in ["z", "x", "c", "v", "b", "n", "m"]: KbKey {
+                    label: letter;
+                    tapped => {
+                        root.key-tapped(letter);
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1.5;
+                }
+            }
+        }
+
+        if root.kb-mode == 2: VerticalLayout {
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                for digit in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]: KbKey {
+                    label: digit;
+                    tapped => {
+                        root.key-tapped(digit);
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                for symbol in ["@", "#", "$", "%", "&", "*", "-", "+", "=", "("]: KbKey {
+                    label: symbol;
+                    tapped => {
+                        root.key-tapped(symbol);
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                for symbol in [")", "[", "]", ":", ";", "/", ".", ",", "?", "!"]: KbKey {
+                    label: symbol;
+                    tapped => {
+                        root.key-tapped(symbol);
+                    }
+                }
+            }
+        }
+
+        // ===== 底行功能键: 模式切换 / 空格 / 退格 / 完成 =====
+        HorizontalLayout {
+            spacing: 8px;
+
+            // 模式切换: "中"/"EN"/"123" 循环; 中文不可用时隐藏 (回退 en/num 两档)
+            KbKey {
+                visible: root.kb-zh-available || root.kb-mode != 0;
+                label: root.kb-mode == 0 ? "中" : root.kb-mode == 1 ? "EN" : "123";
+                tapped => {
+                    root.mode(root.cycle-mode(root.kb-mode));
+                }
+            }
+
+            KbKey {
+                label: @tr("空格");
+                horizontal-stretch: 4; // 空格占 4 键宽
+                tapped => {
+                    root.space();
+                }
+            }
+
+            KbKey {
+                icon: @image-url("icons/delete.svg");
+                tapped => {
+                    root.backspace();
+                }
+            }
+
+            KbKey {
+                label: @tr("完成");
+                horizontal-stretch: 1.5;
+                tapped => {
+                    root.dismiss();
+                }
+            }
+        }
+    }
+}

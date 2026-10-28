@@ -56,8 +56,7 @@ impl KeyboardController {
         }
     }
 
-    /// 当前引擎模式 (仅测试断言用, Task 2 装配经 take_output 回写 kb-mode).
-    #[cfg(test)]
+    /// 当前引擎模式 (装配时回写 kb-mode 初值, 测试断言模式切换).
     pub(crate) fn mode(&self) -> Mode {
         self.engine.mode()
     }

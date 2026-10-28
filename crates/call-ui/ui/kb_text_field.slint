@@ -1,0 +1,90 @@
+// 屏幕键盘输入框: 内含 material TextField, 经 kb-commit-* 属性拍振上屏.
+// 上屏语义 (计划 v1): 提交文本追加到末尾; 退格删末字符 (不跟踪光标位置).
+//
+// 实现说明: slint 1.18 字符串无 substring/char-at (语言内建仅有
+// character-count 等, 见 i-slint-compiler lookup.rs), 无法直接切尾字符;
+// 因此退格用"变更快照栈"实现 —— changed text 记录每次变更前的值,
+// 退格拍振弹栈恢复上一个快照, 效果等价于删末字符 (含中文等多字节字符,
+// 快照是完整字符串, 与字符宽度无关).
+import { TextField } from "../material-1.1.0/material.slint";
+
+export component KbTextField inherits Rectangle {
+    in-out property <string> text: "";
+    in property <string> label: "";
+    in property <string> supporting-text: "";
+    in property <InputType> input-type;
+    // 输入框标识: 聚焦时经 focus-changed 登记到键盘控制器 (Task 3 分配)
+    in property <int> field-id: -1;
+    // 上屏拍振: seq 每次上屏 +1 (Rust 侧装配, 见 main.slint 根部属性表)
+    in property <int> commit-seq: 0;
+    in property <string> commit-text: "";
+    in property <bool> delete-field: false;
+
+    callback edited(string);
+    callback accepted(string);
+    // 聚焦发 field-id, 全失焦发 -1 (Rust 侧 KeyboardController::set_focus)
+    callback focus-changed(int);
+
+    // 内部焦点镜像 (内层 TextField 的 out has-focus 单向绑定进来)
+    property <bool> priv-focused: field.has-focus;
+    // 退格快照栈: text 每次变更前的值; 以及栈底之前的当前值镜像
+    property <[string]> text-history: [];
+    property <string> text-shadow: "";
+    // 退格恢复期间置位, 禁止 changed text 把恢复动作本身再记入历史
+    property <bool> restoring: false;
+
+    changed priv-focused => {
+        root.focus-changed(root.priv-focused ? root.field-id : -1);
+    }
+
+    changed text => {
+        if root.restoring {
+            return;
+        }
+        // 起步/首次外部种子同步只建立镜像不入栈; 此时 text 必为 "", 弹栈
+        // 兜底同样回到 "", 与不记录等价
+        if root.text-shadow == "" && root.text-history.length == 0 {
+            root.text-shadow = root.text;
+            return;
+        }
+        root.text-history.push(root.text-shadow);
+        root.text-shadow = root.text;
+    }
+
+    changed commit-seq => {
+        if !root.priv-focused {
+            return;
+        }
+        if root.delete-field {
+            root.restoring = true;
+            if root.text-history.length > 0 {
+                root.text = root.text-history[root.text-history.length - 1];
+                root.text-history.remove(root.text-history.length - 1);
+            } else {
+                root.text = "";
+            }
+            root.text-shadow = root.text;
+            root.restoring = false;
+        } else if root.commit-text != "" {
+            root.text = root.text + root.commit-text;
+        }
+        root.edited(root.text);
+    }
+
+    field := TextField {
+        width: 100%;
+        label: root.label;
+        supporting-text: root.supporting-text;
+        input-type: root.input-type;
+        text <=> root.text;
+        edited(t) => {
+            root.edited(t);
+        }
+        accepted(t) => {
+            root.accepted(t);
+        }
+    }
+
+    // 根高度跟随内容 (label + 输入行 + supporting-text), 宽度由布局给
+    height: field.height;
+}
