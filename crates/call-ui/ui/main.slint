@@ -14,6 +14,7 @@ import { OutgoingCallOverlay } from "components/outgoing_call.slint";
 import { IncomingCallOverlay } from "components/incoming_call.slint";
 import { StatusBar } from "status_bar.slint";
 import { Keyboard } from "keyboard.slint";
+import { KeyboardCtx } from "kb_text_field.slint";
 import { HomePage } from "home_page.slint";
 import { DialPage } from "dial_page.slint";
 import { SettingsPage } from "settings_page.slint";
@@ -112,6 +113,16 @@ export component MainWindow inherits MaterialWindow {
     callback kb-dismiss();
     // 输入框聚焦登记: field-id 聚焦 / -1 全失焦 (wiring.rs → controller.set_focus)
     callback kb-field-focused(int);
+
+    // 屏幕键盘全局上下文镜像 (Task 3): slint 元素体内不能绑定 global 属性
+    // (绑定语法仅限本元素属性), 根部用 changed 处理器把 kb-* 属性镜像进
+    // KeyboardCtx, 任意深度的 KbTextField 实例直读. visible 方向相反:
+    // 实例聚焦/失焦直写 KeyboardCtx.visible, 键盘浮层改读它; "完成"键由
+    // Rust 写 root.kb-visible, 经此同步进来
+    changed kb-visible => { KeyboardCtx.visible = root.kb-visible; }
+    changed kb-commit-seq => { KeyboardCtx.commit-seq = root.kb-commit-seq; }
+    changed kb-commit-text => { KeyboardCtx.commit-text = root.kb-commit-text; }
+    changed kb-delete-field => { KeyboardCtx.delete-field = root.kb-delete-field; }
 
     property <string> displayed-error <=> root.error-text;
     error-timer := Timer {
@@ -232,6 +243,7 @@ export component MainWindow inherits MaterialWindow {
                 add-contact(name, num) => { root.add-contact(name, num); }
                 update-contact(id, name, num) => { root.update-contact(id, name, num); }
                 delete-contact(id) => { root.delete-contact(id); }
+                kb-field-focused(id) => { root.kb-field-focused(id); }
             }
 
             // 设置页
@@ -253,6 +265,7 @@ export component MainWindow inherits MaterialWindow {
                 fetch-camera-profiles(x, user, p) => { root.fetch-camera-profiles(x, user, p); }
                 save-discovered-camera(x, n, user, p, t) => { root.save-discovered-camera(x, n, user, p, t); }
                 show-toast(t) => { root.show-toast(t); }
+                kb-field-focused(id) => { root.kb-field-focused(id); }
             }
 
             // 监控页
@@ -309,7 +322,9 @@ export component MainWindow inherits MaterialWindow {
     }
 
     // ===== 屏幕键盘: 底部滑出浮层, 不参与主布局 (z 序最高的同级层) =====
-    if root.kb-visible: Keyboard {
+    // 显隐读 KeyboardCtx.visible: 聚焦实例直写弹键盘, "完成"键经 Rust 写
+    // root.kb-visible → 根部 changed 处理器同步进 global
+    if KeyboardCtx.visible: Keyboard {
         width: 100%;
         y: parent.height - self.height;
         height: 45%;

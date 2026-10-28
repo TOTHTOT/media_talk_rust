@@ -16,6 +16,8 @@ export component CameraDialogs inherits Rectangle {
     callback fetch-camera-profiles(string, string, string);
     callback save-discovered-camera(string, string, string, string, string);
     callback add-camera(string, string, string, string);
+    // 屏幕键盘聚焦登记透传 (ManualCameraDialog KbTextField → 根部 → Rust)
+    callback kb-field-focused(int);
 
     // 对话框: 0=无 1=搜索添加 2=手动添加
     property <int> mode: 0;
@@ -79,6 +81,7 @@ export component CameraDialogs inherits Rectangle {
                     root.mode = 0;
                 }
                 cancelled => { root.mode = 0; }
+                kb-field-focused(id) => { root.kb-field-focused(id); }
             }
         }
     }

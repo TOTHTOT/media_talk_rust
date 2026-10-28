@@ -2,14 +2,17 @@
 import {
     FilledButton,
     TextButton,
-    TextField,
     MaterialText,
     MaterialTypography,
 } from "../../material-1.1.0/material.slint";
+import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
 
 export component ManualCameraDialog inherits VerticalLayout {
     callback add-camera(string, string, string, string);
     callback cancelled();
+    // 屏幕键盘聚焦登记: 由 KbTextField focus-changed 转发, 逐层透传根部
+    // root.kb-field-focused (Rust KeyboardController::set_focus)
+    callback kb-field-focused(int);
 
     padding: 24px;
     spacing: 12px;
@@ -19,24 +22,60 @@ export component ManualCameraDialog inherits VerticalLayout {
         style: MaterialTypography.title_large;
     }
 
-    m-name := TextField {
+    m-name := KbTextField {
+        // field-id 对应 Rust 侧 keyboard::FIELD_CAM_NAME
+        field-id: 5;
         label: @tr("名称");
+        commit-seq: KeyboardCtx.commit-seq;
+        commit-text: KeyboardCtx.commit-text;
+        delete-field: KeyboardCtx.delete-field;
+        focus-changed(id) => {
+            KeyboardCtx.visible = id >= 0;
+            root.kb-field-focused(id);
+        }
     }
 
-    m-uri := TextField {
+    m-uri := KbTextField {
+        // field-id 对应 Rust 侧 keyboard::FIELD_CAM_URI
+        field-id: 6;
         label: "RTSP URL";
+        commit-seq: KeyboardCtx.commit-seq;
+        commit-text: KeyboardCtx.commit-text;
+        delete-field: KeyboardCtx.delete-field;
+        focus-changed(id) => {
+            KeyboardCtx.visible = id >= 0;
+            root.kb-field-focused(id);
+        }
     }
 
-    m-user := TextField {
+    m-user := KbTextField {
+        // field-id 对应 Rust 侧 keyboard::FIELD_CAM_USER
+        field-id: 7;
         label: @tr("用户名");
         // 这套 material TextField 不渲染 placeholder, 提示走 supporting-text
         supporting-text: @tr("留空使用默认 admin");
+        commit-seq: KeyboardCtx.commit-seq;
+        commit-text: KeyboardCtx.commit-text;
+        delete-field: KeyboardCtx.delete-field;
+        focus-changed(id) => {
+            KeyboardCtx.visible = id >= 0;
+            root.kb-field-focused(id);
+        }
     }
 
-    m-pass := TextField {
+    m-pass := KbTextField {
+        // field-id 对应 Rust 侧 keyboard::FIELD_CAM_PASS
+        field-id: 8;
         label: @tr("密码");
         supporting-text: @tr("留空使用默认 123456");
         input-type: password;
+        commit-seq: KeyboardCtx.commit-seq;
+        commit-text: KeyboardCtx.commit-text;
+        delete-field: KeyboardCtx.delete-field;
+        focus-changed(id) => {
+            KeyboardCtx.visible = id >= 0;
+            root.kb-field-focused(id);
+        }
     }
 
     Rectangle { vertical-stretch: 1; }

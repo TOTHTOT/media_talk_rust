@@ -2,12 +2,12 @@
 import {
     FilledCard,
     TextButton,
-    TextField,
     HorizontalDivider,
     MaterialText,
     MaterialTypography,
     MaterialPalette,
 } from "../../material-1.1.0/material.slint";
+import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
 
 export component GeneralSettingsCard inherits FilledCard {
     callback set-language(string); // "zh" | "en"
@@ -16,6 +16,9 @@ export component GeneralSettingsCard inherits FilledCard {
     callback set-city(string);
     // 和风 API KEY (可选): 留空走 Open-Meteo. 密码样式遮蔽
     callback set-weather-key(string);
+    // 屏幕键盘聚焦登记: 由 KbTextField focus-changed 转发, 逐层透传根部
+    // root.kb-field-focused (Rust KeyboardController::set_focus)
+    callback kb-field-focused(int);
     in-out property <string> city: "";
     in-out property <string> weather-key: "";
     // 当前生效城市 (worker 定位结果), 输入框提示用
@@ -58,23 +61,41 @@ export component GeneralSettingsCard inherits FilledCard {
         // 天气城市: 留空走 IP 自动定位. material TextField 的
         // placeholder_text 不渲染 (只进 accessibility), 提示走 supporting-text;
         // 定位成功后提示当前生效城市. edited 每次输入即提交 (不依赖回车),
-        // 退出设置页时输入框的值必然已生效
-        TextField {
+        // 退出设置页时输入框的值必然已生效. 聚焦弹屏幕键盘 (KbTextField)
+        KbTextField {
+            // field-id 对应 Rust 侧 keyboard::FIELD_CITY
+            field-id: 1;
             label: @tr("城市");
             supporting-text: root.resolved-city == ""
                 ? @tr("留空自动定位")
                 : @tr("当前: {}", root.resolved-city);
             text <=> root.city;
+            commit-seq: KeyboardCtx.commit-seq;
+            commit-text: KeyboardCtx.commit-text;
+            delete-field: KeyboardCtx.delete-field;
             edited(city) => { root.set-city(city); }
+            focus-changed(id) => {
+                KeyboardCtx.visible = id >= 0;
+                root.kb-field-focused(id);
+            }
         }
 
         // 和风 key: 密码样式遮蔽, 留空回退免 key 的 Open-Meteo. 同上, 输入即提交
-        TextField {
+        KbTextField {
+            // field-id 对应 Rust 侧 keyboard::FIELD_WEATHER_KEY
+            field-id: 2;
             label: @tr("和风 Key");
             supporting-text: @tr("留空使用 Open-Meteo");
             input-type: password;
             text <=> root.weather-key;
+            commit-seq: KeyboardCtx.commit-seq;
+            commit-text: KeyboardCtx.commit-text;
+            delete-field: KeyboardCtx.delete-field;
             edited(key) => { root.set-weather-key(key); }
+            focus-changed(id) => {
+                KeyboardCtx.visible = id >= 0;
+                root.kb-field-focused(id);
+            }
         }
     }
 }

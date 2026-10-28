@@ -155,8 +155,9 @@ pub(crate) fn wire_keyboard(
 ) {
     let kb = kb.clone();
     ui.on_kb_field_focused(move |id| {
-        kb.borrow_mut()
-            .set_focus(if id >= 0 { Some(id as u32) } else { None });
+        let field = if id >= 0 { Some(id as u32) } else { None };
+        tracing::debug!(field = ?field.map(crate::keyboard::field_name), "kb field focus changed");
+        kb.borrow_mut().set_focus(field);
     });
 }
 

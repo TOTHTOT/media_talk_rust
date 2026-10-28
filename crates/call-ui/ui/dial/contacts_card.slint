@@ -1,6 +1,5 @@
 // 拨号页左侧通讯录卡: 添加/编辑表单 + 联系人列表 (数据落 SQLite, 回调透传 Rust)
 import {
-    TextField,
     TextButton,
     FilledButton,
     FilledCard,
@@ -13,6 +12,7 @@ import {
 } from "../../material-1.1.0/material.slint";
 import { ScrollView } from "std-widgets.slint";
 import { ContactEntry } from "../components.slint";
+import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
 
 export component ContactsCard inherits FilledCard {
     in property <[ContactEntry]> contacts: [];
@@ -21,6 +21,9 @@ export component ContactsCard inherits FilledCard {
     callback delete-contact(int); // id
     callback pick-number(string); // 点列表行, 把号码交给拨号盘
     callback dial(string); // 行内电话图标快捷拨打
+    // 屏幕键盘聚焦登记: 由 KbTextField focus-changed 转发, 逐层透传根部
+    // root.kb-field-focused (Rust KeyboardController::set_focus)
+    callback kb-field-focused(int);
 
     // 编辑态: -1=新增, 否则为正在编辑的联系人 id
     property <int> editing-id: -1;
@@ -41,15 +44,33 @@ export component ContactsCard inherits FilledCard {
             style: MaterialTypography.title_large;
         }
 
-        // 添加/编辑表单 (编辑时点列表行的铅笔载入)
-        name-input := TextField {
+        // 添加/编辑表单 (编辑时点列表行的铅笔载入). KbTextField 聚焦弹屏幕键盘
+        name-input := KbTextField {
             vertical-stretch: 0;
-            placeholder-text: @tr("姓名");
+            // field-id 对应 Rust 侧 keyboard::FIELD_CONTACT_NAME
+            field-id: 3;
+            label: @tr("姓名");
+            commit-seq: KeyboardCtx.commit-seq;
+            commit-text: KeyboardCtx.commit-text;
+            delete-field: KeyboardCtx.delete-field;
+            focus-changed(id) => {
+                KeyboardCtx.visible = id >= 0;
+                root.kb-field-focused(id);
+            }
         }
 
-        number-input := TextField {
+        number-input := KbTextField {
             vertical-stretch: 0;
-            placeholder-text: @tr("号码");
+            // field-id 对应 Rust 侧 keyboard::FIELD_CONTACT_NUMBER
+            field-id: 4;
+            label: @tr("号码");
+            commit-seq: KeyboardCtx.commit-seq;
+            commit-text: KeyboardCtx.commit-text;
+            delete-field: KeyboardCtx.delete-field;
+            focus-changed(id) => {
+                KeyboardCtx.visible = id >= 0;
+                root.kb-field-focused(id);
+            }
         }
 
         HorizontalLayout {

@@ -23,6 +23,32 @@ use stub::create_engine;
 /// 输入框标识: 聚焦时由 wiring 注册, 控制器只关心有无焦点.
 pub(crate) type FieldId = u32;
 
+/// 已接入屏幕键盘的输入框标识 (Task 3), 与 slint 侧 KbTextField field-id
+/// 字面量一一对应; 控制器不区分子段, 这里只为日志可读性维护命名表.
+pub(crate) const FIELD_CITY: FieldId = 1;
+pub(crate) const FIELD_WEATHER_KEY: FieldId = 2;
+pub(crate) const FIELD_CONTACT_NAME: FieldId = 3;
+pub(crate) const FIELD_CONTACT_NUMBER: FieldId = 4;
+pub(crate) const FIELD_CAM_NAME: FieldId = 5;
+pub(crate) const FIELD_CAM_URI: FieldId = 6;
+pub(crate) const FIELD_CAM_USER: FieldId = 7;
+pub(crate) const FIELD_CAM_PASS: FieldId = 8;
+
+/// field-id 的标识名, 仅聚焦登记日志用 (见 wiring.rs).
+pub(crate) fn field_name(id: FieldId) -> &'static str {
+    match id {
+        FIELD_CITY => "city",
+        FIELD_WEATHER_KEY => "weather-key",
+        FIELD_CONTACT_NAME => "contact-name",
+        FIELD_CONTACT_NUMBER => "contact-number",
+        FIELD_CAM_NAME => "cam-name",
+        FIELD_CAM_URI => "cam-uri",
+        FIELD_CAM_USER => "cam-user",
+        FIELD_CAM_PASS => "cam-pass",
+        _ => "unknown",
+    }
+}
+
 /// 键盘控制器: slint 回调 → 引擎 → 缓存输出, 供 wiring 拍振取走.
 pub(crate) struct KeyboardController {
     engine: Box<dyn Engine>,

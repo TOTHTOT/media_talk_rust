@@ -28,6 +28,8 @@ export component SettingsPage inherits Rectangle {
     callback fetch-camera-profiles(string, string, string);
     callback save-discovered-camera(string, string, string, string, string);
     callback show-toast(string);
+    // 屏幕键盘聚焦登记透传 (KbTextField → 根部 → Rust)
+    callback kb-field-focused(int);
 
     background: MaterialPalette.background;
 
@@ -63,6 +65,7 @@ export component SettingsPage inherits Rectangle {
                         set-language(lang) => { root.set-language(lang); }
                         set-city(city) => { root.set-city(city); }
                         set-weather-key(key) => { root.set-weather-key(key); }
+                        kb-field-focused(id) => { root.kb-field-focused(id); }
                     }
                 }
 
@@ -97,5 +100,6 @@ export component SettingsPage inherits Rectangle {
             root.save-discovered-camera(xaddr, name, user, pass, token);
         }
         add-camera(name, uri, user, pass) => { root.add-camera(name, uri, user, pass); }
+        kb-field-focused(id) => { root.kb-field-focused(id); }
     }
 }
