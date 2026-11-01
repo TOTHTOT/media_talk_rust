@@ -8,6 +8,7 @@ fMP4 通过 WebSocket 推到浏览器里用 `MediaSource` 播放。
 
 - **目标板**: `radxa-cm3-rpi-cm4-io` (SoC `rk356x`,aarch64,GNU libc 2.31)
 - **工具链**: `cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 --release`
+  (备选: `Dockerfile.rk3566` 在 Apple Silicon 上原生 aarch64 编译,见 Quickstart 3)
 - **运行时**: 板端 `librockchip_mpp.so` 必须位于动态链接器搜索路径 (见
   `media_talk_rust.service` 注释)
 
@@ -28,6 +29,8 @@ media_talk_rust/
 ├── web/                    # 前端 index.html + play.js
 ├── scripts/smoke.sh        # 烟雾测试
 ├── media_talk_rust.service     # systemd unit
+├── Dockerfile.rk3566       # 泰山派 RK3566 原生 aarch64 构建镜像
+├── .dockerignore           # 构建上下文瘦身 (排除本机 target/ 等)
 ├── .github/workflows/      # CI: fmt / clippy / test / cross-check
 └── openspec/changes/       # OpenSpec change specs
 ```
@@ -62,11 +65,107 @@ cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 \
 # 产物: target/aarch64-unknown-linux-gnu.2.31/release/media_talk_rust
 ```
 
-### 3. 部署到板端
+### 3. Docker 原生编译 (泰山派 RK3566, 推荐在 Apple Silicon 上)
+
+`Dockerfile.rk3566` 用一个 aarch64 的 Ubuntu 20.04 容器直接 `cargo build`,
+**容器本身就是 aarch64-linux, 是原生编译, 不走 QEMU 模拟**。相比
+`cargo zigbuild`, 不用自己攒 sysroot: GStreamer / ALSA / fontconfig / librime
+等依赖由 apt 装进镜像, `pkg-config` 天然指向正确路径。
+
+选 Ubuntu 20.04 是因为它的 glibc 是 **2.31**, 正好对齐
+`aarch64-unknown-linux-gnu.2.31` 这个目标, 编出来的二进制在板子上不会
+`GLIBC_2.xx not found`。
+
+#### 3.1 构建命令
+
+```bash
+# 在仓库根目录执行 (首次要拉基础镜像 + apt 装依赖, 视网络 10~20 分钟)
+docker build --network host -f Dockerfile.rk3566 -t media_talk_rust:rk3566 .
+```
+
+实测: Apple M4 (arm64 Docker Desktop 29.4.1), 从空 target 完整编译约 **2m23s**
+(Dockerfile 没有挂 cargo cache mount, 改代码后重跑仍会重编全部依赖)。
+
+两个容易踩的点:
+
+- **`--network host` 不能省**。Docker Desktop 的
+  `~/.docker/config.json` 里配了 `host.docker.internal:7890` 代理, 但构建
+  容器连不到宿主机 ClashX 的 7890(会报
+  `Unable to connect to host.docker.internal:7890`, apt 的 deb 全部下载失败)。
+  用 `--network host` 让构建容器共享宿主网络, 走 `127.0.0.1:7890` 就通了。
+  如果你本机没配代理, 这个参数去掉也无妨。
+- **基础镜像拉不动时先手动拉国内源**:
+
+  ```bash
+  docker pull docker.m.daocloud.io/arm64v8/ubuntu:20.04
+  docker tag  docker.m.daocloud.io/arm64v8/ubuntu:20.04 arm64v8/ubuntu:20.04
+  ```
+
+构建上下文会排除 `target/` 等目录 (本机 `target/` 有 5G+, 不排会白等很久),
+规则在 `.dockerignore`。
+
+#### 3.2 镜像里做了什么
+
+| 阶段 | 内容 |
+| --- | --- |
+| 基础镜像 | `arm64v8/ubuntu:20.04`, 提供 glibc 2.31 |
+| apt 源 | 换成清华 `ubuntu-ports`(arm64 的包在 ports 仓库), 先 `http:` 装好 `ca-certificates` 再走 https |
+| 构建依赖 | `build-essential` `curl` `git` `pkg-config`、GStreamer dev(`libgstreamer1.0-dev` + `plugins-base`)、`libasound2-dev`、`libfontconfig-dev`、`libgbm-dev`、`libinput-dev`、`libxkbcommon-dev`、`libudev-dev`、`librime-dev` + `librime-data-luna-pinyin`(输入法) |
+| Rust | rustup 走 rsproxy 镜像, 默认 toolchain 即 `stable-aarch64-unknown-linux-gnu`; crates.io 换 rsproxy sparse 源 |
+| 编译 | `cargo build --release -p media_talk_rust --features hw-decode,kms` |
+| 产物位置 | 镜像内 `/media_talk_rust` |
+
+`kms` 特性 = Slint 的 `backend-linuxkms-noseat` + 软件渲染: 板子 (Armbian
+无桌面) 上 `gui` 子命令直接画到 DRM/KMS, 不依赖 X11/Wayland。用 `noseat`
+是因为 focal 没有 `libseat-dev`; `noseat` 后端需要进程持有 DRM master,
+所以 `gui` 要以 **root** 跑 (`serve` 不需要, 默认 unit 仍以 mediatalk 用户
+跑 serve)。
+
+`call-ui/build.rs` 会在构建时联网下载 lucide 图标和 material 组件, 所以
+构建机必须能出网 (容器内如走不通, 就是上面代理那个问题)。
+
+#### 3.3 取出并验证二进制
+
+```bash
+mkdir -p dist
+cid=$(docker create media_talk_rust:rk3566)
+docker cp "$cid:/media_talk_rust" dist/media_talk_rust
+docker rm "$cid"
+
+file dist/media_talk_rust
+# → ELF 64-bit LSB pie executable, ARM aarch64, dynamically linked,
+#   interpreter /lib/ld-linux-aarch64.so.1 ... for GNU/Linux 3.7.0, stripped
+ls -lh dist/media_talk_rust   # ≈ 30M
+
+# 容器内跑一下, 确认子命令都在
+docker run --rm --entrypoint /media_talk_rust media_talk_rust:rk3566 --help
+```
+
+#### 3.4 板端运行时依赖
+
+二进制是**动态链接**的 (约 54 个 `.so`), 板子上要有对应运行库
+(Debian/Armbian 系):
+
+```bash
+sudo apt install -y \
+  libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-alsa libasound2 \
+  libfontconfig1 libgbm1 libinput10 libxkbcommon0 libudev1 \
+  librime1 librime-data-luna-pinyin
+# 检查有没有漏
+ldd dist/media_talk_rust | grep "not found"
+```
+
+`librockchip_mpp.so` (hw-decode 用) 的路径配置见下一节。缺库/缺 GStreamer
+元件的排查方式见 [GStreamer 拉流](#gstreamer-拉流) 一节。
+
+### 4. 部署到板端
 
 ```bash
 # 上传二进制 + systemd unit
-scp target/aarch64-unknown-linux-gnu.2.31/release/media_talk_rust \
+# (zigbuild 产物在 target/aarch64-unknown-linux-gnu.2.31/release/,
+#  Docker 构建的产物在 dist/, 二选一)
+scp dist/media_talk_rust \
     radxa@radxa-cm3-rpi-cm4-io:/usr/local/bin/
 scp media_talk_rust.service radxa@radxa-cm3-rpi-cm4-io:/etc/systemd/system/
 
@@ -84,7 +183,7 @@ sudo systemctl enable --now media_talk_rust
 journalctl -u media_talk_rust -f
 ```
 
-### 4. 浏览器播放
+### 5. 浏览器播放
 
 打开 `http://<板子>:8080/`,左侧列出发现的摄像头,点 profile 后右侧 `<video>` 走
 `MediaSource` 拉 WebSocket 上的 fMP4 帧。
@@ -213,6 +312,16 @@ media_talk_rust serve --rtsp-url "rtsp://..." --audio-out hw:0,0
 
 ```shell
 cargo run --release --bin media_talk_rust gui --video-src file:./assets/oceans.mp4 --audio-src file:./assets/oceans.mp4 --server 192.168.2.113:5060 -u 1003 --local-ip 192.168.2.109
+```
+
+2. 用 Docker 镜像重编板端二进制并取出 (详见 Quickstart 3)
+
+```shell
+docker build --network host -f Dockerfile.rk3566 -t media_talk_rust:rk3566 .
+docker create --name media_talk_tmp media_talk_rust:rk3566 \
+  && docker cp media_talk_tmp:/media_talk_rust dist/media_talk_rust \
+  && docker rm media_talk_tmp
+file dist/media_talk_rust   # ARM aarch64
 ```
 
 ## 已知问题
