@@ -1,0 +1,9 @@
+# 构建上下文瘦身: 本机 target 有 5G+, 不需要进镜像
+target/
+.git/
+.idea/
+.vscode/
+**/node_modules/
+assets/*.mp4
+.DS_Store
+**/*.swp
