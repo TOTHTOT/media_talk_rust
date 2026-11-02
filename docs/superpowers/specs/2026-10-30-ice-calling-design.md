@@ -64,17 +64,31 @@
 数据自动在选定通路上流动, 这层零自研。代价是手写最小 FFI (~15 个符号,
 libnice 0.1.x API 稳定) + glib main context 线程。
 
-绑定选型调研 (2026-10-30, crates.io 实测):
+绑定选型调研 (2026-10-30 ~ 11-02, crates.io/GitHub/本机实测):
+
 - **libnice-sys 0.4.0 / libnice 0.3.0**: 2021-01 停更, 虽 C API 冻结大概率
   仍可编译, 网络关键路径不押注无人维护的 crate; 其生成结果可作抄符号参考
 - **nice-gst-meet-sys 0.3.0** (2023-06): gst-meet 实战绑定, 同样停更,
   且为其场景定制
 - **Windows 链接实测可用**: gstreamer msvc 捆绑包含 `nice.lib` +
   `nice-10.dll`, 无需另装 libnice 开发包; 板端/CI 走 libnice-dev
-- **纯 Rust 备选 librice 0.4.3** (rice-proto 同族, 2026-05 仍在维护):
-  `component.send()/recv()` 数据面 + `to_sdp_string()`, 集成要自写
-  appsink↔agent 媒体桥 (逐包用户态拷贝); webrtc-rs 的 webrtc-ice 同理
-  但活跃度不如 librice。二者媒体桥成本相同, 均弃用, 记此为备选存档
+
+**纯 Rust 备选 librice 深度调研 (弃用, 存档)**:
+- 作者 Matthew Waters = GStreamer WebRTC 栈/webrtcbin/gst-plugins-rs 作者;
+  WebKit 已采用其 sans-IO 内核做 WebRTC 候选收集; NLnet 资助; repo 持续活跃
+- **致命伤 (2026-11-02 本机实证)**: crates.io 版作为普通 cargo 依赖
+  **编不过**——`rice-c` build.rs 经 system-deps 探测系统级 `rice-proto`
+  C 库, 实测 panic: `pkg-config --libs rice-proto` not found。其 CI 每 job
+  装 cargo-c + pkg-config 且基于完整工作区 checkout 才能绿, 消费方需
+  vendor 工作区 + cargo-c, 比 libnice 系统依赖更重
+- `librice` 0.4.3 (2026-05) 若可构建则 API 尚可: `component.send()/recv()`
+  数据面 + `to_sdp_string()`, 但作者自述 "ICE 层效率与 API 体验还需更多
+  工作", 0.x 快速变动 (0.2→0.4 五个月)
+- **rice-proto** (sans-IO 内核) 是唯一纯 cargo 可编译路径: 零 C 工具链,
+  但要自写 IO 驱动 (~300 行, poll/poll_transmit/handle_packet/定时器) +
+  appsink↔agent 媒体桥 (~150 行), 且驱动代码绑在变动期 API 上需长期跟改
+- webrtc-rs 的 webrtc-ice 同理媒体桥成本, 活跃度不如 librice
+- 结论: 验证期 libnice; 产品期若 gst-plugins-rs 完成切换再评估 rice 系
 
 依据: nicesink/nicesrc 媒体零桥接 + 项目已有 rime-sys 手写 FFI 成功先例
 (~30 函数, librime 1.5), 手写 libnice FFI 风险低
@@ -173,11 +187,22 @@ trait Signaling {
 
 | 风险 | 应对 |
 |---|---|
-| 双方对称 NAT 无 TURN 打不通 | 已知限制; 测试拓扑至少一端避开对称 NAT; 产品期 coturn |
-| libnice GObject FFI + glib 线程桥 | 面很小 (~15 符号); 信号统一走 channel 回 tokio, 不在回调里做业务 |
+| GObject 线程纪律 (最大技术风险): libnice API 大多非线程安全, 信号回调只在 glib 线程发生 | 编码规则落成任务: 所有 nice_* 调用 marshal 回单一 glib 线程; 回调只做塞 channel; LAN 测不出跨线程 bug, 评审时专门盯 |
+| 版本分裂排障噪音: 开发机 libnice 0.1.23+gst 1.28 vs 板端 apt 0.1.22+gst 1.24 | 板上排障先核对 gst-inspect 版本再怀疑代码; 差异记入部署文档 |
+| 明文 RTP 无加密, 媒体面进不了产品 | 验证期接受; 产品期换 webrtcbin 或加 srtp 元件 (ICE 模块/blob/信令设计不受影响) |
 | nicesink/nicesrc 极少被直接使用 (rank none) | 已两端 gst-inspect 确认存在; 出问题退 FFI send/attach_recv 直桥 |
+| 非 trickle 建连秒级延迟 | 验证期接受; 产品期 trickle 或预收集 |
+| 资源回收易漏 (agent/glib 线程/管线), 典型"二次呼叫挂死" | teardown 走固定顺序并加单测/日志; 挂断场景列入测试计划 |
+| 双方对称 NAT 无 TURN 打不通 | 已知限制; 测试拓扑至少一端避开对称 NAT; 产品期 coturn |
 | 板子软编 CPU | 验证场景 640×480@15; 上硬件编码器是产品期话题 |
 | 免费 STUN 不可靠 | 验证期可接受; 产品期自建 coturn (STUN 成本极低) |
+| 板端 gstnice 插件未实证 (armbian noble 理论有, 泰山派镜像可能裁剪) | 计划第一步板上 gst-inspect; 缺则 apt 装 gstreamer1.0-nice |
+
+## 实施顺序建议
+
+风险前置: 先做 FFI 冒烟原型 (仅 FFI 层 + LAN 双实例打洞 demo, 不接媒体
+管线, 估 1 天), 通了再推进媒体与 UI。不痛快可及时换 rice-proto 内核,
+沉没成本一天。
 
 ## 产品化路线 (阶段 1, 本文档不实施)
 
