@@ -293,3 +293,18 @@ msgstr "Done"
 
 msgid "空格"
 msgstr "Space"
+
+msgid "关闭屏幕"
+msgstr "Turn off screen"
+
+msgid "当前平台不支持关闭屏幕"
+msgstr "Turning off the screen is only supported on RK3566"
+
+msgid "屏幕控制失败"
+msgstr "Screen control failed"
+
+msgid "屏幕亮度"
+msgstr "Screen brightness"
+
+msgid "当前平台不支持亮度调节"
+msgstr "Brightness adjustment is not supported on this platform"

@@ -104,6 +104,10 @@ pub enum NoticeKind {
     CameraConnectFailed = 5,
     /// 同 IP 设备已保存过同等/更高画质的流, 本次未重复添加
     CameraDuplicate = 6,
+    /// 熄屏/亮屏硬件操作失败 (RK3566 背光/DPMS 写 sysfs 失败)
+    ScreenFailed = 7,
+    /// 当前平台没有可写背光, 亮度调节不可用
+    BrightnessUnsupported = 8,
 }
 
 /// 后端 → UI 的通知 (toast/错误条统一走它): 分级 + 结构化 kind.

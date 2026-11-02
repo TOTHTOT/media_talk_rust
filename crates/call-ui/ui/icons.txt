@@ -38,3 +38,5 @@ cloud-fog
 haze
 wind
 cloud-off
+power
+power-off

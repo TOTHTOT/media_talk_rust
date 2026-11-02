@@ -1,5 +1,5 @@
 // 顶部状态栏: 自定义 HorizontalLayout.
-// 布局: [SIP图标+账号] [时间(居中)] [布防+wifi图标]
+// 布局: [SIP图标+账号] [时间(居中)] [布防+wifi+电源图标]
 import { IconButton } from "../material-1.1.0/ui/components/icon_button.slint";
 import {
     MaterialStyleMetrics,
@@ -18,7 +18,10 @@ export component StatusBar inherits HorizontalLayout {
     in property <bool> sip-registered;
     in property <string> account;
     in property <string> status-time-text;
+    // true = 当前平台支持真实熄屏 (RK3566), false = 点击只弹 toast
+    in property <bool> screen-control-available: false;
     callback show-toast(string);
+    callback screen-power-pressed();
 
     padding-left: MaterialStyleMetrics.padding_12;
     padding-right: MaterialStyleMetrics.padding_12;
@@ -68,7 +71,7 @@ export component StatusBar inherits HorizontalLayout {
         }
     }
 
-    // 右区: 布防 + wifi 图标
+    // 右区: 布防 + wifi + 电源 (熄屏) 图标
     HorizontalLayout {
         spacing: MaterialStyleMetrics.spacing_4;
 
@@ -82,6 +85,18 @@ export component StatusBar inherits HorizontalLayout {
             icon: @image-url("icons/wifi.svg");
             tooltip: @tr("网络");
             clicked => { root.show-toast(@tr("网络状态")); }
+        }
+
+        IconButton {
+            icon: @image-url("icons/power.svg");
+            tooltip: @tr("关闭屏幕");
+            clicked => {
+                if (root.screen-control-available) {
+                    root.screen-power-pressed();
+                } else {
+                    root.show-toast(@tr("当前平台不支持关闭屏幕"));
+                }
+            }
         }
     }
 }
