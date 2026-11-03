@@ -66,6 +66,12 @@ export component MainWindow inherits MaterialWindow {
     in property <[DiscoveredEntry]> discovered-devices: [];
     in property <[ProfileEntry]> camera-profiles: [];
     in property <int> monitor-selected-id: -1;
+    // 熄屏: 仅 RK3566 支持真实关闭显示; 其他平台由状态栏按钮弹 toast.
+    // screen-off 由 Rust 在硬件操作成功后回写, 控制全屏遮罩与触摸唤醒.
+    in property <bool> screen-control-available: false;
+    in property <bool> screen-off: false;
+    // 屏幕亮度: 所有平台都显示滑块, 不支持时松手弹 toast
+    in-out property <float> screen-brightness: 80;
     callback dial(string);
     callback accept-call();
     callback reject-call();
@@ -88,6 +94,11 @@ export component MainWindow inherits MaterialWindow {
     // 监控页: 选中查看 / 离开停止 (Rust 侧 MonitorController)
     callback monitor-select(int);
     callback monitor-leave();
+    // 熄屏开关: 状态栏电源键 / 熄屏遮罩任意点击唤醒
+    callback screen-power-pressed();
+    callback screen-wake();
+    // 屏幕亮度调节 (设置页滑块松手时提交)
+    callback set-screen-brightness(float);
     // 后端通知管线入口 (app.rs Notice): 前端按 kind 解析文案 (i18n),
     // level 决定呈现 (0 info / 1 warn → toast, 2 error → 顶部错误条),
     // detail 可选 (空串 = 无), 用于系统错误原文或后端指定提示
@@ -135,7 +146,7 @@ export component MainWindow inherits MaterialWindow {
 
     // 通知文案: kind 与 app.rs NoticeKind 一一对应 (0=Raw 1=RegisterFailed
     // 2=CallFailed 3=CameraSaved 4=CameraSaveFailed 5=CameraConnectFailed
-    // 6=CameraDuplicate),
+    // 6=CameraDuplicate 7=ScreenFailed 8=BrightnessUnsupported),
     // 按 kind 出本地化文案; detail 可选, 原样附加不翻译
     function notice-msg(kind: int, detail: string) -> string {
         if (kind == 1) {
@@ -155,6 +166,12 @@ export component MainWindow inherits MaterialWindow {
         }
         if (kind == 6) {
             return @tr("该设备已存在, 未重复添加");
+        }
+        if (kind == 7) {
+            return detail == "" ? @tr("屏幕控制失败") : @tr("屏幕控制失败") + ": " + detail;
+        }
+        if (kind == 8) {
+            return @tr("当前平台不支持亮度调节");
         }
         return detail;
     }
@@ -212,7 +229,9 @@ export component MainWindow inherits MaterialWindow {
             sip-registered: root.sip-registered;
             account: root.account;
             status-time-text: root.status-time-text;
+            screen-control-available: root.screen-control-available;
             show-toast(t) => { root.show-toast(t); }
+            screen-power-pressed => { root.screen-power-pressed(); }
         }
 
         // 主页内容区: 根据 phase / page 切换子页面,
@@ -255,10 +274,12 @@ export component MainWindow inherits MaterialWindow {
                 city: root.weather-city;
                 weather-key: root.weather-key;
                 resolved-city: root.weather-resolved-city;
+                screen-brightness <=> root.screen-brightness;
                 back => { root.page = 0; }
                 set-language(lang) => { root.set-language(lang); }
                 set-city(city) => { root.set-city(city); }
                 set-weather-key(key) => { root.set-weather-key(key); }
+                set-screen-brightness(v) => { root.set-screen-brightness(v); }
                 add-camera(n, u, user, p) => { root.add-camera(n, u, user, p); }
                 delete-camera(id) => { root.delete-camera(id); }
                 search-cameras => { root.search-cameras(); }
@@ -349,6 +370,21 @@ export component MainWindow inherits MaterialWindow {
         }
         dismiss => {
             root.kb-dismiss();
+        }
+    }
+
+    // ===== 熄屏遮罩: 最顶层, 拦截业务点击; 任意触摸唤醒屏幕 =====
+    // 背光/DPMS 关闭后界面仍在运行, 此遮罩负责吞掉熄屏期间的误触
+    if root.screen-off: Rectangle {
+        width: 100%;
+        height: 100%;
+        z: 10;
+        background: #000000;
+
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => { root.screen-wake(); }
         }
     }
 }

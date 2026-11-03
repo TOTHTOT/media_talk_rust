@@ -6,6 +6,7 @@ import {
     MaterialText,
     MaterialTypography,
     MaterialPalette,
+    Slider,
 } from "../../material-1.1.0/material.slint";
 import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
 
@@ -23,6 +24,10 @@ export component GeneralSettingsCard inherits FilledCard {
     in-out property <string> weather-key: "";
     // 当前生效城市 (worker 定位结果), 输入框提示用
     in property <string> resolved-city: "";
+    // 屏幕亮度: 单位百分比. 所有平台都显示滑块, 不支持时由 Rust 侧
+    // 在松手回调里弹 toast (滑块本身仍可拖动)
+    in-out property <float> brightness: 80;
+    callback set-brightness(float);
 
     VerticalLayout {
         padding: 28px;
@@ -53,6 +58,45 @@ export component GeneralSettingsCard inherits FilledCard {
             TextButton {
                 text: "English";
                 clicked => { root.set-language("en"); }
+            }
+        }
+
+        HorizontalDivider {}
+
+        // 屏幕亮度: 所有平台都显示且可拖动; 不支持时松手由 Rust 侧弹 toast.
+        // 拖动只更新 UI, 松手才写 sysfs 并持久化, 避免拖动期间高频写背光.
+        HorizontalLayout {
+            spacing: 12px;
+
+            MaterialText {
+                text: @tr("屏幕亮度");
+                style: MaterialTypography.body_large;
+                color: MaterialPalette.on_surface_variant;
+                vertical-alignment: center;
+            }
+
+            // Slider 组件的根节点没有自身宽度, 直接放在布局里会塌成
+            // 只有滑块宽度; 套一层 stretch 容器并显式 100% 撑开轨道
+            HorizontalLayout {
+                horizontal-stretch: 1;
+                min-width: 120px;
+
+                Slider {
+                    width: 100%;
+                    minimum: 5;
+                    maximum: 100;
+                    value <=> root.brightness;
+                    released(v) => { root.set-brightness(v); }
+                }
+            }
+
+            MaterialText {
+                width: 48px;
+                text: round(root.brightness) + "%";
+                style: MaterialTypography.body_medium;
+                color: MaterialPalette.on_surface_variant;
+                horizontal-alignment: right;
+                vertical-alignment: center;
             }
         }
 

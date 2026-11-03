@@ -161,6 +161,125 @@ pub(crate) fn wire_keyboard(
     });
 }
 
+/// 熄屏开关 + 亮度: RK3566 上做真实硬件开关, 其他平台状态栏电源键只弹 toast.
+/// 硬件写失败时回滚 screen-off 并走通知管线提示, 避免界面显示黑屏但
+/// 背光其实没关 (或反过来).
+pub(crate) fn wire_screen(
+    ui: &MainWindow,
+    screen: &Rc<std::cell::RefCell<crate::screen::ScreenController>>,
+    store: &Rc<crate::store::Store>,
+) {
+    ui.set_screen_control_available(screen.borrow().supported());
+
+    // 亮度: 所有平台都显示滑块; 仅在检测到可写背光时应用.
+    // 启动时优先恢复 kv 中的用户值, 没有记录就沿用当前硬件亮度.
+    let brightness_available = screen.borrow().brightness_available();
+    if brightness_available {
+        let current = screen.borrow().brightness_percent().unwrap_or(80);
+        let saved = store
+            .kv_get(crate::screen::KV_BRIGHTNESS)
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<u32>().ok());
+        match saved {
+            Some(saved) => {
+                let target = saved.clamp(crate::screen::BRIGHTNESS_MIN_PERCENT, 100);
+                match screen.borrow_mut().set_brightness_percent(target) {
+                    Ok(()) => ui.set_screen_brightness(target as f32),
+                    Err(e) => {
+                        error!(err = %e, target, "apply saved brightness failed");
+                        ui.set_screen_brightness(current as f32);
+                    }
+                }
+            }
+            // 没有用户记录时沿用系统当前亮度, 不主动写硬件
+            None => ui.set_screen_brightness(current as f32),
+        }
+    }
+    // 不支持亮度的平台: 滑块仍可拖动, 松手时提示, 不写硬件
+    {
+        let (screen, store, weak) = (screen.clone(), store.clone(), ui.as_weak());
+        ui.on_set_screen_brightness(move |value| {
+            let Some(ui) = weak.upgrade() else { return };
+            if !brightness_available {
+                ui.invoke_notify(
+                    crate::app::NoticeLevel::Warn as i32,
+                    crate::app::NoticeKind::BrightnessUnsupported as i32,
+                    "".into(),
+                );
+                return;
+            }
+            let percent = value
+                .clamp(crate::screen::BRIGHTNESS_MIN_PERCENT as f32, 100.0)
+                .round() as u32;
+            let result = screen.borrow_mut().set_brightness_percent(percent);
+            match result {
+                Ok(()) => {
+                    ui.set_screen_brightness(percent as f32);
+                    if let Err(e) = store.kv_set(crate::screen::KV_BRIGHTNESS, &percent.to_string())
+                    {
+                        error!(err = %e, percent, "save brightness failed");
+                    }
+                }
+                Err(e) => {
+                    error!(err = %e, percent, "set brightness failed");
+                    let current = screen.borrow().brightness_percent().unwrap_or(percent);
+                    ui.set_screen_brightness(current as f32);
+                    ui.invoke_notify(
+                        crate::app::NoticeLevel::Warn as i32,
+                        crate::app::NoticeKind::ScreenFailed as i32,
+                        e.to_string().into(),
+                    );
+                }
+            }
+        });
+    }
+
+    {
+        let (screen, weak) = (screen.clone(), ui.as_weak());
+        ui.on_screen_power_pressed(move || {
+            let target = !screen.borrow().is_off();
+            let result = screen.borrow_mut().set_off(target);
+            let Some(ui) = weak.upgrade() else { return };
+            match result {
+                Ok(()) => ui.set_screen_off(target),
+                Err(e) => {
+                    error!(err = %e, "screen power toggle failed");
+                    ui.set_screen_off(screen.borrow().is_off());
+                    ui.invoke_notify(
+                        crate::app::NoticeLevel::Warn as i32,
+                        crate::app::NoticeKind::ScreenFailed as i32,
+                        e.to_string().into(),
+                    );
+                }
+            }
+        });
+    }
+    {
+        let (screen, weak) = (screen.clone(), ui.as_weak());
+        ui.on_screen_wake(move || {
+            match screen.borrow_mut().set_off(false) {
+                Ok(()) => {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_screen_off(false);
+                    }
+                }
+                Err(e) => {
+                    // 保持遮罩, 用户可继续点击重试; 提示走通知管线
+                    error!(err = %e, "screen wake failed");
+                    if let Some(ui) = weak.upgrade() {
+                        ui.invoke_notify(
+                            crate::app::NoticeLevel::Warn as i32,
+                            crate::app::NoticeKind::ScreenFailed as i32,
+                            e.to_string().into(),
+                        );
+                    }
+                }
+            }
+        });
+    }
+}
+
 /// 清空 Open-Meteo (weather_geo) 与和风 (weather_loc) 两份定位缓存
 fn clear_geo_caches(store: &crate::store::Store) {
     for k in [crate::weather::KV_GEO, crate::weather::KV_LOC] {

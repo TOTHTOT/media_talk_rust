@@ -12,6 +12,7 @@ mod keyboard;
 mod media;
 mod persist;
 mod props;
+mod screen;
 pub mod session;
 pub mod store;
 pub mod video;
@@ -87,6 +88,9 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     wiring::wire_callbacks(&ui, &app, &cmd_tx, &monitor);
     wiring::wire_weather_settings(&ui, &store, weather_wake_tx);
     wiring::wire_keyboard(&ui, &kb);
+    // 熄屏 + 亮度: RK3566 走背光/DPMS, 其他平台只由状态栏按钮弹 toast
+    let screen = std::rc::Rc::new(std::cell::RefCell::new(screen::ScreenController::new()));
+    wiring::wire_screen(&ui, &screen, &store);
     persist::wire_contacts(&ui, &store);
     camera::wire_settings(&ui, &store);
     camera::wire_monitor(&ui, &store, &monitor, &tap, &handle);

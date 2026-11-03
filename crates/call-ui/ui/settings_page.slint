@@ -18,10 +18,12 @@ export component SettingsPage inherits Rectangle {
     in-out property <string> city: ""; // 天气城市, 主窗口从 kv 读入
     in-out property <string> weather-key: ""; // 和风 key (可选)
     in property <string> resolved-city: ""; // 当前生效城市 (worker 定位结果)
+    in-out property <float> screen-brightness: 80;
     callback back();
     callback set-language(string); // "zh" | "en"
     callback set-city(string); // 留空 = IP 自动定位
     callback set-weather-key(string); // 留空 = Open-Meteo
+    callback set-screen-brightness(float);
     callback add-camera(string, string, string, string);
     callback delete-camera(int);
     callback search-cameras();
@@ -62,9 +64,11 @@ export component SettingsPage inherits Rectangle {
                         city <=> root.city;
                         weather-key <=> root.weather-key;
                         resolved-city: root.resolved-city;
+                        brightness <=> root.screen-brightness;
                         set-language(lang) => { root.set-language(lang); }
                         set-city(city) => { root.set-city(city); }
                         set-weather-key(key) => { root.set-weather-key(key); }
+                        set-brightness(v) => { root.set-screen-brightness(v); }
                         kb-field-focused(id) => { root.kb-field-focused(id); }
                     }
                 }

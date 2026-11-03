@@ -266,3 +266,18 @@ msgstr ""
 
 msgid "空格"
 msgstr ""
+
+msgid "关闭屏幕"
+msgstr ""
+
+msgid "当前平台不支持关闭屏幕"
+msgstr ""
+
+msgid "屏幕控制失败"
+msgstr ""
+
+msgid "屏幕亮度"
+msgstr ""
+
+msgid "当前平台不支持亮度调节"
+msgstr ""
