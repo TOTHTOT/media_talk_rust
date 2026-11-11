@@ -154,6 +154,23 @@ SLINT_BACKEND=linuxkms-software ./media_talk_rust gui -u 9999 --server 192.168.1
   (装对应 `-dev` 包的系统一般已带; 精简 rootfs 需补
   `libgbm1 libxkbcommon0 libudev1 libinput10 libfontconfig1`)
 
+### SIP 通话 ICE (可选, 默认关闭)
+
+```bash
+# 开启: offer/answer 带标准 ICE 属性, 媒体走 nicesink/nicesrc
+SLINT_BACKEND=linuxkms-software ./media_talk_rust gui -u 9999 \
+  --server 192.168.11.17:5062 --ice
+
+# 指定 STUN (缺省 stun://stun.miwifi.com:3478; 传空串仅 host 候选)
+SLINT_BACKEND=linuxkms-software ./media_talk_rust gui -u 9999 \
+  --server 192.168.11.17:5062 --ice --stun "stun://stun.miwifi.com:3478"
+```
+
+- 只有协商结果为 Opus(111)+H264(96) 且对端 answer 带回 ICE 才启用
+  ICE 媒体链; 否则自动回退普通 RTP (G.711 优先的 offer 顺序保证兼容)
+- 目标板需要 GStreamer `nicesink`/`nicesrc` (gst-plugins-bad) 与
+  libnice 运行库; 缺库时发起端回退普通 RTP, 被叫端不会回 ICE
+
 ### 退路: winit + weston
 
 linuxkms 后端在 slint 里仍是实验特性, 若编译或运行不过, 退路是板子装
