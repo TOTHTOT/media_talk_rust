@@ -5,12 +5,14 @@
 //!
 //! 用法:
 //!   ice_probe --sig ws://HOST:PORT [--room NAME] [--stun stun://...] [--timeout SECS]
+//!   (完整参数与说明见 --help, clap 生成)
 //!
 //! 先 join 者为 slot 0 (offerer/controlling), 后 join 者为 slot 1。
 //! 退出码: 0 = 连通且数据面互通; 1 = 任一步失败; 2 = 参数错误。
 
 use std::time::Duration;
 
+use clap::Parser as _;
 use futures_util::{SinkExt, StreamExt};
 use ipcam_ice::blob::IceBlob;
 use ipcam_ice::{IceAgent, IceConfig, IceState, SelectedKind};
@@ -41,44 +43,34 @@ type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WsTx = futures_util::stream::SplitSink<Ws, Message>;
 type WsRx = futures_util::stream::SplitStream<Ws>;
 
+/// ice_probe 命令行参数 (clap derive; 字段 doc 即 --help 文案).
+#[derive(Debug, clap::Parser)]
+#[command(
+    name = "ice_probe",
+    about = "无头 ICE 连通性测试工具: 两台机器各跑一个实例 (同一房名), 经 sigserver 交换 blob, 打洞后双向验证数据面"
+)]
 struct Args {
+    /// sigserver WS 地址 (ws://HOST:PORT)
+    #[arg(long, value_parser = parse_ws_url)]
     sig: String,
+    /// 房间名 (同房两名自动配对; 先加入者为 slot 0 = offerer)
+    #[arg(long, default_value = "ice-probe")]
     room: String,
+    /// STUN server URI (如 stun://stun.l.google.com:19302); 不给 = 仅 host 候选
+    #[arg(long)]
     stun: Option<String>,
-    timeout: Duration,
+    /// 整体超时 (秒)
+    #[arg(long, default_value_t = 30)]
+    timeout: u64,
 }
 
-fn parse_args() -> Result<Args, String> {
-    let mut sig: Option<String> = None;
-    let mut room = "ice-probe".to_string();
-    let mut stun: Option<String> = None;
-    let mut secs: u64 = 30;
-    let mut it = std::env::args().skip(1);
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--sig" => sig = Some(it.next().ok_or("--sig 缺少参数值")?),
-            "--room" => room = it.next().ok_or("--room 缺少参数值")?,
-            "--stun" => stun = Some(it.next().ok_or("--stun 缺少参数值")?),
-            "--timeout" => {
-                secs = it
-                    .next()
-                    .ok_or("--timeout 缺少参数值")?
-                    .parse()
-                    .map_err(|_| "--timeout 需要正整数秒数".to_string())?;
-            }
-            other => return Err(format!("未知参数: {other}")),
-        }
+/// --sig 的协议校验: clap value_parser, 非法值按参数错误处理 (退出码 2).
+fn parse_ws_url(s: &str) -> Result<String, String> {
+    if s.starts_with("ws://") || s.starts_with("wss://") {
+        Ok(s.to_string())
+    } else {
+        Err("需为 ws:// 或 wss:// 地址".to_string())
     }
-    let sig = sig.ok_or("缺少 --sig ws://HOST:PORT")?;
-    if !sig.starts_with("ws://") && !sig.starts_with("wss://") {
-        return Err(format!("--sig 需为 ws:// 或 wss:// 地址: {sig}"));
-    }
-    Ok(Args {
-        sig,
-        room,
-        stun,
-        timeout: Duration::from_secs(secs),
-    })
 }
 
 /// 收一帧文本 Frame; 忽略非文本/无法解析的帧直到 deadline.
@@ -135,10 +127,15 @@ async fn recv_blob(rx: &mut WsRx, deadline: Instant) -> Result<String, i32> {
 }
 
 async fn run(args: Args) -> i32 {
-    let deadline = Instant::now() + args.timeout;
+    let deadline = Instant::now() + Duration::from_secs(args.timeout);
 
     // 1. 连 sigserver 并 join 房间
-    let ws = match timeout(args.timeout, tokio_tungstenite::connect_async(&args.sig)).await {
+    let ws = match timeout(
+        Duration::from_secs(args.timeout),
+        tokio_tungstenite::connect_async(&args.sig),
+    )
+    .await
+    {
         Ok(Ok((ws, _))) => ws,
         Ok(Err(e)) => {
             error!(sig = %args.sig, "连接 sigserver 失败: {e}");
@@ -335,12 +332,6 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    let code = match parse_args() {
-        Ok(args) => run(args).await,
-        Err(e) => {
-            error!("参数错误: {e}");
-            2
-        }
-    };
-    std::process::exit(code);
+    // clap 解析失败自带用法 + 退出码 2 (与退出码契约一致)
+    std::process::exit(run(Args::parse()).await);
 }

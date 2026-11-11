@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 # examples/ice_probe.rs 用 (正式依赖保持轻: glib+gio+tokio+tracing)
+clap = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
