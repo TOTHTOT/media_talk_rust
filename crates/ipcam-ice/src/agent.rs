@@ -41,6 +41,9 @@ pub struct IceConfig {
     pub stun: Option<String>,
     /// true = controlling (通常 offer 方), false = controlled.
     pub controlling: bool,
+    /// component 数: 1 = 纯数据场景; 2 = media 约定 (1=video, 2=audio).
+    /// libnice 要求 >= 1, 传 0 在建 agent 时报 [`IceError::CreateStream`].
+    pub components: u32,
 }
 
 /// 组件连通状态 (映射 NiceComponentState, UI 展示用).
@@ -136,7 +139,8 @@ unsafe impl Send for IceAgent {}
 unsafe impl Sync for IceAgent {}
 
 impl IceAgent {
-    /// 创建 agent: 起独立 glib 线程, 建流 (2 component: 1=video, 2=audio),
+    /// 创建 agent: 起独立 glib 线程, 按 `cfg.components` 建流 (component
+    /// 编号 1..N, media 场景 1=video/2=audio, 纯数据场景传 1),
     /// 连接状态信号, 阻塞至建流完成 (上限 5s).
     ///
     /// # Arguments
@@ -152,6 +156,10 @@ impl IceAgent {
     /// ```
     pub fn new(cfg: IceConfig) -> Result<Self, IceError> {
         ensure_winsock();
+        // libnice 要求 component 数 >= 1; 提前拒, 不起线程.
+        if cfg.components == 0 {
+            return Err(IceError::CreateStream);
+        }
         // MainContext::new 不绑定线程: 这里 (调用方线程) 创建, glib 线程使用.
         let ctx = glib::MainContext::new();
         let (ready_tx, ready_rx) =
@@ -211,7 +219,7 @@ impl IceAgent {
                         });
                     }
                     // SAFETY: add_stream 在 ctx 线程内调用, agent 存活.
-                    let stream = unsafe { sys::nice_agent_add_stream(agent, 2) };
+                    let stream = unsafe { sys::nice_agent_add_stream(agent, cfg.components) };
                     if stream == 0 {
                         let _ = ready_inner.send(Err(IceError::CreateStream));
                         return;
@@ -548,15 +556,29 @@ mod tests {
     /// libnice 缺失 (nice_agent_new 返回 null) 时静默跳过, 与 gst 缺件 guard 同惯例.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_agents_connect_loopback() {
+        loopback_with_components(2).await;
+    }
+
+    /// 单 component 环回: IceConfig.components 可配的最小形态 (纯数据场景,
+    /// ice_probe 同款配置).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_component_loopback() {
+        loopback_with_components(1).await;
+    }
+
+    /// 环回主体: component 数走参数 (2 = media 约定 1=video/2=audio).
+    async fn loopback_with_components(components: u32) {
         let Ok(a) = IceAgent::new(IceConfig {
             stun: None,
             controlling: true,
+            components,
         }) else {
             return; // libnice 不可用
         };
         let Ok(b) = IceAgent::new(IceConfig {
             stun: None,
             controlling: false,
+            components,
         }) else {
             return;
         };

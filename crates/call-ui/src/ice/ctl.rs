@@ -262,6 +262,7 @@ fn run_call(
         let agent = IceAgent::new(IceConfig {
             stun: settings.stun,
             controlling: true,
+            components: 2,
         })?;
         (agent, None)
     } else {
@@ -271,6 +272,7 @@ fn run_call(
         let agent = IceAgent::new(IceConfig {
             stun: settings.stun,
             controlling: is_offerer(slot),
+            components: 2,
         })?;
         (agent, Some((ws, slot)))
     };

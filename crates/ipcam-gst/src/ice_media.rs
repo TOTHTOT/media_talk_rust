@@ -615,12 +615,14 @@ mod tests {
         let Ok(a) = IceAgent::new(IceConfig {
             stun: None,
             controlling: true,
+            components: 2,
         }) else {
             return; // libnice 不可用
         };
         let Ok(b) = IceAgent::new(IceConfig {
             stun: None,
             controlling: false,
+            components: 2,
         }) else {
             return;
         };

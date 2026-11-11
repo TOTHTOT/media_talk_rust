@@ -167,10 +167,11 @@ async fn run(args: Args) -> i32 {
     };
     info!(room = %args.room, slot, "已加入房间");
 
-    // 2. 建 agent; slot 0 = offerer = controlling
+    // 2. 建 agent; slot 0 = offerer = controlling; 纯连通性测试单 component 即可
     let agent = match IceAgent::new(IceConfig {
         stun: args.stun.clone(),
         controlling: slot == 0,
+        components: 1,
     }) {
         Ok(a) => a,
         Err(e) => {
