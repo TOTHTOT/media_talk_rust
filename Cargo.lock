@@ -3306,6 +3306,7 @@ dependencies = [
 name = "ipcam-ice"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "futures-util",
  "gio",
  "glib",
