@@ -244,7 +244,11 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<Str
         match ice::activate(local, offer_text.as_ref(), &ctx.cfg, &ctx.tap).await {
             Ok(media) => Some(media::CallMedia::Ice(media)),
             Err(e) => {
-                // answer 已经宣称 ICE, 无法再回退普通 RTP, 直接结束通话.
+                // answer 已经宣称 ICE, 无法再回退普通 RTP; 先 BYE 再报错,
+                // 避免对端停留在已接通状态.
+                if let Err(bye) = dialog.bye_with_headers(None).await {
+                    warn!(error = %bye, "failed to send BYE after ICE setup failure");
+                }
                 return Err(e);
             }
         }
