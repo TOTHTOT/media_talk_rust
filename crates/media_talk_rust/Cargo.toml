@@ -35,6 +35,9 @@ bytes = { workspace = true }
 uuid = { workspace = true }
 local-ip-address = { workspace = true }
 tokio-util = { workspace = true }
+# sigserver bin (WS 信令转发, ICE 验证期用)
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
 
 [features]
 default = ["sw-decode"]

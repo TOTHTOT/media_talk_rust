@@ -29,7 +29,7 @@ pub enum TrackSource {
 impl TrackSource {
     /// 日志用标签: Rtsp uri 可能内嵌凭据 (rtsp://user:pass@...),
     /// 必须先脱敏再进日志
-    pub(super) fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         match self {
             Self::File(path) => format!("file:{}", path.display()),
             Self::Rtsp { uri } => format!("rtsp:{}", redact_uri_credentials(uri)),
@@ -97,7 +97,7 @@ pub(super) fn redact_uri_credentials(uri: &str) -> String {
 
 /// 要建的是哪一路 (源段按它匹配 uridecodebin3 的裸流 pad)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TrackKind {
+pub(crate) enum TrackKind {
     Audio,
     Video,
 }
@@ -255,7 +255,7 @@ fn on_pad_caps_notified(pad: &gst::Pad, video_cb: &MediaClusterType, audio_cb: &
 /// ```
 ///
 /// ```
-pub(super) fn plug_uri_source(
+pub(crate) fn plug_uri_source(
     pipeline: &gst::Pipeline,
     uri: &str,
     kind: TrackKind,
@@ -288,7 +288,7 @@ pub(super) fn plug_uri_source(
 
 /// 平台分发集中在这两个函数, 不用 #[cfg] 散布.
 /// 未知平台编译能过, 运行时 make() 报元件不存在 (与缺插件行为一致)
-pub(super) fn camera_src_name() -> &'static str {
+pub(crate) fn camera_src_name() -> &'static str {
     if cfg!(windows) {
         "ksvideosrc"
     } else {
@@ -296,7 +296,7 @@ pub(super) fn camera_src_name() -> &'static str {
     }
 }
 
-pub(super) fn mic_src_name() -> &'static str {
+pub(crate) fn mic_src_name() -> &'static str {
     if cfg!(windows) {
         "wasapisrc"
     } else {
@@ -321,7 +321,7 @@ pub(super) fn mic_src_name() -> &'static str {
 /// ```
 ///
 /// ```
-pub(super) fn plug_device_source(
+pub(crate) fn plug_device_source(
     pipeline: &gst::Pipeline,
     element_name: &str,
     device: Option<&str>,
@@ -362,7 +362,7 @@ pub(super) fn plug_device_source(
 /// ```
 ///
 /// ```
-pub(super) fn file_uri(path: &std::path::Path) -> Result<String, GstStreamError> {
+pub(crate) fn file_uri(path: &std::path::Path) -> Result<String, GstStreamError> {
     let abs = path.canonicalize().map_err(|e| {
         GstStreamError::InvalidConfig(format!("media file not found: {}: {e}", path.display()))
     })?;

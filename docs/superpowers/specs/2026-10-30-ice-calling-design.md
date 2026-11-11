@@ -117,6 +117,7 @@ IceAgentHandle
   ice-pwd:<s>
   candidate:<foundation> 1 UDP <priority> <ip> <port> typ host|srflx [raddr .. rport ..]
   ```
+- 实施偏差 (2026-11-02): blob 实际采用 libnice 原生 SDP 文本 (`nice_agent_generate_local_sdp`/`nice_agent_parse_remote_sdp` 出入), 自定义行格式未实现, 理由见实施计划 Task 2.
 - TURN 扩展位: `set_relay_info()` 留空实现, 产品化期接 coturn
 
 ### 信令通道 (双通道, 同一 ICE 核心)
@@ -161,7 +162,7 @@ trait Signaling {
 - [呼叫]: WsChannel → gather → 发 offer → 等 answer → connected
 - [手动模式] 开关: 改走 ManualChannel, [导出 blob]/[粘贴 blob] 弹框
 - 通话中状态行: ICE state、selected pair (本地/远端地址 + host/srflx/relay
-  类型标签)、收发字节/包数、挂断按钮
+  类型标签)、收发字节/包数、挂断按钮 (信令期内; 通话期对端挂断由 ICE 状态超时感知, 通知通道列为后续项)
 
 ### 平台/依赖
 

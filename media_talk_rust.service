@@ -14,6 +14,7 @@ Group=mediatalk
 # the dynamic linker at them once per host:
 #   echo '/opt/mediatalk/lib' | sudo tee /etc/ld.so.conf.d/mediatalk.conf
 #   sudo ldconfig
+# ICE 验证依赖 gstnice 插件, 板端用 `gst-inspect-1.0 nicesink` 确认
 Environment=RUST_LOG=info
 # Operators can drop overrides into /etc/default/media_talk_rust (e.g. RUST_LOG=debug),
 # then `sudo systemctl daemon-reload`. The leading `-` makes the file optional.

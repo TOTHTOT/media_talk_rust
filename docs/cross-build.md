@@ -107,6 +107,32 @@ sudo apt install -y librime-dev librime-data-luna-pinyin
   会话懒加载, 不占启动时间
 - 内存占用约 30-60MB (拼音引擎 + 词库), 嵌入式场景按需评估
 
+### ICE 通话验证 (libnice)
+
+ICE 通话的 `nicesink`/`nicesrc` 元件来自 libnice, 构建与运行分两包:
+
+```bash
+# 构建期 (Dockerfile.rk3566 的 apt 段已含):
+sudo apt install -y libnice-dev
+# 运行期: gstnice 插件 + libnice 共享库
+sudo apt install -y gstreamer1.0-nice libnice10
+```
+
+- 部署后先在板上 `gst-inspect-1.0 nicesink` 确认插件存在; 泰山派镜像
+  可能裁剪 gst 插件, 缺则按上面运行期包 apt 安装
+- Windows 开发机无需另装: GStreamer msvc 捆绑包自带 `nice.lib` +
+  `nice-10.dll`, 链接直接可用
+
+无头连通性测试工具 (双机对连, 不需要 GUI):
+
+```text
+# 构建 (example 目标, 与 GUI 同一套交叉编译)
+docker run --rm -v "$PWD":/src -w /src dnake-rk3566-builder \
+  cargo build --release --example ice_probe --target aarch64-unknown-linux-gnu
+# 板上与电脑各跑一个实例 (电脑侧用本机 cargo 出本机二进制):
+./ice_probe --sig ws://电脑IP:9000 --room board-test
+```
+
 ### feature 开关
 
 - `call-ui` crate: feature `kms` = `slint/backend-linuxkms-noseat` +
@@ -142,7 +168,7 @@ feature, 不需要 kms 编译开关). 这里只记方案, 不实现.
 sudo apt install -y libgstreamer1.0-0 \
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
-    gstreamer1.0-libav gstreamer1.0-alsa libasound2
+    gstreamer1.0-libav gstreamer1.0-nice gstreamer1.0-alsa libasound2
 ```
 
 缺元件时程序以 `GstStreamError::Init` 报错并指明元件名, 可用

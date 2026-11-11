@@ -17,11 +17,13 @@ use gstreamer::prelude::*;
 use thiserror::Error;
 
 mod gstutil;
+mod ice_media;
 mod ingest;
 mod pkt_stats;
 mod rtp_recv;
 mod rtp_send;
 
+pub use ice_media::{AudioRecv, IceMediaConfig, IceMediaHandle, start_ice_media};
 pub use ingest::config::{AudioOutput, GstStreamConfig, ReconnectPolicy};
 pub use ingest::stats::{GstStreamHandle, StreamState, StreamStats, StreamTerminal, TerminalHook};
 pub use ingest::tap::{AudioChunkSink, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink};

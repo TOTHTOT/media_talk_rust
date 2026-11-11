@@ -33,6 +33,9 @@ pub(crate) const FIELD_CAM_NAME: FieldId = 5;
 pub(crate) const FIELD_CAM_URI: FieldId = 6;
 pub(crate) const FIELD_CAM_USER: FieldId = 7;
 pub(crate) const FIELD_CAM_PASS: FieldId = 8;
+pub(crate) const FIELD_ICE_SIGSERVER: FieldId = 9;
+pub(crate) const FIELD_ICE_ROOM: FieldId = 10;
+pub(crate) const FIELD_ICE_STUN: FieldId = 11;
 
 /// field-id 的标识名, 仅聚焦登记日志用 (见 wiring.rs).
 pub(crate) fn field_name(id: FieldId) -> &'static str {
@@ -45,6 +48,9 @@ pub(crate) fn field_name(id: FieldId) -> &'static str {
         FIELD_CAM_URI => "cam-uri",
         FIELD_CAM_USER => "cam-user",
         FIELD_CAM_PASS => "cam-pass",
+        FIELD_ICE_SIGSERVER => "ice-sigserver",
+        FIELD_ICE_ROOM => "ice-room",
+        FIELD_ICE_STUN => "ice-stun",
         _ => "unknown",
     }
 }

@@ -58,6 +58,16 @@ export component MainWindow inherits MaterialWindow {
     // 设置页城市输入框初始值 (Rust 启动时从 kv 读入)
     in-out property <string> weather-city: "";
     in-out property <string> weather-key: "";
+    // ICE 通话 (设置页 ICE 卡片属性/回调穿透, 卡片本体在 settings/ice_card.slint):
+    // sigserver/room/stun/manual 初值由 Rust 启动时从 kv 播种
+    in property <string> ice-status-text: "";
+    in property <string> ice-stats-text: "";
+    in-out property <string> ice-sigserver: "";
+    in-out property <string> ice-room: "";
+    in-out property <string> ice-stun: "";
+    in-out property <bool> ice-manual: false;
+    // 手动通道: 导出的本地 blob 文本 (卡片弹框展示)
+    in property <string> ice-blob-dialog-text: "";
     in property <[CallLogEntry]> call-log: [];
     in property <[ContactEntry]> contacts: [];
     in property <[CameraEntry]> cameras: [];
@@ -81,6 +91,15 @@ export component MainWindow inherits MaterialWindow {
     callback set-city(string);
     // 和风 API KEY (可选), 持久化在 kv 表
     callback set-weather-key(string);
+    // ICE 通话 (设置页 ICE 卡片, 本体在 settings/ice_card.slint)
+    callback ice-call();
+    callback ice-hangup();
+    callback ice-export-blob();
+    callback ice-import-apply(string);
+    callback set-ice-sigserver(string);
+    callback set-ice-room(string);
+    callback set-ice-stun(string);
+    callback set-ice-manual(bool);
     // 通讯录 CRUD (SQLite 持久化在 Rust store.rs)
     callback add-contact(string, string);
     callback update-contact(int, string, string);
@@ -275,6 +294,22 @@ export component MainWindow inherits MaterialWindow {
                 weather-key: root.weather-key;
                 resolved-city: root.weather-resolved-city;
                 screen-brightness <=> root.screen-brightness;
+                // ICE 卡片穿透 (本体在 settings/ice_card.slint, 这里打通属性/回调)
+                ice-sigserver: root.ice-sigserver;
+                ice-room: root.ice-room;
+                ice-stun: root.ice-stun;
+                ice-manual: root.ice-manual;
+                ice-status-text: root.ice-status-text;
+                ice-stats-text: root.ice-stats-text;
+                ice-blob-dialog-text: root.ice-blob-dialog-text;
+                ice-call => { root.ice-call(); }
+                ice-hangup => { root.ice-hangup(); }
+                ice-export-blob => { root.ice-export-blob(); }
+                ice-import-apply(t) => { root.ice-import-apply(t); }
+                set-ice-sigserver(v) => { root.set-ice-sigserver(v); }
+                set-ice-room(v) => { root.set-ice-room(v); }
+                set-ice-stun(v) => { root.set-ice-stun(v); }
+                set-ice-manual(v) => { root.set-ice-manual(v); }
                 back => { root.page = 0; }
                 set-language(lang) => { root.set-language(lang); }
                 set-city(city) => { root.set-city(city); }

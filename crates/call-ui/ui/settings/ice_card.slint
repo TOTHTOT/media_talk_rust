@@ -1,0 +1,193 @@
+// 设置页 ICE 通话卡: sigserver/房间/STUN 设置 + 呼叫/挂断 + 状态行 +
+// 手动 blob 通道 (导出/导入弹框). 结构照 general_card.slint, 弹框壳照
+// camera_dialogs.slint (dialogs 声明在最后, 绘制在上层)
+import {
+    FilledCard,
+    FilledButton,
+    TextButton,
+    CheckBox,
+    CheckState,
+    HorizontalDivider,
+    MaterialText,
+    MaterialTypography,
+    MaterialPalette,
+} from "../../material-1.1.0/material.slint";
+import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
+import { IceDialogs } from "ice_dialogs.slint";
+
+export component IceSettingsCard inherits FilledCard {
+    callback ice-call();
+    callback ice-hangup();
+    callback ice-export-blob();
+    callback ice-import-apply(string);
+    // 三个文本项写 kv (下次呼叫生效), 照 general_card 的 set-city 模式
+    callback set-sigserver(string);
+    callback set-room(string);
+    callback set-stun(string);
+    callback set-manual(bool);
+    // 屏幕键盘聚焦登记: 由 KbTextField focus-changed 转发, 逐层透传根部
+    // root.kb-field-focused (Rust KeyboardController::set_focus)
+    callback kb-field-focused(int);
+    // 输入框 in-out: 初始值由 Rust 启动时从 kv 读入
+    in-out property <string> sigserver: "";
+    in-out property <string> room: "";
+    in-out property <string> stun: "";
+    // 手动 blob 通道开关 (CheckBox 双向)
+    in-out property <bool> manual: false;
+    // 状态行 + 统计行 (ice worker 投递, 文案后端直出不进 @tr)
+    in property <string> status-text: "";
+    in property <string> stats-text: "";
+    // 导出的本地 blob 文本 (弹框展示)
+    in property <string> blob-dialog-text: "";
+
+    // 呼叫进行中: 状态文案是 ice.rs post_status 的直出字面量, 这里按
+    // 三个建立中/通话中的状态推导 (错误文案与空闲都回可呼叫)
+    property <bool> calling: root.status-text == "收集中"
+        || root.status-text == "连接中" || root.status-text == "已连接";
+
+    VerticalLayout {
+        padding: 28px;
+        spacing: 20px;
+        MaterialText {
+            text: @tr("ICE 通话");
+            style: MaterialTypography.headline_small;
+        }
+
+        HorizontalDivider {}
+
+        // 信令服务器: 留空用默认 ws://127.0.0.1:9000. material TextField
+        // placeholder 不渲染, 提示走 supporting-text; edited 输入即提交
+        KbTextField {
+            // field-id 对应 Rust 侧 keyboard::FIELD_ICE_SIGSERVER
+            field-id: 9;
+            label: @tr("信令服务器");
+            supporting-text: @tr("ws://Mac的局域网IP:9000");
+            text <=> root.sigserver;
+            commit-seq: KeyboardCtx.commit-seq;
+            commit-text: KeyboardCtx.commit-text;
+            delete-field: KeyboardCtx.delete-field;
+            edited(text) => { root.set-sigserver(text); }
+            focus-changed(id) => {
+                KeyboardCtx.visible = id >= 0;
+                root.kb-field-focused(id);
+            }
+        }
+
+        // 房间名: 两人填同一个
+        KbTextField {
+            // field-id 对应 Rust 侧 keyboard::FIELD_ICE_ROOM
+            field-id: 10;
+            label: @tr("房间名");
+            supporting-text: @tr("两人填同一个房间名");
+            text <=> root.room;
+            commit-seq: KeyboardCtx.commit-seq;
+            commit-text: KeyboardCtx.commit-text;
+            delete-field: KeyboardCtx.delete-field;
+            edited(text) => { root.set-room(text); }
+            focus-changed(id) => {
+                KeyboardCtx.visible = id >= 0;
+                root.kb-field-focused(id);
+            }
+        }
+
+        // STUN URI: 显式留空 = 仅 host 候选 (局域网调试)
+        KbTextField {
+            // field-id 对应 Rust 侧 keyboard::FIELD_ICE_STUN
+            field-id: 11;
+            label: "STUN";
+            supporting-text: @tr("留空仅 host 候选");
+            text <=> root.stun;
+            commit-seq: KeyboardCtx.commit-seq;
+            commit-text: KeyboardCtx.commit-text;
+            delete-field: KeyboardCtx.delete-field;
+            edited(text) => { root.set-stun(text); }
+            focus-changed(id) => {
+                KeyboardCtx.visible = id >= 0;
+                root.kb-field-focused(id);
+            }
+        }
+
+        // 呼叫 / 挂断: 进行中禁用呼叫, 空闲禁用挂断
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            FilledButton {
+                text: @tr("呼叫");
+                enabled: !root.calling;
+                clicked => { root.ice-call(); }
+            }
+
+            TextButton {
+                text: @tr("挂断");
+                enabled: root.calling;
+                clicked => { root.ice-hangup(); }
+            }
+        }
+
+        // 状态行: 状态文案 + 收发统计 (通话期每秒上报, 空闲隐藏统计)
+        MaterialText {
+            text: root.status-text;
+            style: MaterialTypography.body_medium;
+            color: MaterialPalette.on_surface_variant;
+        }
+
+        if root.calling: MaterialText {
+            text: root.stats-text;
+            style: MaterialTypography.body_small;
+            color: MaterialPalette.on_surface_variant;
+        }
+
+        HorizontalDivider {}
+
+        // 手动 blob 通道: 勾选后不走信令服务器, 改导出/粘贴 blob
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            CheckBox {
+                check-state: root.manual ? CheckState.checked : CheckState.unchecked;
+                checked_state_changed(cs) => {
+                    root.manual = cs == CheckState.checked;
+                    root.set-manual(root.manual);
+                }
+            }
+
+            VerticalLayout {
+                MaterialText {
+                    text: @tr("手动模式");
+                    style: MaterialTypography.body_large;
+                }
+
+                MaterialText {
+                    text: @tr("导出本地 blob / 粘贴对端 blob, 不走服务器");
+                    style: MaterialTypography.body_small;
+                    color: MaterialPalette.on_surface_variant;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            TextButton {
+                text: @tr("导出本地 blob");
+                clicked => {
+                    root.ice-export-blob();
+                    dialogs.open-export();
+                }
+            }
+
+            TextButton {
+                text: @tr("导入对端 blob");
+                clicked => { dialogs.open-import(); }
+            }
+        }
+    }
+
+    // 对话框覆盖层声明在最后, 绘制在上层
+    dialogs := IceDialogs {
+        width: 100%;
+        height: 100%;
+        blob-text: root.blob-dialog-text;
+        import-apply(t) => { root.ice-import-apply(t); }
+    }
+}

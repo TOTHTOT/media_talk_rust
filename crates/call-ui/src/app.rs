@@ -76,6 +76,15 @@ pub enum UiEvent {
         temp_c: i32,
         city: String,
     },
+    /// ICE 通话状态 (ice worker → 设置页状态行): state 为展示文案
+    /// ("空闲"/"收集中"/"交换中"/"连接中"/"已连接"/"错误: …"),
+    /// tx_kb/rx_kb 为媒体收发 KiB (非通话期 0). 只覆盖 ICE 字段,
+    /// 不动 SIP 通话状态 (Weather 模式: 更新字段返回 None)
+    IceStatus {
+        state: String,
+        tx_kb: u64,
+        rx_kb: u64,
+    },
 }
 
 /// 通知级别: 决定呈现方式 (Info/Warn → toast 气泡, Error → 顶部错误条)
@@ -170,6 +179,8 @@ pub struct AppState {
     pub weather: Option<(i32, String)>,
     /// 定位解析出的城市名, 设置页"当前城市"提示用; 未定位成功为空串
     pub weather_city: String,
+    /// ICE 通话状态行: (状态文案, 发送 KiB, 接收 KiB), ice worker 投递
+    pub ice_status: (String, u64, u64),
 }
 
 impl AppState {
@@ -289,6 +300,14 @@ impl AppState {
             UiEvent::Weather { icon, temp_c, city } => {
                 self.weather = Some((icon, format!("{temp_c}°")));
                 self.weather_city = city;
+                None
+            }
+            UiEvent::IceStatus {
+                state,
+                tx_kb,
+                rx_kb,
+            } => {
+                self.ice_status = (state, tx_kb, rx_kb);
                 None
             }
         }
@@ -613,6 +632,25 @@ mod tests {
         });
         assert_eq!(app.weather, Some((0, "-2°".to_string())));
         assert_eq!(app.weather_city, "广州");
+        assert_eq!(app.phase, Phase::Idle);
+    }
+
+    #[test]
+    fn ice_status_updates_fields_without_touching_call_state() {
+        let mut app = AppState::default();
+        let n = app.on_event(UiEvent::IceStatus {
+            state: "收集中".into(),
+            tx_kb: 0,
+            rx_kb: 0,
+        });
+        assert!(n.is_none());
+        assert_eq!(app.ice_status, ("收集中".to_string(), 0, 0));
+        app.on_event(UiEvent::IceStatus {
+            state: "已连接".into(),
+            tx_kb: 12,
+            rx_kb: 34,
+        });
+        assert_eq!(app.ice_status, ("已连接".to_string(), 12, 34));
         assert_eq!(app.phase, Phase::Idle);
     }
 }

@@ -24,6 +24,7 @@ RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirrors.tuna.tsinghua.
     libgstreamer-plugins-base1.0-dev \
     libgstreamer1.0-dev \
     libinput-dev \
+    libnice-dev \
     librime-data-luna-pinyin \
     librime-dev \
     libudev-dev \

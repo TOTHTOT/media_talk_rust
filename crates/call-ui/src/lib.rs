@@ -8,6 +8,7 @@ slint::include_modules!();
 pub mod app;
 pub mod bridge;
 mod camera;
+mod ice;
 mod keyboard;
 mod media;
 mod persist;
@@ -18,6 +19,7 @@ pub mod store;
 pub mod video;
 mod weather;
 mod wiring;
+use anyhow::Context as _;
 pub use app::Phase;
 pub use session::GuiSipConfig;
 use tracing::info;
@@ -81,12 +83,38 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     let (cmd_tx, cmd_rx) = bridge::cmd_channel();
     // 视频接收的闭包 (监控查看与对讲通话共享同一个 tap)
     let tap = video::make_frame_sink(ui.as_weak());
+    // ICE 通话 worker: 命令通道驱动 (设置页 ICE 卡片, 本体在 settings/ice_card.slint).
+    // 媒体源从 GuiSipConfig 摘录 (cfg 随后 move 进 SIP worker).
+    let ice_sources = ice::IceSources {
+        // Mic 不是合法视频源 (ice 发送链只有 video 用 video_src)
+        video_src: match &cfg.video_src {
+            ipcam_gst::TrackSource::Mic => None,
+            src => Some(src.clone()),
+        },
+        audio_send: matches!(cfg.audio_src, ipcam_gst::TrackSource::Mic),
+        max_width: cfg.max_width,
+    };
+    let (ice_ctl, _ice_worker) =
+        ice::spawn(handle.clone(), ice_sources, tap.clone()).context("spawn ice worker")?;
+    // ICE 设置初始值 (kv 读不到用默认值)
+    if let Ok(v) = store.kv_get(ice::KV_SIGSERVER) {
+        ui.set_ice_sigserver(v.unwrap_or_else(|| ice::DEFAULT_SIGSERVER.into()).into());
+    }
+    if let Ok(v) = store.kv_get(ice::KV_ROOM) {
+        ui.set_ice_room(v.unwrap_or_else(|| ice::DEFAULT_ROOM.into()).into());
+    }
+    if let Ok(v) = store.kv_get(ice::KV_STUN) {
+        ui.set_ice_stun(v.unwrap_or_else(|| ice::DEFAULT_STUN.into()).into());
+    }
+    let ice_manual = store.kv_get(ice::KV_MANUAL).ok().flatten().as_deref() == Some("1");
+    ui.set_ice_manual(ice_manual);
     let worker = session::spawn(cfg, cmd_rx, handle.clone(), tap.clone())?;
 
     // UI 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性
     let monitor = std::rc::Rc::new(std::cell::RefCell::new(camera::MonitorController::new()));
     wiring::wire_callbacks(&ui, &app, &cmd_tx, &monitor);
     wiring::wire_weather_settings(&ui, &store, weather_wake_tx);
+    ice::wire_ice(&ui, &store, &ice_ctl);
     wiring::wire_keyboard(&ui, &kb);
     // 熄屏 + 亮度: RK3566 走背光/DPMS, 其他平台只由状态栏按钮弹 toast
     let screen = std::rc::Rc::new(std::cell::RefCell::new(screen::ScreenController::new()));

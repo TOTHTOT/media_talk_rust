@@ -23,16 +23,26 @@ fn audio_encode_elements(codec: AudioCodec) -> Option<(&'static str, &'static st
     }
 }
 
-/// 视频发送链 (所有源共用): 裸流重编码, 参数集周期重发.
+/// x264enc 基础五属性 (SIP 与 ICE 链路逐属性一致的契约集合):
+/// zerolatency + veryfast + 400kbps + 秒级 IDR + 不插 AUD NAL (设备
+/// 解析器不认). doorphone 专用的 slice-max-size 是 SIP 尾部私有约束,
+/// 不在此列 (ICE 两端都是本程序, FU-A 正常).
+fn configure_x264enc(enc: &gst::Element) {
+    enc.set_property_from_str("tune", "zerolatency");
+    enc.set_property_from_str("speed-preset", "veryfast");
+    enc.set_property("bitrate", 400u32); // kbps, CIF 档足够
+    enc.set_property("key-int-max", 30u32); // 秒级 IDR, 对端中途收也能起
+    enc.set_property("aud", false);
+}
+
+/// 视频源支路 (SIP/ICE 发送链共用的编码前段):
+/// queue → videoconvert → videoscale → capsfilter → x264enc(基础五属性).
 /// videoscale + capsfilter 常驻, 编码前统一 I420 方像素;
-/// dest.max_width 有值时限宽 (范围 caps, 保持宽高比)
-pub(super) fn link_video_send_chain(
-    pipeline: &gst::Pipeline,
-    raw_pad: &gst::Pad,
-    dest: RtpDest,
-    socket: Option<crate::SharedUdpSocket>,
-    stats: Arc<PktStats>,
-) -> Result<(), GstStreamError> {
+/// max_width 有值时限宽 (范围 caps, 保持宽高比). 尾部 (payloader/sink)
+/// 由各链路自拼: SIP 走 rtph264pay → udpsink, ICE 走 rtph264pay → nicesink.
+pub(crate) fn video_source_branch(
+    max_width: Option<u32>,
+) -> Result<Vec<gst::Element>, GstStreamError> {
     // convert 编码格式转换
     let mut chain = vec![make("queue")?, make("videoconvert")?];
     // 编码前统一成 I420 方像素偶数尺寸, videoscale 常驻:
@@ -46,7 +56,7 @@ pub(super) fn link_video_send_chain(
     let caps = make("capsfilter")?;
     // 限宽: 1080p 相机直发超出门口机解码上限会黑屏. caps 用范围而不是
     // 定值: videoscale 只在源超宽时降采样, 且保持宽高比
-    let max_w = dest.max_width.map(|w| w as i32).unwrap_or(i32::MAX - 1);
+    let max_w = max_width.map(|w| w as i32).unwrap_or(i32::MAX - 1);
     caps.set_property(
         "caps",
         gst::Caps::builder("video/x-raw")
@@ -59,19 +69,43 @@ pub(super) fn link_video_send_chain(
     chain.push(scale);
     chain.push(caps);
     let enc = make("x264enc")?;
-    enc.set_property_from_str("tune", "zerolatency");
-    enc.set_property_from_str("speed-preset", "veryfast");
-    enc.set_property("bitrate", 400u32); // kbps, CIF 档足够
-    enc.set_property("key-int-max", 30u32); // 秒级 IDR, 对端中途收也能起
-    // 不插 AUD NAL (设备解析器不认); 每个 NAL 切到 MTU 以下,
+    configure_x264enc(&enc);
+    chain.push(enc);
+    Ok(chain)
+}
+
+/// 音频源支路 (SIP/ICE 发送链共用的重采样前段):
+/// queue → audioconvert → audioresample. 目标格式的 capsfilter 与
+/// 编码器由各链路自拼 (SIP 锁 8kHz mono G.711, ICE 锁 48kHz stereo Opus).
+pub(crate) fn audio_source_branch() -> Result<Vec<gst::Element>, GstStreamError> {
+    Ok(vec![
+        make("queue")?,
+        make("audioconvert")?,
+        make("audioresample")?,
+    ])
+}
+
+/// 视频发送链 (所有源共用): 裸流重编码, 参数集周期重发.
+/// videoscale + capsfilter 常驻, 编码前统一 I420 方像素;
+/// dest.max_width 有值时限宽 (范围 caps, 保持宽高比)
+pub(super) fn link_video_send_chain(
+    pipeline: &gst::Pipeline,
+    raw_pad: &gst::Pad,
+    dest: RtpDest,
+    socket: Option<crate::SharedUdpSocket>,
+    stats: Arc<PktStats>,
+) -> Result<(), GstStreamError> {
+    let mut chain = video_source_branch(dest.max_width)?;
+    // doorphone 硬解约束 (SIP 专用, 不进共用支路): 每个 NAL 切到 MTU 以下,
     // 从源头消除 FU-A 分片需求 (mode 0)
-    enc.set_property("aud", false);
-    enc.set_property("option-string", "slice-max-size=1300");
+    if let Some(enc) = chain.last() {
+        enc.set_property("option-string", "slice-max-size=1300");
+    }
     let pay = make("rtph264pay")?;
     pay.set_property("pt", dest.payload_type as u32);
     pay.set_property("config-interval", 1i32);
     install_pkt_probe(&pay, stats.clone(), false)?;
-    chain.extend([enc, pay, make_udpsink(dest.addr, socket.as_ref())?]);
+    chain.extend([pay, make_udpsink(dest.addr, socket.as_ref())?]);
     let refs: Vec<&gst::Element> = chain.iter().collect();
     add_link_and_plug(pipeline, raw_pad, &refs, "video")
 }
@@ -84,9 +118,7 @@ pub(super) fn link_audio_send_chain(
     socket: Option<crate::SharedUdpSocket>,
     stats: Arc<PktStats>,
 ) -> Result<(), GstStreamError> {
-    let queue = make("queue")?;
-    let convert = make("audioconvert")?;
-    let resample = make("audioresample")?;
+    let mut chain = audio_source_branch()?;
     // G.711 定死 8kHz; capsfilter 强制输出格式, 不依赖源采样率
     let caps = make("capsfilter")?;
     caps.set_property(
@@ -109,12 +141,9 @@ pub(super) fn link_audio_send_chain(
     pay.set_property("pt", dest.payload_type as u32);
     install_pkt_probe(&pay, stats.clone(), true)?;
     let sink = make_udpsink(dest.addr, socket.as_ref())?;
-    add_link_and_plug(
-        pipeline,
-        raw_pad,
-        &[&queue, &convert, &resample, &caps, &enc, &pay, &sink],
-        "audio",
-    )
+    chain.extend([caps, enc, pay, sink]);
+    let refs: Vec<&gst::Element> = chain.iter().collect();
+    add_link_and_plug(pipeline, raw_pad, &refs, "audio")
 }
 
 fn make_udpsink(

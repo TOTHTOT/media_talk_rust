@@ -25,3 +25,10 @@ mod source;
 pub use config::{AudioDest, RtpDest, RtpSendConfig, sendable_audio_codec};
 pub use sender::{RtpSender, start_rtp_sender};
 pub use source::{TrackSource, parse_track_source};
+
+// ice_media (ICE 通话媒体管线) 复用的源支路/插拔件: 提取后提升为 crate 内
+// 可见, 逻辑与 SIP 链路完全一致.
+pub(crate) use chain::{audio_source_branch, video_source_branch};
+pub(crate) use source::{
+    TrackKind, camera_src_name, file_uri, mic_src_name, plug_device_source, plug_uri_source,
+};

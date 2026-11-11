@@ -18,6 +18,9 @@ slint = { version = "1", default-features = false, features = [
 i-slint-core = { version = "=1.18.1", features = ["svg"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+thiserror = { workspace = true }
 rsipstack = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -25,6 +28,7 @@ chrono = { workspace = true }
 ipcam-core = { path = "../ipcam-core" }
 ipcam-discovery = { path = "../ipcam-discovery" }
 ipcam-gst = { path = "../ipcam-gst" }
+ipcam-ice = { path = "../ipcam-ice" }
 ipcam-sip = { path = "../ipcam-sip" }
 parking_lot = { workspace = true }
 rusqlite = { workspace = true }
