@@ -16,7 +16,7 @@
 - 无新 crate (§9 不改 root members); gstreamer API 只进 ipcam-gst (§4); 新依赖只允许 tokio-tungstenite (call-ui 与 media_talk_rust 各加 workspace 引用, §8 先 `cargo tree | grep` 确认已在树).
 - 风格: 中文文本一律英文标点+空格; 只 tracing; 库用 thiserror 不 panic (unwrap 仅测试); `unsafe` 必须 `// SAFETY:` 注释+单测; 测试名 `tests::does_x_under_y`; 参数>3 或返回 Result 的函数用 CLAUDE.md §2 文档模板.
 - 编码约定: 全部 `nice_*` 调用与信号回调 marshal 回 agent 自有的 glib 线程 (回调只塞 channel); 视频 component=1, 音频 component=2 (单 component 上多 nicesrc 会互相覆盖 attach_recv); 挂断顺序: pipeline Null → agent close.
-- 常量: H264 pt=96 clock 90000; Opus pt=111 clock 48000 ch=2; STUN 默认 `stun://stun.l.google.com:19302` (kv 全文存储, 不解析); kv key: `ice_sigserver`(默认 `ws://127.0.0.1:9000`), `ice_room`(默认 `test`), `ice_stun`.
+- 常量: H264 pt=96 clock 90000; Opus pt=111 clock 48000 ch=2; STUN 默认 `stun://stun.miwifi.com:3478` (kv 全文存储, 不解析); kv key: `ice_sigserver`(默认 `ws://127.0.0.1:9000`), `ice_room`(默认 `test`), `ice_stun`.
 - SIP 链路一行不动; 无 TURN; 非 trickle (gather 完成才出 blob).
 
 ## 任务接口速览
@@ -482,7 +482,7 @@ use super::sys;
 
 /// agent 配置.
 pub struct IceConfig {
-    /// STUN server URI (如 `stun://stun.l.google.com:19302`), None = 仅 host 候选.
+    /// STUN server URI (如 `stun://stun.miwifi.com:3478`), None = 仅 host 候选.
     pub stun: Option<String>,
     /// true = controlling (通常 offer 方), false = controlled.
     pub controlling: bool,

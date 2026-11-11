@@ -1,30 +1,22 @@
-// 设置页 ICE 通话卡: sigserver/房间/STUN 设置 + 呼叫/挂断 + 状态行 +
-// 手动 blob 通道 (导出/导入弹框). 结构照 general_card.slint, 弹框壳照
-// camera_dialogs.slint (dialogs 声明在最后, 绘制在上层)
+// 设置页 ICE 通话卡: sigserver/房间/STUN 设置 + 呼叫/挂断 + 状态行.
 import {
     FilledCard,
     FilledButton,
     TextButton,
-    CheckBox,
-    CheckState,
     HorizontalDivider,
     MaterialText,
     MaterialTypography,
     MaterialPalette,
 } from "../../material-1.1.0/material.slint";
 import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
-import { IceDialogs } from "ice_dialogs.slint";
 
 export component IceSettingsCard inherits FilledCard {
     callback ice-call();
     callback ice-hangup();
-    callback ice-export-blob();
-    callback ice-import-apply(string);
     // 三个文本项写 kv (下次呼叫生效), 照 general_card 的 set-city 模式
     callback set-sigserver(string);
     callback set-room(string);
     callback set-stun(string);
-    callback set-manual(bool);
     // 屏幕键盘聚焦登记: 由 KbTextField focus-changed 转发, 逐层透传根部
     // root.kb-field-focused (Rust KeyboardController::set_focus)
     callback kb-field-focused(int);
@@ -32,13 +24,9 @@ export component IceSettingsCard inherits FilledCard {
     in-out property <string> sigserver: "";
     in-out property <string> room: "";
     in-out property <string> stun: "";
-    // 手动 blob 通道开关 (CheckBox 双向)
-    in-out property <bool> manual: false;
     // 状态行 + 统计行 (ice worker 投递, 文案后端直出不进 @tr)
     in property <string> status-text: "";
     in property <string> stats-text: "";
-    // 导出的本地 blob 文本 (弹框展示)
-    in property <string> blob-dialog-text: "";
 
     // 呼叫进行中: 状态文案是 ice.rs post_status 的直出字面量, 这里按
     // 三个建立中/通话中的状态推导 (错误文案与空闲都回可呼叫)
@@ -136,58 +124,5 @@ export component IceSettingsCard inherits FilledCard {
             style: MaterialTypography.body_small;
             color: MaterialPalette.on_surface_variant;
         }
-
-        HorizontalDivider {}
-
-        // 手动 blob 通道: 勾选后不走信令服务器, 改导出/粘贴 blob
-        HorizontalLayout {
-            spacing: 12px;
-            alignment: start;
-            CheckBox {
-                check-state: root.manual ? CheckState.checked : CheckState.unchecked;
-                checked_state_changed(cs) => {
-                    root.manual = cs == CheckState.checked;
-                    root.set-manual(root.manual);
-                }
-            }
-
-            VerticalLayout {
-                MaterialText {
-                    text: @tr("手动模式");
-                    style: MaterialTypography.body_large;
-                }
-
-                MaterialText {
-                    text: @tr("导出本地 blob / 粘贴对端 blob, 不走服务器");
-                    style: MaterialTypography.body_small;
-                    color: MaterialPalette.on_surface_variant;
-                }
-            }
-        }
-
-        HorizontalLayout {
-            spacing: 12px;
-            alignment: start;
-            TextButton {
-                text: @tr("导出本地 blob");
-                clicked => {
-                    root.ice-export-blob();
-                    dialogs.open-export();
-                }
-            }
-
-            TextButton {
-                text: @tr("导入对端 blob");
-                clicked => { dialogs.open-import(); }
-            }
-        }
-    }
-
-    // 对话框覆盖层声明在最后, 绘制在上层
-    dialogs := IceDialogs {
-        width: 100%;
-        height: 100%;
-        blob-text: root.blob-dialog-text;
-        import-apply(t) => { root.ice-import-apply(t); }
     }
 }

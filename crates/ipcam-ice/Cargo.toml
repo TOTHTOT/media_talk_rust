@@ -12,12 +12,27 @@ gio = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+# signal feature: sigserver WS 客户端
+futures-util = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+
+[features]
+default = []
+signal = [
+    "dep:futures-util",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio-tungstenite",
+]
 
 [dev-dependencies]
-# examples/ice_probe.rs 用 (正式依赖保持轻: glib+gio+tokio+tracing)
+# examples/ice_probe.rs 专用 (正式依赖保持轻: glib+gio+tokio+tracing;
+# signal feature 打开时额外带 WS 客户端依赖)
 clap = { workspace = true }
-tokio-tungstenite = { workspace = true }
-futures-util = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[[example]]
+name = "ice_probe"
+required-features = ["signal"]

@@ -23,8 +23,16 @@ struct Frame {
     detail: String,
 }
 
-// 房间表: 房号 -> 两个槽位的出站通道 (槽内无对等端时为 None).
-type Rooms = Arc<Mutex<HashMap<String, [Option<mpsc::UnboundedSender<Message>>; 2]>>>;
+// 房间表: 房号 -> 两个槽位 + 晚加入补发的缓存.
+#[derive(Default)]
+struct Room {
+    /// 槽位 0/1 的出站通道 (无对等端时为 None).
+    peers: [Option<mpsc::UnboundedSender<Message>>; 2],
+    /// slot 0 (offerer) 最后一条初始 SDP (offer/blob). answerer 晚加入时
+    /// join 后立刻补发, 避免 offer 在它进房前被丢弃.
+    cached_offer: Option<Message>,
+}
+type Rooms = Arc<Mutex<HashMap<String, Room>>>;
 
 /// 服务入口: 接受连接, 按房间两两配对转发 offer/answer/hangup.
 ///
@@ -95,20 +103,29 @@ async fn handle(
     let joined = {
         let mut rooms = rooms.lock().unwrap();
         let room = rooms.entry(frame.room.clone()).or_default();
-        if room[0].is_none() || room[1].is_none() {
-            let slot = if room[0].is_none() { 0 } else { 1 };
+        if room.peers[0].is_none() || room.peers[1].is_none() {
+            let slot = if room.peers[0].is_none() { 0 } else { 1 };
             let (tx, rx) = mpsc::unbounded_channel::<Message>();
-            room[slot] = Some(tx);
-            Some((slot, rx))
+            room.peers[slot] = Some(tx);
+            let cached_offer = if slot == 1 {
+                room.cached_offer.clone()
+            } else {
+                None
+            };
+            Some((slot, rx, cached_offer))
         } else {
             None
         }
     };
-    let Some((slot, mut rx)) = joined else {
+    let Some((slot, mut rx, cached_offer)) = joined else {
         ws.send(Message::text(error_frame("room full"))).await?;
         return Ok(());
     };
     ws.send(Message::text(joined_frame(slot as u8))).await?;
+    if let Some(cached) = cached_offer {
+        // joined 必须先到, 客户端拿到槽位后才能把 offer 当对端 blob 处理.
+        ws.send(cached).await?;
+    }
 
     let (mut ws_tx, mut ws_rx) = ws.split();
     let fwd = tokio::spawn(async move {
@@ -131,23 +148,39 @@ async fn handle(
             break;
         }
         // 原样转发 JSON 文本帧 (offer/answer/hangup), payload 含换行也不变.
-        // 对端可能晚于本连接加入, 所以每次现查槽位而不是 join 时快照.
-        let peer = rooms
-            .lock()
-            .unwrap()
-            .get(&frame.room)
-            .and_then(|room| room[1 - slot].clone());
+        // slot 0 的初始 SDP 同时写入缓存, 供晚加入的 slot 1 补发.
+        let kind = msg
+            .to_text()
+            .ok()
+            .and_then(|text| serde_json::from_str::<Frame>(text).ok())
+            .map(|frame| frame.kind);
+        let peer = {
+            let mut rooms = rooms.lock().unwrap();
+            let Some(room) = rooms.get_mut(&frame.room) else {
+                break;
+            };
+            if slot == 0 && matches!(kind.as_deref(), Some("offer" | "blob")) {
+                room.cached_offer = Some(msg.clone());
+            } else if matches!(kind.as_deref(), Some("hangup")) {
+                room.cached_offer = None;
+            }
+            room.peers[1 - slot].clone()
+        };
         if let Some(peer) = peer {
             let _ = peer.send(msg);
         }
     }
     fwd.abort();
 
-    // 清理槽位; 房间空了就从表里删除.
+    // 清理槽位; offerer (slot 0) 离开时清掉缓存, 避免给新 answerer 发过期 SDP.
+    // 房间空了就从表里删除.
     let mut rooms = rooms.lock().unwrap();
     if let Some(room) = rooms.get_mut(&frame.room) {
-        room[slot] = None;
-        if room[0].is_none() && room[1].is_none() {
+        room.peers[slot] = None;
+        if slot == 0 {
+            room.cached_offer = None;
+        }
+        if room.peers[0].is_none() && room.peers[1].is_none() {
             rooms.remove(&frame.room);
         }
     }
@@ -240,6 +273,25 @@ mod tests {
         let frame = recv(&mut c2).await;
         assert_eq!(frame.kind, "offer");
         assert_eq!(frame.payload, "sdp-A\nline2");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replays_cached_offer_to_late_peer() {
+        let port = spawn_server().await;
+        let mut c1 = connect(port).await;
+        c1.send(join("room-cache")).await.unwrap();
+        assert_eq!(recv(&mut c1).await.kind, "joined");
+        // offerer 在 answerer 进房前就把 blob 发出来.
+        c1.send(text_msg("blob", "sdp-cached")).await.unwrap();
+        // 给服务端读循环一点时间写入缓存 (无对端时不会回显).
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let mut c2 = connect(port).await;
+        c2.send(join("room-cache")).await.unwrap();
+        assert_eq!(recv(&mut c2).await.kind, "joined");
+        let cached = recv(&mut c2).await;
+        assert_eq!(cached.kind, "blob");
+        assert_eq!(cached.payload, "sdp-cached");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

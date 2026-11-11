@@ -128,7 +128,7 @@ sudo apt install -y gstreamer1.0-nice libnice10
 ```text
 # 构建 (example 目标, 与 GUI 同一套交叉编译)
 docker run --rm -v "$PWD":/src -w /src dnake-rk3566-builder \
-  cargo build --release --example ice_probe --target aarch64-unknown-linux-gnu
+  cargo build --release --example ice_probe --features signal --target aarch64-unknown-linux-gnu
 # 板上与电脑各跑一个实例 (电脑侧用本机 cargo 出本机二进制):
 ./ice_probe --sig ws://电脑IP:9000 --room board-test
 ```

@@ -117,6 +117,7 @@ WSAStartup, 裸用会导致 gather 立即失败; `ensure_winsock` 用
 | `local_blob()` | src/agent.rs:326 | gather 完成, 返回本地 blob |
 | `add_remote(&IceBlob)` | src/agent.rs:383 | 喂对端 blob, 触发打洞 |
 | `state_rx()` | src/agent.rs:399 | watch 订阅 IceState 变化 |
+| `wait_connected(timeout)` | src/agent.rs:405 | 等 Connected; Failed/超时返回 IceError |
 | `selected_pair(u32)` | src/agent.rs:407 | 选中路径 (本地, 远端) 候选类型 |
 | `send(&[u8])` | src/agent.rs:472 | 数据面发送, 固定 component 1 |
 | `attach_recv(f)` | src/agent.rs:496 | 数据面接收回调, 固定 component 1 |
@@ -137,7 +138,7 @@ ipcam-gst 的 nicesink/nicesrc 通路, 不经此 API.
 `examples/ice_probe.rs` — 两台机器各跑一个实例验证真实跨网打洞:
 
 ```text
-cargo run -p ipcam-ice --example ice_probe -- --sig ws://HOST:9000 [--room NAME] [--stun stun://...] [--timeout SECS]
+cargo run -p ipcam-ice --example ice_probe --features signal -- --sig ws://HOST:9000 [--room NAME] [--stun stun://...] [--timeout SECS]
 ```
 
 流程: 连 sigserver join 房间 → 按槽位定角色 (slot 0 = offerer) → 交换
@@ -157,7 +158,7 @@ blob → 等 Connected → 双向各发一帧 payload 断言互通 → 打印
 ## 与其他模块的关系
 
 - `crates/call-ui/src/ice/`: UI 控制器, 消费本 crate 的 agent + blob,
-  自带 WS 信令和手动 blob 通道
+  信令走 `ipcam_ice::signal` + sigserver
 - `crates/ipcam-gst/src/ice_media.rs`: 媒体管线, 经 `raw_agent()` 注入
   nicesink/nicesrc 的 agent 属性
 - `crates/media_talk_rust/src/bin/sigserver.rs`: WS 房间中继, ice_probe
@@ -170,6 +171,7 @@ blob → 等 Connected → 双向各发一帧 payload 断言互通 → 打印
 | src/sys.rs | 手写 libnice FFI + 信号 trampoline + 候选类型常量 |
 | src/agent.rs | IceAgent 安全封装: glib 线程纪律 / 引用账 / 状态订阅 / 数据面 |
 | src/blob.rs | SDP blob 包装与候选行解析 (展示用) |
+| src/signal.rs | sigserver WS 客户端: join / 槽位 / blob 交换 (feature=signal) |
 | src/lib.rs | 模块组织与 re-export |
 | build.rs | Windows 下 nice.lib 链接搜索 |
 | examples/ice_probe.rs | 双机连通性测试工具 |

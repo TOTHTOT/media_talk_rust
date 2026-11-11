@@ -35,9 +35,63 @@ fn ensure_winsock() {
 #[cfg(not(windows))]
 fn ensure_winsock() {}
 
+/// 解析 STUN URI: `stun://host:port` / `stun:host:port` / `host:port` /
+/// `host` (默认 3478). libnice 的 `stun-server` 属性只收主机名/IP,
+/// 端口必须单独写 `stun-port`, 不能把整个 URI 塞进去.
+fn parse_stun_uri(uri: &str) -> Result<(String, u16), IceError> {
+    let raw = uri.trim().trim_end_matches('/');
+    if raw.is_empty() {
+        return Err(IceError::InvalidStun(uri.to_string()));
+    }
+    if raw.contains("://") && !raw.starts_with("stun://") {
+        return Err(IceError::InvalidStun(uri.to_string()));
+    }
+    let s = raw
+        .strip_prefix("stun://")
+        .or_else(|| raw.strip_prefix("stun:"))
+        .unwrap_or(raw);
+    if s.is_empty() {
+        return Err(IceError::InvalidStun(uri.to_string()));
+    }
+
+    // IPv6 字面量必须带方括号: [::1]:3478 / [::1]
+    if let Some(rest) = s.strip_prefix('[') {
+        let (host, after) = rest
+            .split_once(']')
+            .ok_or_else(|| IceError::InvalidStun(uri.to_string()))?;
+        if host.is_empty() {
+            return Err(IceError::InvalidStun(uri.to_string()));
+        }
+        let port = match after.strip_prefix(':') {
+            Some(port) if !port.is_empty() => parse_port(port, uri)?,
+            Some(_) | None => 3478,
+        };
+        return Ok((host.to_string(), port));
+    }
+
+    // 裸 IPv6 (含多个冒号) 没有端口信息, 整串当 host, 用默认端口.
+    if s.matches(':').count() > 1 {
+        return Ok((s.to_string(), 3478));
+    }
+    match s.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && !port.is_empty() => {
+            Ok((host.to_string(), parse_port(port, uri)?))
+        }
+        Some(_) => Err(IceError::InvalidStun(uri.to_string())),
+        None => Ok((s.to_string(), 3478)),
+    }
+}
+
+fn parse_port(port: &str, uri: &str) -> Result<u16, IceError> {
+    match port.parse::<u16>() {
+        Ok(port) if port > 0 => Ok(port),
+        _ => Err(IceError::InvalidStun(uri.to_string())),
+    }
+}
+
 /// agent 配置.
 pub struct IceConfig {
-    /// STUN server URI (如 `stun://stun.l.google.com:19302`), None = 仅 host 候选.
+    /// STUN server URI (如 `stun://stun.miwifi.com:3478`), None = 仅 host 候选.
     pub stun: Option<String>,
     /// true = controlling (通常 offer 方), false = controlled.
     pub controlling: bool,
@@ -80,17 +134,21 @@ impl SelectedKind {
 /// agent 操作错误 (控制路径, 见各变体注释).
 #[derive(Debug, thiserror::Error)]
 pub enum IceError {
-    #[error("libnice agent 创建失败 (库缺失?)")]
+    #[error("failed to create libnice agent (library missing?)")]
     NullAgent,
-    #[error("add_stream 返回 0")]
+    #[error("add_stream returned 0")]
     CreateStream,
-    #[error("gather_candidates 失败")]
+    #[error("gather_candidates failed")]
     GatherFailed,
-    #[error("对端 SDP 被拒绝")]
+    #[error("remote SDP rejected")]
     RemoteRejected,
-    #[error("等待超时: {0}")]
+    #[error("invalid STUN server URI: {0}")]
+    InvalidStun(String),
+    #[error("ICE connectivity check failed (peer unreachable)")]
+    ConnectFailed,
+    #[error("timed out waiting for {0}")]
     Timeout(&'static str),
-    #[error("agent 已关闭")]
+    #[error("agent closed")]
     Closed,
 }
 
@@ -197,7 +255,17 @@ impl IceAgent {
                         unsafe { glib::translate::from_glib_none(agent.cast()) };
                     gobj.set_property("controlling-mode", cfg.controlling);
                     if let Some(stun) = cfg.stun {
-                        gobj.set_property("stun-server", stun);
+                        // libnice 的 stun-server 属性只接受主机名/IP, 端口单独
+                        // 走 stun-port; 这里兼容 stun://host:port 与 host:port.
+                        let (server, port) = match parse_stun_uri(&stun) {
+                            Ok(parsed) => parsed,
+                            Err(e) => {
+                                let _ = ready_inner.send(Err(e));
+                                return;
+                            }
+                        };
+                        gobj.set_property("stun-server", server);
+                        gobj.set_property("stun-server-port", port as u32);
                     }
                     let state_cb = thread_state_tx.clone();
                     // SAFETY: agent 存活; 信号回调只发 watch (无锁单写),
@@ -400,6 +468,30 @@ impl IceAgent {
         self.state_tx.subscribe()
     }
 
+    /// 等待组件进入 Connected; Failed 立即返回 [`IceError::ConnectFailed`],
+    /// 超时返回 [`IceError::Timeout`].
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout`: 最长等待时间
+    pub async fn wait_connected(&self, timeout: Duration) -> Result<(), IceError> {
+        let mut rx = self.state_rx();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match *rx.borrow() {
+                IceState::Connected => return Ok(()),
+                IceState::Failed => return Err(IceError::ConnectFailed),
+                _ => {}
+            }
+            tokio::select! {
+                _ = rx.changed() => {}
+                _ = tokio::time::sleep_until(deadline) => {
+                    return Err(IceError::Timeout("connected"));
+                }
+            }
+        }
+    }
+
     /// 查询 component 当前选中路径的候选类型 (本地, 远端).
     ///
     /// component 连通 ([`IceState::Connected`]) 后可用; 未连通 / 库未选中 /
@@ -551,6 +643,35 @@ unsafe extern "C" fn recv_trampoline(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn parses_stun_uri_forms() {
+        assert_eq!(
+            parse_stun_uri("stun://stun.miwifi.com:3478").unwrap(),
+            ("stun.miwifi.com".into(), 3478)
+        );
+        assert_eq!(
+            parse_stun_uri("stun.miwifi.com:3478").unwrap(),
+            ("stun.miwifi.com".into(), 3478)
+        );
+        assert_eq!(
+            parse_stun_uri("stun:stun.miwifi.com:3478/").unwrap(),
+            ("stun.miwifi.com".into(), 3478)
+        );
+        assert_eq!(
+            parse_stun_uri("stun.miwifi.com").unwrap(),
+            ("stun.miwifi.com".into(), 3478)
+        );
+        assert_eq!(parse_stun_uri("[::1]:3478").unwrap(), ("::1".into(), 3478));
+        assert!(matches!(
+            parse_stun_uri("turn://example.com:3478"),
+            Err(IceError::InvalidStun(_))
+        ));
+        assert!(matches!(
+            parse_stun_uri("stun://:3478"),
+            Err(IceError::InvalidStun(_))
+        ));
+    }
 
     /// 双 agent 本机环回: 无 STUN, host 候选打洞, 数据面仅断言 A→B (B 侧 attach 仅为打通 ctx 路由).
     /// libnice 缺失 (nice_agent_new 返回 null) 时静默跳过, 与 gst 缺件 guard 同惯例.

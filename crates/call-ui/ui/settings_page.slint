@@ -24,10 +24,8 @@ export component SettingsPage inherits Rectangle {
     in-out property <string> ice-sigserver: ""; // sigserver WS 地址
     in-out property <string> ice-room: ""; // 信令房间名
     in-out property <string> ice-stun: ""; // STUN URI, 留空 = 仅 host 候选
-    in-out property <bool> ice-manual: false; // 手动 blob 通道
     in property <string> ice-status-text: ""; // 状态行文案 (ice worker 投递)
     in property <string> ice-stats-text: ""; // 收发统计行 (ice worker 投递)
-    in property <string> ice-blob-dialog-text: ""; // 导出的本地 blob (弹框展示)
     callback back();
     callback set-language(string); // "zh" | "en"
     callback set-city(string); // 留空 = IP 自动定位
@@ -35,12 +33,9 @@ export component SettingsPage inherits Rectangle {
     callback set-screen-brightness(float);
     callback ice-call();
     callback ice-hangup();
-    callback ice-export-blob();
-    callback ice-import-apply(string);
     callback set-ice-sigserver(string);
     callback set-ice-room(string);
     callback set-ice-stun(string);
-    callback set-ice-manual(bool);
     callback add-camera(string, string, string, string);
     callback delete-camera(int);
     callback search-cameras();
@@ -105,7 +100,7 @@ export component SettingsPage inherits Rectangle {
                     }
                 }
 
-                // ICE 通话卡 (卡片本体 Task 7): 设置/呼叫/手动 blob 通道
+                // ICE 通话卡 (卡片本体 Task 7): 设置/呼叫/状态行
                 HorizontalLayout {
                     alignment: center;
                     IceSettingsCard {
@@ -115,18 +110,13 @@ export component SettingsPage inherits Rectangle {
                         sigserver <=> root.ice-sigserver;
                         room <=> root.ice-room;
                         stun <=> root.ice-stun;
-                        manual <=> root.ice-manual;
                         status-text: root.ice-status-text;
                         stats-text: root.ice-stats-text;
-                        blob-dialog-text: root.ice-blob-dialog-text;
                         ice-call => { root.ice-call(); }
                         ice-hangup => { root.ice-hangup(); }
-                        ice-export-blob => { root.ice-export-blob(); }
-                        ice-import-apply(t) => { root.ice-import-apply(t); }
                         set-sigserver(v) => { root.set-ice-sigserver(v); }
                         set-room(v) => { root.set-ice-room(v); }
                         set-stun(v) => { root.set-ice-stun(v); }
-                        set-manual(v) => { root.set-ice-manual(v); }
                         kb-field-focused(id) => { root.kb-field-focused(id); }
                     }
                 }

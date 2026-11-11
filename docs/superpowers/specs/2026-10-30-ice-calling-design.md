@@ -99,7 +99,7 @@ libnice 0.1.x API 稳定) + glib main context 线程。
 
 ```
 IceAgentHandle
-  ├─ new(stun_server: Option<String>)      // 默认 stun.l.google.com:19302
+  ├─ new(stun_server: Option<String>)      // 默认 stun.miwifi.com:3478
   ├─ gather() -> IceBlob                   // 阻塞/回调至 gathering-done
   ├─ set_remote(blob: &IceBlob)            // 对端候选+凭据, 触发连通性检查
   ├─ agent() -> *mut NiceAgent             // 交给 nicesink/nicesrc 的 agent 属性

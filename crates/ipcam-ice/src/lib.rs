@@ -4,6 +4,9 @@
 pub mod agent;
 /// ICE blob: 原生 SDP 文本包装与候选行解析 (供 UI 状态展示).
 pub mod blob;
+/// sigserver WS 信令客户端 (join/槽位/blob 交换), 可选 feature.
+#[cfg(feature = "signal")]
+pub mod signal;
 pub(crate) mod sys;
 
 pub use agent::{IceAgent, IceConfig, IceError, IceState, SelectedKind};

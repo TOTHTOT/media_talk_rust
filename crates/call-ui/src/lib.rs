@@ -106,8 +106,6 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     if let Ok(v) = store.kv_get(ice::KV_STUN) {
         ui.set_ice_stun(v.unwrap_or_else(|| ice::DEFAULT_STUN.into()).into());
     }
-    let ice_manual = store.kv_get(ice::KV_MANUAL).ok().flatten().as_deref() == Some("1");
-    ui.set_ice_manual(ice_manual);
     let worker = session::spawn(cfg, cmd_rx, handle.clone(), tap.clone())?;
 
     // UI 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性
