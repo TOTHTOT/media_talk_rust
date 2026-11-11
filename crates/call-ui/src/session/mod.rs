@@ -8,11 +8,13 @@
 //! - `worker.rs`: worker 生命周期与主循环 (spawn / setup / run / shutdown)
 //! - `dispatch.rs`: 通话入口分发与槽位管理 (make_incoming_handler / handle_cmd / prepare_dial)
 //! - `call_loop.rs`: 主被叫共用的已接通通话 loop (BYE / 挂断 / re-INVITE 重协商)
+//! - `ice.rs`: SIP+ICE 会话准备 (双 agent gather / SDP 注入 / 连通 / 媒体启动)
 //! - `incoming.rs`: 被叫通话流程
 //! - `outgoing.rs`: 主叫通话流程
 
 mod call_loop;
 mod dispatch;
+mod ice;
 mod incoming;
 mod outgoing;
 pub(crate) mod types;
@@ -22,6 +24,6 @@ pub use dispatch::{handle_cmd, make_incoming_handler};
 pub use ipcam_sip::forward_update;
 pub use types::{
     CallCtlTx, CallRoutes, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, DialPrep, GuiSipConfig,
-    RtpPorts, UpdateMsg,
+    RtpPorts, SipIceConfig, UpdateMsg,
 };
 pub use worker::spawn;

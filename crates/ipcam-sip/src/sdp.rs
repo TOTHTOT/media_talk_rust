@@ -19,6 +19,8 @@ pub const PT_PCMU: u8 = 0;
 pub const PT_PCMA: u8 = 8;
 /// H264 视频走动态段 (96-127), 必须配 a=rtpmap + a=fmtp
 pub const PT_H264: u8 = 96;
+/// Opus 音频走动态段; ICE 媒体链 (nicesink/nicesrc) 固定用 111/48000/2
+pub const PT_OPUS: u8 = 111;
 
 /// 音视频通话 offer: 音频路 + H264 视频路.
 pub fn build_av_offer(
@@ -130,17 +132,7 @@ pub(crate) fn audio_media_description(port: u16, payload_types: &[u8]) -> MediaD
         .map(|p| p.to_string())
         .collect::<Vec<_>>()
         .join(" ");
-    let mut attributes: Vec<Attribute> = payload_types
-        .iter()
-        .map(|&pt| {
-            Attribute::Rtpmap(Rtpmap {
-                payload_type: pt as u32,
-                encoding_name: codec_name(pt).into(),
-                clock_rate: 8000,
-                encoding_params: None,
-            })
-        })
-        .collect();
+    let mut attributes: Vec<Attribute> = payload_types.iter().map(|&pt| audio_rtpmap(pt)).collect();
     attributes.push(Attribute::Ptime(20.0));
     attributes.push(Attribute::Sendrecv);
     MediaDescription {
@@ -156,6 +148,39 @@ pub(crate) fn audio_media_description(port: u16, payload_types: &[u8]) -> MediaD
         bandwidths: vec![],
         key: None,
         attributes,
+    }
+}
+
+/// 音频 pt → rtpmap 属性.
+///
+/// sdp-rs 0.2.1 的 `Rtpmap` Display 把 encoding_params 写成空格
+/// (`opus/48000 2`), 非法; 带参数的 rtpmap 用 `Other` 原样输出.
+fn audio_rtpmap(pt: u8) -> Attribute {
+    if pt == PT_OPUS {
+        rtpmap_attribute(pt, "opus", 48000, Some(2))
+    } else {
+        rtpmap_attribute(pt, codec_name(pt), 8000, None)
+    }
+}
+
+/// 构造 a=rtpmap 属性; 带 encoding_params 时绕过 sdp-rs 的错误 Display.
+pub(crate) fn rtpmap_attribute(
+    pt: u8,
+    name: &str,
+    clock_rate: i32,
+    encoding_params: Option<i32>,
+) -> Attribute {
+    match encoding_params {
+        Some(params) => Attribute::Other(
+            "rtpmap".into(),
+            Some(format!("{pt} {name}/{clock_rate}/{params}")),
+        ),
+        None => Attribute::Rtpmap(Rtpmap {
+            payload_type: pt as u32,
+            encoding_name: name.into(),
+            clock_rate,
+            encoding_params: None,
+        }),
     }
 }
 
@@ -540,6 +565,21 @@ mod tests {
             m.attributes.contains(&Attribute::Sendrecv),
             "offer must be sendrecv"
         );
+    }
+
+    #[test]
+    fn opus_offer_roundtrip() {
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 11, 100));
+        let offer = build_audio_offer(ip, 40000, &[PT_OPUS]).to_string();
+        assert!(
+            offer.contains("a=rtpmap:111 opus/48000/2"),
+            "offer:\n{offer}"
+        );
+        let parsed = parse_offer_all(offer.as_bytes()).expect("opus offer must parse");
+        let audio = parsed.audio.expect("audio offered");
+        assert_eq!(audio.codecs[0].codec, "opus");
+        assert_eq!(audio.codecs[0].clock_rate, 48000);
+        assert_eq!(audio.codecs[0].encoding_params, Some(2));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use ipcam_sip::sdp::{PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all};
+use ipcam_sip::sdp::{PT_OPUS, PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all};
 use rsipstack::dialog::DialogId;
 use rsipstack::dialog::authenticate::Credential;
 use rsipstack::dialog::dialog::{DialogState, DialogStateSender};
@@ -14,10 +14,11 @@ use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::dialog::invitation::InviteOption;
 use rsipstack::sip as rsip;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::call_loop::{call_loop, finish_call};
-use super::types::{CallBase, CallCtlTx, CallRoutes, UpdateMsg, WorkerCmd};
+use super::ice::{self, LocalIce};
+use super::types::{CallBase, CallCtlTx, CallRoutes, RecvSockets, RtpPorts, UpdateMsg, WorkerCmd};
 use crate::app::UiEvent;
 use crate::media;
 
@@ -82,6 +83,75 @@ impl Drop for RouteGuard {
     }
 }
 
+/// 主叫在 INVITE 前准备好的媒体传输方式.
+enum OutgoingTransport {
+    /// 普通 RTP: socket 已绑定, offer 里的端口就是它们.
+    Rtp {
+        ports: RtpPorts,
+        sockets: RecvSockets,
+    },
+    /// ICE: agent 已收集候选, offer 带 ICE; 失败时回退绑定同一批端口.
+    Ice { ports: RtpPorts, local: LocalIce },
+}
+
+/// INVITE 前的媒体准备结果.
+struct OutgoingOffer {
+    bytes: Vec<u8>,
+    transport: OutgoingTransport,
+}
+
+/// 准备 offer: ICE 开启时先建 agent 收集候选并写进 SDP, 否则绑定普通
+/// RTP socket. ICE 任一步失败都回退普通 RTP, 不让呼叫建立卡死.
+async fn prepare_offer(ctx: &OutgoingCtx) -> Result<OutgoingOffer> {
+    if ctx.base.cfg.ice.enabled {
+        match ice::prepare(
+            ctx.base.local,
+            ctx.base.cfg.ice.stun.clone(),
+            true, // 主叫 = offerer = controlling
+        )
+        .await
+        {
+            Ok(local) => {
+                let ports = local.ports();
+                let plain = build_av_offer(
+                    IpAddr::V4(ctx.base.local),
+                    ports.audio,
+                    ports.video,
+                    &[PT_PCMU, PT_PCMA, PT_OPUS],
+                )
+                .to_string();
+                match local.offer_sdp(&plain) {
+                    Ok(text) => {
+                        info!(%ctx.callee, ?ports, "calling with ICE, SDP offer:\n{text}");
+                        return Ok(OutgoingOffer {
+                            bytes: text.into_bytes(),
+                            transport: OutgoingTransport::Ice { ports, local },
+                        });
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to build ICE offer, falling back to plain RTP");
+                        drop(local);
+                    }
+                }
+            }
+            Err(e) => warn!(error = %e, "ICE setup failed, falling back to plain RTP"),
+        }
+    }
+
+    let (ports, sockets) = super::types::bind_recv_sockets(ctx.base.local, None)?;
+    let offer = build_av_offer(
+        IpAddr::V4(ctx.base.local),
+        ports.audio,
+        ports.video,
+        &[PT_PCMU, PT_PCMA],
+    );
+    info!(%ctx.callee, ?ports, "calling, SDP offer:\n{offer}");
+    Ok(OutgoingOffer {
+        bytes: offer.to_string().into_bytes(),
+        transport: OutgoingTransport::Rtp { ports, sockets },
+    })
+}
+
 /// 主叫通话内部流程: 构造 SDP offer -> INVITE -> 解析 answer -> 起媒体 -> 通话 loop.
 /// 对端 BYE / 本地 Hangup / route channel 关闭任一路均正常返回结束原因.
 ///
@@ -104,26 +174,16 @@ async fn outgoing_inner(
     state_sender: DialogStateSender,
     ctx: &mut OutgoingCtx,
 ) -> Result<String> {
-    // 主叫永远用临时端口 (同 call.rs): 同机对端 (answer 示例) 也用
-    // 40000/40002 时, 双方声明相同接收端口会让发送互相投错 socket,
-    // 后绑方收端永远 0 包; 临时端口两进程各绑各的, 从根上避开.
-    // socket 从 INVITE 前绑好一直活到通话结束: udpsrc/udpsink 共享
-    // (对称 RTP), 过媒体锚定服务器的互通前提
-    let (rtp_ports, sockets) = super::types::bind_recv_sockets(ctx.base.local, None)?;
-    let offer = build_av_offer(
-        IpAddr::V4(ctx.base.local),
-        rtp_ports.audio,
-        rtp_ports.video,
-        &[PT_PCMU, PT_PCMA],
-    );
-    info!(%ctx.callee, ?rtp_ports, "calling, SDP offer:\n{offer}");
-
+    // 媒体准备: ICE 开启时先 gather 并写进 offer; 否则普通 RTP socket
+    // 从 INVITE 前绑好一直活到通话结束 (udpsrc/udpsink 共享, 对称 RTP,
+    // 过媒体锚定服务器的互通前提). ICE 回退时再按 offer 端口补绑.
+    let setup = prepare_offer(ctx).await?;
     let invite_option = InviteOption {
         callee: ctx.callee.clone(),
         caller: ctx.contact.clone(),
         contact: ctx.contact.clone(),
         credential: Some(ctx.credential.clone()),
-        offer: Some(offer.to_string().into_bytes()),
+        offer: Some(setup.bytes.clone()),
         ..Default::default()
     };
     let (dialog, mut invite) = dialog_layer.do_invite_async(invite_option, state_sender)?;
@@ -176,8 +236,40 @@ async fn outgoing_inner(
         peer: ctx.number.clone(),
     });
 
-    let mut media =
-        media::start_outgoing(&peers, &rtp_ports, sockets, &ctx.base.cfg, &ctx.base.tap);
+    let (rtp_ports, mut media) = match setup.transport {
+        OutgoingTransport::Rtp { ports, sockets } => (
+            ports,
+            media::start_outgoing(&peers, &ports, sockets, &ctx.base.cfg, &ctx.base.tap),
+        ),
+        OutgoingTransport::Ice { ports, local } => {
+            let mut media = None;
+            if ice::answer_supports_ice(&peers) {
+                let answer = String::from_utf8_lossy(resp.body());
+                match ice::activate(local, answer.as_ref(), &ctx.base.cfg, &ctx.base.tap).await {
+                    Ok(m) => media = Some(media::CallMedia::Ice(m)),
+                    Err(e) => warn!(
+                        error = %e,
+                        "SIP ICE activation failed, falling back to plain RTP"
+                    ),
+                }
+            } else {
+                warn!("answer did not select Opus/H264 for ICE, falling back to plain RTP");
+                drop(local);
+            }
+            let ports = if media.is_none() {
+                // 回退: agent 已关闭, 端口已释放; 绑定 offer 里声明的同一批
+                // 端口, 对端仍按原 SDP 发包.
+                let (bound, sockets) =
+                    super::types::bind_recv_sockets(ctx.base.local, Some(ports))?;
+                media =
+                    media::start_outgoing(&peers, &bound, sockets, &ctx.base.cfg, &ctx.base.tap);
+                bound
+            } else {
+                ports
+            };
+            (ports, media)
+        }
+    };
     info!("call established");
 
     let reason = call_loop(

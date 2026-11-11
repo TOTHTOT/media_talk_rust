@@ -44,7 +44,8 @@ flowchart LR
   Linux 走默认搜索路径, Windows 由 build.rs 用 pkg-config 问出 gst 捆绑包的
   nice.lib 目录 (build.rs)
 - `agent.rs` 是唯一的安全封装层, 所有 unsafe 都收在这一个文件里
-- `blob.rs` 纯文本处理, 零 unsafe
+- `blob.rs` 纯文本处理, 零 unsafe; `sdp.rs` 同样纯文本 (标准媒体 SDP 与
+  ICE 属性互转), 供 sigserver/SIP 两条信令路径复用
 
 ### 线程模型 (本模块最重要的一条纪律)
 
@@ -114,7 +115,8 @@ WSAStartup, 裸用会导致 gather 立即失败; `ensure_winsock` 用
 | 项 | 位置 | 说明 |
 |---|---|---|
 | `IceAgent::new(IceConfig)` | src/agent.rs:157 | 建 agent + glib 线程; `IceConfig{stun, controlling, components}` |
-| `local_blob()` | src/agent.rs:326 | gather 完成, 返回本地 blob |
+| `local_blob()` | src/agent.rs:326 | gather 完成, 返回本地 blob (超时报错) |
+| `local_blob_within(limit)` | src/agent.rs | 有上限 gather; 超时用已收集候选 |
 | `add_remote(&IceBlob)` | src/agent.rs:383 | 喂对端 blob, 触发打洞 |
 | `state_rx()` | src/agent.rs:399 | watch 订阅 IceState 变化 |
 | `wait_connected(timeout)` | src/agent.rs:405 | 等 Connected; Failed/超时返回 IceError |
@@ -124,6 +126,9 @@ WSAStartup, 裸用会导致 gather 立即失败; `ensure_winsock` 用
 | `raw_agent()` | src/agent.rs:444 | 裸指针, 仅供 ice_media 注入元件属性 |
 | `close()` | src/agent.rs:282 | 关停 (先停媒体再关, 见生命周期节) |
 | `IceBlob` | src/blob.rs:11 | SDP 文本薄包装, `from_sdp`/`as_str`/`candidates` |
+| `sdp::append_ice` | src/sdp.rs | 把本端 ICE 注入标准 SIP offer/answer |
+| `sdp::parse_offer` | src/sdp.rs | 从标准媒体 SDP 提取 video/audio ICE (可选路) |
+| `sdp::media_endpoint` | src/sdp.rs | 指定网卡上的 UDP host 候选端点 (m= 端口) |
 
 ## 数据面使用注意 (attach_recv 的泄漏纪律)
 
@@ -171,6 +176,7 @@ blob → 等 Connected → 双向各发一帧 payload 断言互通 → 打印
 | src/sys.rs | 手写 libnice FFI + 信号 trampoline + 候选类型常量 |
 | src/agent.rs | IceAgent 安全封装: glib 线程纪律 / 引用账 / 状态订阅 / 数据面 |
 | src/blob.rs | SDP blob 包装与候选行解析 (展示用) |
+| src/sdp.rs | 标准媒体 SDP 与 ICE 属性互转 (sigserver / SIP 共用) |
 | src/signal.rs | sigserver WS 客户端: join / 槽位 / blob 交换 (feature=signal) |
 | src/lib.rs | 模块组织与 re-export |
 | build.rs | Windows 下 nice.lib 链接搜索 |
@@ -178,6 +184,8 @@ blob → 等 Connected → 双向各发一帧 payload 断言互通 → 打印
 
 ## 已知取舍 (记录不修)
 
+- 重建给 libnice 的 ICE-only SDP 必须用 `\n` 分行: `nice_agent_parse_remote_sdp`
+  只按 `\n` 切分且不 trim, CRLF 会让候选行末 token 变成 `host\r`, 整份被拒
 - `nice_agent_set_remote_credentials` 已封装但暂无调用点 (blob SDP 路径
   不经过它), 保留供后续直喂 credentials 的场景 (src/sys.rs:5-7 注释)
 - 呼叫期对端 hangup 的 WS 转发不读 (协议保留, 消费方各自取舍)

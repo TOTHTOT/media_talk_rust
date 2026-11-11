@@ -82,6 +82,16 @@ pub fn bind_recv_sockets(
 /// 来电振铃等待用户接听的最长时间, 超时自动拒接, 避免对端挂死在 ringing
 pub const INCOMING_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// SIP 通话 ICE 配置.
+#[derive(Debug, Clone, Default)]
+pub struct SipIceConfig {
+    /// 是否在 SIP offer/answer 中附带 ICE 参数并走 nicesink/nicesrc.
+    /// 对端不回 ICE 时自动回退普通 RTP.
+    pub enabled: bool,
+    /// STUN URI (如 `stun://stun.miwifi.com:3478`); None = 仅 host 候选.
+    pub stun: Option<String>,
+}
+
 /// SIP 配置: 服务器账号 + 本机媒体源, 由 UI 入口装配.
 /// `rtp_ports` 允许自定义, 默认 (40000, 40002).
 #[derive(Debug)]
@@ -105,6 +115,8 @@ pub struct GuiSipConfig {
     /// 被叫侧 RTP 首选端口 (音频, 视频); 默认 RtpPorts::DEFAULT.
     /// 主叫不用它 (永远临时端口), 被叫被占时回退临时端口, 见 `bind_recv_sockets`
     pub rtp_ports: RtpPorts,
+    /// SIP 通话 ICE 配置 (默认关闭, 保持原有普通 RTP 行为).
+    pub ice: SipIceConfig,
 }
 
 impl Default for GuiSipConfig {
@@ -119,6 +131,7 @@ impl Default for GuiSipConfig {
             video_src: TrackSource::LocalCamera { device: None },
             max_width: Default::default(),
             rtp_ports: RtpPorts::DEFAULT,
+            ice: SipIceConfig::default(),
         }
     }
 }

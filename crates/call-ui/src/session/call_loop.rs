@@ -28,7 +28,7 @@ use crate::media;
 /// returns: Result<String> — 结束原因 (peer hung up / local hung up / route channel closed)
 pub(super) async fn call_loop(
     dialog: &InviteDialog,
-    media: &mut Option<media::MediaHandles>,
+    media: &mut Option<media::CallMedia>,
     ctl_rx: &mut mpsc::Receiver<WorkerCmd>,
     update_rx: &mut mpsc::Receiver<UpdateMsg>,
     local: Ipv4Addr,

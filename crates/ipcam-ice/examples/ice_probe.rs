@@ -154,7 +154,14 @@ async fn run(args: Args) -> i32 {
     };
     info!(bytes = remote.as_str().len(), "remote media SDP received");
     let remote_ice = match sdp::parse_offer(remote.as_str()) {
-        Ok(media) => media.video,
+        Ok(media) => match media.video {
+            Some(video) => video,
+            None => {
+                error!("remote media SDP has no video media");
+                agent.close();
+                return 1;
+            }
+        },
         Err(e) => {
             error!("failed to parse remote media SDP: {e}");
             agent.close();

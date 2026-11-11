@@ -303,7 +303,10 @@ async fn call_flow(
 
     // 3. 解析对端媒体 SDP, 各自喂入 ICE agent 并等待连通.
     let remote = sdp::parse_offer(remote.as_str())?;
-    video_agent.add_remote(&remote.video).await?;
+    let remote_video = remote
+        .video
+        .ok_or_else(|| IceCtlError::Sig("remote SDP has no video media".into()))?;
+    video_agent.add_remote(&remote_video).await?;
     let remote_audio = remote
         .audio
         .ok_or_else(|| IceCtlError::Sig("remote SDP has no audio media".into()))?;

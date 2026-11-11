@@ -7,13 +7,12 @@ use std::net::IpAddr;
 
 use ipcam_core::{AudioCodec, VideoCodec};
 use sdp_rs::MediaDescription;
-use sdp_rs::lines::Attribute;
-use sdp_rs::lines::attribute::Rtpmap;
 use sdp_rs::lines::media::{Media, MediaType, ProtoType};
 use tracing::warn;
 
 use crate::sdp::{
-    OfferMedia, OfferMedias, audio_media_description, session_skeleton, video_media_description,
+    OfferMedia, OfferMedias, audio_media_description, rtpmap_attribute, session_skeleton,
+    video_media_description,
 };
 
 /// 协商结果: (选中的音频 pt+编码, 选中的视频 pt+编码+fmtp, answer 文本)
@@ -171,12 +170,12 @@ fn rejected_media(ty: MediaType, offered: &OfferMedia) -> MediaDescription {
         connections: vec![],
         bandwidths: vec![],
         key: None,
-        attributes: vec![Attribute::Rtpmap(Rtpmap {
-            payload_type: first.payload_type as u32,
-            encoding_name: first.codec.clone(),
-            clock_rate: first.clock_rate,
-            encoding_params: first.encoding_params,
-        })],
+        attributes: vec![rtpmap_attribute(
+            first.payload_type,
+            &first.codec,
+            first.clock_rate,
+            first.encoding_params,
+        )],
     }
 }
 

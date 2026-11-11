@@ -8,8 +8,10 @@
 //! 对端协商成其他编码时该路只收不发. 单路失败只 warn 不抛错,
 //! 通话不因一路媒体挂掉 (同 answer.rs 原则).
 //!
-//! 协商计划 (MediaPlan/VideoDest/codec 谓词) 在子模块 plan.
+//! 协商计划 (MediaPlan/VideoDest/codec 谓词) 在子模块 plan; SIP+ICE
+//! 媒体会话 (nicesink/nicesrc + 双 agent) 在子模块 ice.
 
+mod ice;
 mod plan;
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -25,8 +27,33 @@ use tracing::{info, warn};
 
 use crate::session::types::{GuiSipConfig, RecvSockets, RtpPorts};
 
+pub(crate) use ice::IceCallMedia;
 use plan::{MediaPlan, VideoDest, peer_audio_send_params, peer_video_send_params, plan_from_offer};
 pub(crate) use plan::{audio_pred, video_pred};
+
+/// 一路通话的媒体实现: 普通 RTP 或 ICE (nicesink/nicesrc).
+pub enum CallMedia {
+    Rtp(MediaHandles),
+    Ice(IceCallMedia),
+}
+
+impl CallMedia {
+    /// re-INVITE 重协商: 只有普通 RTP 路径支持重开管线; ICE 路径在
+    /// re-INVITE 时回不带 SDP 的 200 (现有媒体不动).
+    pub fn renegotiate(&mut self, offer: &OfferMedias) {
+        if let Self::Rtp(media) = self {
+            media.renegotiate(offer);
+        }
+    }
+
+    /// 停媒体. ICE 变体由 `IceCallMedia::drop` 先停管线再关 agent.
+    pub fn stop(self) {
+        match self {
+            Self::Rtp(media) => media.stop(),
+            Self::Ice(media) => drop(media),
+        }
+    }
+}
 
 /// 一路通话的媒体句柄: 接收器 + 发送器 + 协商方案. re-INVITE 时按
 /// MediaPlan 比对 (recv 编码对 / send 地址/pt/编码), 变了才重启
@@ -179,8 +206,14 @@ pub fn reinvite_answer(
     offer_body: &[u8],
     local: Ipv4Addr,
     rtp_ports: RtpPorts,
-    media: &mut Option<MediaHandles>,
+    media: &mut Option<CallMedia>,
 ) -> Option<Vec<u8>> {
+    if matches!(media, Some(CallMedia::Ice(_))) {
+        // ICE 媒体链固定 H264/Opus, 不支持在通话中换编码/换端口;
+        // 回 200 不带 SDP, 现有媒体继续.
+        info!("re-INVITE during ICE call: reply 200 without SDP");
+        return None;
+    }
     let new_offer = match parse_offer_all(offer_body) {
         Ok(o) => o,
         Err(e) => {
@@ -345,14 +378,14 @@ pub fn start_incoming(
     sockets: RecvSockets,
     cfg: &GuiSipConfig,
     tap: &VideoFrameSink,
-) -> Option<MediaHandles> {
-    Some(MediaHandles::new(
+) -> Option<CallMedia> {
+    Some(CallMedia::Rtp(MediaHandles::new(
         recv_ports,
         cfg,
         tap.clone(),
         plan_from_offer(offer, cfg.max_width),
         sockets,
-    ))
+    )))
 }
 
 /// 主叫侧起媒体: peers 是对端 answer 解析结果, rtp_ports 本机接收端口.
@@ -378,7 +411,7 @@ pub fn start_outgoing(
     sockets: RecvSockets,
     cfg: &GuiSipConfig,
     tap: &VideoFrameSink,
-) -> Option<MediaHandles> {
+) -> Option<CallMedia> {
     // 收端编码: answer 收窄成什么就收什么, 不支持的那路不收
     let recv_audio = peers.audio.as_ref().and_then(|p| audio_pred(&p.codec));
     let recv_video = peers.video.as_ref().and_then(|p| {
@@ -402,7 +435,7 @@ pub fn start_outgoing(
         .video
         .as_ref()
         .and_then(|p| peer_video_send_params(p, cfg.max_width));
-    Some(MediaHandles::new(
+    Some(CallMedia::Rtp(MediaHandles::new(
         *rtp_ports,
         cfg,
         tap.clone(),
@@ -412,5 +445,5 @@ pub fn start_outgoing(
             send_video,
         },
         sockets,
-    ))
+    )))
 }

@@ -2,7 +2,7 @@
 //!
 //! libnice 的 `nice_agent_generate_local_sdp` 只产出 ICE-only SDP
 //! (`m=- ... ICE/SDP`). 本模块把 ICE 凭据/候选合并进标准 `m=video` /
-//! `m=audio` 媒体段, 供产品化信令 (sigserver / 后续 SIP) 使用.
+//! `m=audio` 媒体段 (sigserver 直连与 SIP offer/answer 共用).
 //!
 //! 媒体编码固定与 `ipcam-gst::ice_media` 对齐:
 //! - video: H264, payload 96, clock 90000
@@ -27,9 +27,9 @@ pub enum SdpError {
     MissingCandidate(&'static str),
 }
 
-/// 解析后的对端媒体 ICE 信息.
+/// 解析后的对端媒体 ICE 信息. 至少一路存在 (解析时校验).
 pub struct RemoteMedia {
-    pub video: IceBlob,
+    pub video: Option<IceBlob>,
     pub audio: Option<IceBlob>,
 }
 
@@ -87,25 +87,131 @@ pub fn build_offer(video_ice: &IceBlob, audio_ice: Option<&IceBlob>) -> Result<S
 }
 
 /// 从对端标准媒体 SDP 中提取 video/audio 各自的 ICE 参数.
+/// 至少一路带完整 ICE (ufrag+pwd+候选), 否则报错; 只有一路是正常情况.
 pub fn parse_offer(sdp: &str) -> Result<RemoteMedia, SdpError> {
     let (session_attrs, sections) = split_sections(sdp);
 
     let video = sections
         .iter()
         .find(|section| section.media == "video")
-        .ok_or(SdpError::MissingMedia("video"))?;
-    let video_ice = extract_ice(&video.attrs, &session_attrs, "video")?;
-
+        .map(|section| extract_ice(&section.attrs, &session_attrs, "video"))
+        .transpose()?;
     let audio = sections
         .iter()
         .find(|section| section.media == "audio")
         .map(|section| extract_ice(&section.attrs, &session_attrs, "audio"))
         .transpose()?;
+    if video.is_none() && audio.is_none() {
+        return Err(SdpError::MissingMedia("audio/video"));
+    }
 
     Ok(RemoteMedia {
-        video: ice_only_blob(&video_ice),
+        video: video.map(|part| ice_only_blob(&part)),
         audio: audio.map(|part| ice_only_blob(&part)),
     })
+}
+
+/// 把本端 ICE 参数注入一份标准媒体 SDP (SIP offer/answer 文本).
+///
+/// 按 `m=video` / `m=audio` 段追加 `a=ice-ufrag` / `a=ice-pwd` /
+/// `a=candidate` 行; 传入的 blob 必须有对应媒体段, 否则报错.
+/// 文本统一输出 CRLF (SIP SDP 约定), 与 `ice_only_blob` 的 LF 不同.
+pub fn append_ice(
+    sdp: &str,
+    video: Option<&IceBlob>,
+    audio: Option<&IceBlob>,
+) -> Result<String, SdpError> {
+    let video = video.map(parse_ice_blob).transpose()?;
+    let audio = audio.map(parse_ice_blob).transpose()?;
+    if video.is_none() && audio.is_none() {
+        return Err(SdpError::MissingMedia("audio/video"));
+    }
+
+    let mut out = String::with_capacity(sdp.len() + 1024);
+    let mut current: Option<&str> = None;
+    let mut seen_video = false;
+    let mut seen_audio = false;
+    for raw in sdp.lines() {
+        let line = raw.trim_end_matches('\r');
+        if let Some(rest) = line.strip_prefix("m=") {
+            // 上一个媒体段结束, 在下一段开始前追加它的 ICE 属性.
+            push_section_ice(
+                &mut out,
+                current,
+                &video,
+                &audio,
+                &mut seen_video,
+                &mut seen_audio,
+            );
+            current = rest.split_whitespace().next();
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    push_section_ice(
+        &mut out,
+        current,
+        &video,
+        &audio,
+        &mut seen_video,
+        &mut seen_audio,
+    );
+    if video.is_some() && !seen_video {
+        return Err(SdpError::MissingMedia("video"));
+    }
+    if audio.is_some() && !seen_audio {
+        return Err(SdpError::MissingMedia("audio"));
+    }
+    Ok(out)
+}
+
+/// 本端某个媒体 (video/audio) 的默认 RTP 端点: 指定网卡上的首个 UDP
+/// host 候选. 用于 SIP SDP 的 `m=` 端口 (ICE 失败回退普通 RTP 时复用).
+pub fn media_endpoint(blob: &IceBlob, ip: std::net::IpAddr) -> Option<std::net::SocketAddr> {
+    blob.as_str().lines().find_map(|raw| {
+        let fields: Vec<&str> = raw
+            .trim()
+            .strip_prefix("a=candidate:")?
+            .split_whitespace()
+            .collect();
+        // foundation component transport priority addr port typ kind
+        if fields.len() < 8 || fields[1] != "1" || fields[2] != "UDP" || fields[7] != "host" {
+            return None;
+        }
+        let addr: std::net::IpAddr = fields[4].parse().ok()?;
+        if addr != ip {
+            return None;
+        }
+        Some(std::net::SocketAddr::new(addr, fields[5].parse().ok()?))
+    })
+}
+
+fn push_section_ice(
+    out: &mut String,
+    media: Option<&str>,
+    video: &Option<IcePart>,
+    audio: &Option<IcePart>,
+    seen_video: &mut bool,
+    seen_audio: &mut bool,
+) {
+    let part = match media {
+        Some("video") => {
+            *seen_video = true;
+            video.as_ref()
+        }
+        Some("audio") => {
+            *seen_audio = true;
+            audio.as_ref()
+        }
+        _ => None,
+    };
+    let Some(part) = part else { return };
+    push_line(out, &format!("a=ice-ufrag:{}", part.ufrag));
+    push_line(out, &format!("a=ice-pwd:{}", part.pwd));
+    for candidate in &part.candidates {
+        push_line(out, candidate);
+    }
+    push_line(out, "a=end-of-candidates");
 }
 
 struct Section {
@@ -317,12 +423,49 @@ mod tests {
         let ice = IceBlob::from_sdp(LOCAL_ICE.into());
         let sdp = build_offer(&ice, Some(&ice)).unwrap();
         let remote = parse_offer(&sdp).unwrap();
-        assert!(remote.video.as_str().contains("a=candidate:"));
+        let video = remote.video.expect("video section");
+        assert!(video.as_str().contains("a=candidate:"));
         // libnice 按 "\n" 切分且不 trim, 重建的 ICE-only SDP 必须无 CR.
-        assert!(!remote.video.as_str().contains('\r'));
+        assert!(!video.as_str().contains('\r'));
         let audio = remote.audio.expect("audio section");
         assert!(audio.as_str().contains("a=candidate:"));
         assert!(!audio.as_str().contains('\r'));
+    }
+
+    #[test]
+    fn injects_ice_into_sip_media_sdp() {
+        let ice = IceBlob::from_sdp(LOCAL_ICE.into());
+        let with_ice = build_offer(&ice, Some(&ice)).unwrap();
+        // 去掉 build_offer 自带的 ICE 行, 模拟一份普通 SIP offer.
+        let plain: String = with_ice
+            .lines()
+            .filter(|l| !l.starts_with("a=ice-") && !l.starts_with("a=candidate:"))
+            .map(|l| format!("{l}\r\n"))
+            .collect();
+        let out = append_ice(&plain, Some(&ice), Some(&ice)).unwrap();
+        assert_eq!(out.matches("a=ice-ufrag:abcd").count(), 2);
+        assert_eq!(out.matches("a=candidate:").count(), 2);
+        // ICE 属性必须落在各自媒体段内 (video 段在 audio 段之前).
+        let video_pos = out.find("m=video").unwrap();
+        let audio_pos = out.find("m=audio").unwrap();
+        let first_ufrag = out.find("a=ice-ufrag:abcd").unwrap();
+        let last_ufrag = out.rfind("a=ice-ufrag:abcd").unwrap();
+        assert!(video_pos < first_ufrag && first_ufrag < audio_pos);
+        assert!(audio_pos < last_ufrag);
+        // SIP 文本统一 CRLF, 且不能有 CRLF -> CR 的重复.
+        assert!(out.contains("\r\n"));
+        assert!(!out.contains("\r\r"));
+    }
+
+    #[test]
+    fn media_endpoint_picks_udp_host_on_local_ip() {
+        let ice = IceBlob::from_sdp(LOCAL_ICE.into());
+        let ip = "192.168.2.109".parse().unwrap();
+        assert_eq!(
+            media_endpoint(&ice, ip),
+            Some(std::net::SocketAddr::new(ip, 65025))
+        );
+        assert_eq!(media_endpoint(&ice, "192.168.2.110".parse().unwrap()), None);
     }
 
     #[test]

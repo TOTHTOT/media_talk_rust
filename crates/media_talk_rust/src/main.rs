@@ -87,6 +87,13 @@ enum Commands {
         /// Audio RTP port
         #[arg(long, short, default_value_t = DEFAULT_AUDIO_RTP_PORT)]
         audio_rtp_port: u16,
+        /// Enable ICE for SIP calls (standard SDP a=ice-*; falls back to
+        /// plain RTP when the peer does not answer with ICE)
+        #[arg(long, default_value_t = false)]
+        ice: bool,
+        /// STUN server URI used when --ice is enabled (empty = host only)
+        #[arg(long, default_value = "stun://stun.miwifi.com:3478")]
+        stun: String,
     },
 }
 
@@ -157,6 +164,8 @@ async fn main() -> anyhow::Result<()> {
             local_ip,
             video_rtp_port,
             audio_rtp_port,
+            ice,
+            stun,
         } => {
             let local_ip = match local_ip {
                 Some(IpAddr::V4(v4)) => Some(v4),
@@ -175,6 +184,10 @@ async fn main() -> anyhow::Result<()> {
                 rtp_ports: RtpPorts {
                     audio: audio_rtp_port,
                     video: video_rtp_port,
+                },
+                ice: call_ui::session::SipIceConfig {
+                    enabled: ice,
+                    stun: (!stun.is_empty()).then_some(stun),
                 },
             };
             call_ui::run(cfg)?;

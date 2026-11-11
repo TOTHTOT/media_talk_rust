@@ -95,7 +95,7 @@ pub struct IceConfig {
     pub stun: Option<String>,
     /// true = controlling (通常 offer 方), false = controlled.
     pub controlling: bool,
-    /// component 数: 1 = 纯数据场景; 2 = media 约定 (1=video, 2=audio).
+    /// component 数: 每路媒体独立 agent 固定 1; 纯数据场景同样是 1.
     /// libnice 要求 >= 1, 传 0 在建 agent 时报 [`IceError::CreateStream`].
     pub components: u32,
 }
@@ -198,7 +198,7 @@ unsafe impl Sync for IceAgent {}
 
 impl IceAgent {
     /// 创建 agent: 起独立 glib 线程, 按 `cfg.components` 建流 (component
-    /// 编号 1..N, media 场景 1=video/2=audio, 纯数据场景传 1),
+    /// 编号 1..N; 每路媒体独立 agent 固定传 1, 纯数据场景同样传 1),
     /// 连接状态信号, 阻塞至建流完成 (上限 5s).
     ///
     /// # Arguments
@@ -392,6 +392,26 @@ impl IceAgent {
     ///
     /// ```
     pub async fn local_blob(&self) -> Result<IceBlob, IceError> {
+        if !self.gather(Duration::from_secs(10)).await? {
+            return Err(IceError::Timeout("gather"));
+        }
+        self.local_sdp_blob().await
+    }
+
+    /// 有上限的候选收集: 超时也返回已收集到的候选 (通常至少含 host),
+    /// 用于 SIP 建立阶段不让 STUN 不可达阻塞呼叫. 超时只记 warn.
+    pub async fn local_blob_within(&self, limit: Duration) -> Result<IceBlob, IceError> {
+        if !self.gather(limit).await? {
+            tracing::warn!(
+                timeout_ms = limit.as_millis(),
+                "ICE gathering timed out, using candidates gathered so far"
+            );
+        }
+        self.local_sdp_blob().await
+    }
+
+    /// 触发 gather 并等 gathering-done; 返回 false 表示等待超时.
+    async fn gather(&self, limit: Duration) -> Result<bool, IceError> {
         let (done_tx, done_rx) = oneshot::channel::<()>();
         let done_slot = Mutex::new(Some(done_tx));
         // 信号连接与 gather 放进同一个 invoke, 顺序不再依赖跨调用的调度时序.
@@ -414,9 +434,14 @@ impl IceAgent {
         if gather_rc == 0 {
             return Err(IceError::GatherFailed);
         }
-        tokio::time::timeout(Duration::from_secs(10), done_rx)
-            .await
-            .map_err(|_| IceError::Timeout("gather"))??;
+        Ok(matches!(
+            tokio::time::timeout(limit, done_rx).await,
+            Ok(Ok(()))
+        ))
+    }
+
+    /// 生成当前已收集候选的本地 ICE-only SDP.
+    async fn local_sdp_blob(&self) -> Result<IceBlob, IceError> {
         let sdp = self
             .invoke(|agent, _| {
                 // SAFETY: ctx 线程; 返回值所有权移出, 由调用方 g_free.
@@ -687,7 +712,7 @@ mod tests {
         loopback_with_components(1).await;
     }
 
-    /// 环回主体: component 数走参数 (2 = media 约定 1=video/2=audio).
+    /// 环回主体: component 数走参数 (标准媒体路径固定 1).
     async fn loopback_with_components(components: u32) {
         let Ok(a) = IceAgent::new(IceConfig {
             stun: None,
