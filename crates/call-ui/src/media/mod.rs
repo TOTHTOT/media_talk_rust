@@ -365,7 +365,7 @@ fn start_sender(
 /// * `cfg`: 本机媒体源与视频限宽配置
 /// * `tap`: 视频帧回调, 接收器视频路经它上屏, 重启时复用
 ///
-/// returns: Option<MediaHandles> — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
+/// returns: Option<CallMedia> — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
 ///
 /// # Examples
 ///
@@ -398,7 +398,7 @@ pub fn start_incoming(
 /// * `cfg`: 本机媒体源与视频限宽配置
 /// * `tap`: 视频帧回调, 接收器视频路经它上屏
 ///
-/// returns: Option<MediaHandles> — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
+/// returns: Option<CallMedia> — 媒体句柄 (两路都不可用时是空句柄, 通话保持)
 ///
 /// # Examples
 ///

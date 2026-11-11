@@ -47,8 +47,8 @@ use crate::{
 };
 use ipcam_ice::IceAgent;
 
-/// component 号: 每路媒体独立 agent, 单 stream 固定 component 1.
-const COMP_VIDEO: u32 = 1;
+/// component 号: 每路媒体独立 agent, 单 stream 固定 component 1 (音视频共用).
+const COMP: u32 = 1;
 
 /// 音频接收方式: 板子扬声器 / 仅 tap (开发机无 ALSA).
 #[derive(Debug, Clone)]
@@ -269,7 +269,7 @@ fn build_video_recv(
     tap: VideoFrameSink,
     bytes: &Arc<AtomicBytes>,
 ) -> Result<(), GstStreamError> {
-    let src = make_nice_element("nicesrc", agent, COMP_VIDEO)?;
+    let src = make_nice_element("nicesrc", agent, COMP)?;
     let depay = make("rtph264depay")?;
     let parse = make("h264parse")?;
     let dec = make("avdec_h264")?;
@@ -308,7 +308,7 @@ fn build_audio_recv(
     cfg: &IceMediaConfig<'_>,
     bytes: &Arc<AtomicBytes>,
 ) -> Result<(), GstStreamError> {
-    let src = make_nice_element("nicesrc", agent, COMP_VIDEO)?;
+    let src = make_nice_element("nicesrc", agent, COMP)?;
     let depay = make("rtpopusdepay")?;
     let dec = make("opusdec")?;
     let conv = make("audioconvert")?;
@@ -391,7 +391,7 @@ fn link_video_send(
     let pay = make("rtph264pay")?;
     pay.set_property("pt", 96u32);
     pay.set_property("config-interval", 1i32);
-    let sink = make_nice_sink(agent, COMP_VIDEO)?;
+    let sink = make_nice_sink(agent, COMP)?;
     install_byte_probe(&static_pad(&sink, "sink")?, bytes, true);
     chain.extend([pay, sink]);
     plug_chain(pipeline, raw_pad, &chain, "ice video send")
@@ -434,7 +434,7 @@ fn link_audio_send(
     let enc = make("opusenc")?;
     let pay = make("rtpopuspay")?;
     pay.set_property("pt", 111u32);
-    let sink = make_nice_sink(agent, COMP_VIDEO)?;
+    let sink = make_nice_sink(agent, COMP)?;
     install_byte_probe(&static_pad(&sink, "sink")?, bytes, true);
     chain.extend([caps, enc, pay, sink]);
     plug_chain(pipeline, raw_pad, &chain, "ice audio send")
@@ -656,8 +656,8 @@ mod tests {
         let asrc = gst_app::AppSrc::builder()
             .caps(&gst::Caps::builder("application/x-ice").build())
             .build();
-        let nicesink = make_nice_sink(AgentPtr(a.raw_agent()), COMP_VIDEO).unwrap();
-        let nicesrc = make_nice_element("nicesrc", AgentPtr(a.raw_agent()), COMP_VIDEO).unwrap();
+        let nicesink = make_nice_sink(AgentPtr(a.raw_agent()), COMP).unwrap();
+        let nicesrc = make_nice_element("nicesrc", AgentPtr(a.raw_agent()), COMP).unwrap();
         let asink = gst_app::AppSink::builder().sync(false).build();
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
         asink.set_callbacks(
