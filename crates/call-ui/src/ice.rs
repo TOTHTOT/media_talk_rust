@@ -56,6 +56,8 @@ enum IceCtlError {
     Kv(String),
     #[error(transparent)]
     Signal(#[from] ipcam_ice::signal::SignalError),
+    #[error(transparent)]
+    Sdp(#[from] ipcam_ice::sdp::SdpError),
     #[error("signaling exchange failed: {0}")]
     Sig(String),
     #[error("ICE connectivity check failed (peer unreachable?)")]

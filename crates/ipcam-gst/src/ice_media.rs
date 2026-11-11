@@ -1,6 +1,5 @@
 //! ICE 通话媒体管线: 复用 SIP 发送链的编码配置, 收发端点从 udpsink/udpsrc
-//! 换成 nicesink/nicesrc, 共享 IceAgent 的 NiceAgent (agent 只有一个
-//! stream: component 1=video, 2=audio).
+//! 换成 nicesink/nicesrc. 每路媒体一个独立 IceAgent (单 stream, component 1).
 //!
 //! 链形 (分支按配置裁剪, 无消费者不建):
 //!   视频发: 源 → [解码] → 源支路(queue → videoconvert → videoscale →
@@ -10,8 +9,8 @@
 //!           → videoconvert → appsink(RGBA tap)
 //!   音频发: 麦克风 → 源支路(queue → audioconvert → audioresample)
 //!           → capsfilter(48kHz/stereo) → opusenc → rtpopuspay(pt=111)
-//!           → nicesink(2)
-//!   音频收: nicesrc(2) → rtpopusdepay → opusdec → audioconvert
+//!           → nicesink(1)
+//!   音频收: nicesrc(1) → rtpopusdepay → opusdec → audioconvert
 //!           → audioresample → tee → [alsasink] 与/或 [S16LE appsink tap]
 //!
 //! 上下文模型 (Task 3 实测结论): 本版 libnice 的 attach_recv 会把
@@ -48,9 +47,8 @@ use crate::{
 };
 use ipcam_ice::IceAgent;
 
-/// component 号: agent 只有一个 stream, 1=video, 2=audio.
+/// component 号: 每路媒体独立 agent, 单 stream 固定 component 1.
 const COMP_VIDEO: u32 = 1;
-const COMP_AUDIO: u32 = 2;
 
 /// 音频接收方式: 板子扬声器 / 仅 tap (开发机无 ALSA).
 #[derive(Debug, Clone)]
@@ -62,8 +60,10 @@ pub enum AudioRecv {
 
 /// ICE 媒体会话配置.
 pub struct IceMediaConfig<'a> {
-    /// 已连通 (或连通中) 的 ICE agent.
-    pub agent: &'a IceAgent,
+    /// video 专用 ICE agent (标准 SDP: 每路媒体一个 stream/component 1).
+    pub video_agent: Option<&'a IceAgent>,
+    /// audio 专用 ICE agent (同上).
+    pub audio_agent: Option<&'a IceAgent>,
     /// 发送视频源; None = 只收不放视频 (调试时常见).
     pub video_src: Option<TrackSource>,
     /// 是否发送音频 (源固定为本机麦克风).
@@ -126,11 +126,12 @@ unsafe impl Sync for AgentPtr {}
 /// 收发分支按配置裁剪: 视频收建不建看 video tap, 音频收看 audio_recv +
 /// audio tap, 至少一个分支都没有则报 InvalidConfig. 媒体元件启动即
 /// attach_recv 接管 component I/O, 与 agent 的连通状态机在同一批 ctx 上
-/// 推进; 对端 blob 喂入 (add_remote) 后才会真正收发数据.
+/// 推进; 对端 ICE 参数喂入 (add_remote) 后才会真正收发数据.
 ///
 /// # Arguments
 ///
-/// * `cfg`: 媒体配置; `cfg.agent` 必须已 gathering 完成并喂入对端 blob.
+/// * `cfg`: 媒体配置; 用到的 `video_agent`/`audio_agent` 必须已
+///   gathering 完成并喂入对端 ICE 参数.
 ///
 /// returns: Result<IceMediaHandle, GstStreamError>
 ///
@@ -148,32 +149,51 @@ pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstSt
     }
     let pipeline = gst::Pipeline::new();
     let bytes = Arc::new(AtomicBytes::default());
-    // 裸指针进 'static 回调的搬运容器; 存活纪律见模块注释 (handle 先于 agent drop).
-    let agent = AgentPtr(cfg.agent.raw_agent());
+    // 产品化路径: 每路媒体一个独立 ICE agent, 各自 stream=1/component=1.
+    let video = cfg.video_agent.map(|agent| AgentPtr(agent.raw_agent()));
+    let audio = cfg.audio_agent.map(|agent| AgentPtr(agent.raw_agent()));
+    let video_wanted = cfg.taps.video.is_some() || cfg.video_src.is_some();
+    let audio_wanted = audio_recv_wanted(cfg) || cfg.audio_send;
+    if video_wanted && video.is_none() {
+        return Err(GstStreamError::InvalidConfig(
+            "ice media: video agent missing".into(),
+        ));
+    }
+    if audio_wanted && audio.is_none() {
+        return Err(GstStreamError::InvalidConfig(
+            "ice media: audio agent missing".into(),
+        ));
+    }
     let max_width = cfg.max_width;
 
     if let Some(tap) = &cfg.taps.video {
-        build_video_recv(&pipeline, agent, tap.clone(), &bytes)?;
+        build_video_recv(
+            &pipeline,
+            video.expect("video agent checked"),
+            tap.clone(),
+            &bytes,
+        )?;
     }
     if audio_recv_wanted(cfg) {
-        build_audio_recv(&pipeline, agent, cfg, &bytes)?;
+        build_audio_recv(&pipeline, audio.expect("audio agent checked"), cfg, &bytes)?;
     }
     if let Some(source) = &cfg.video_src {
         info!(video_src = %source.label(), "ice media: video send branch");
         let pipeline_cb = pipeline.clone();
+        let video = video.expect("video agent checked");
         match source {
             TrackSource::File(path) => {
                 let uri = file_uri(path)?;
                 let bytes = bytes.clone();
                 plug_uri_source(&pipeline, &uri, TrackKind::Video, move |pad| {
-                    link_video_send(&pipeline_cb, &pad, agent, max_width, &bytes)
+                    link_video_send(&pipeline_cb, &pad, video, max_width, &bytes)
                 })?;
             }
             TrackSource::Rtsp { uri } => {
                 let uri = uri.clone();
                 let bytes = bytes.clone();
                 plug_uri_source(&pipeline, &uri, TrackKind::Video, move |pad| {
-                    link_video_send(&pipeline_cb, &pad, agent, max_width, &bytes)
+                    link_video_send(&pipeline_cb, &pad, video, max_width, &bytes)
                 })?;
             }
             TrackSource::LocalCamera { device } => {
@@ -182,7 +202,7 @@ pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstSt
                     &pipeline,
                     camera_src_name(),
                     device.as_deref(),
-                    move |pad| link_video_send(&pipeline_cb, &pad, agent, max_width, &bytes),
+                    move |pad| link_video_send(&pipeline_cb, &pad, video, max_width, &bytes),
                 )?;
             }
             TrackSource::Mic => {
@@ -196,8 +216,9 @@ pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstSt
         info!("ice media: audio send branch (mic)");
         let pipeline_cb = pipeline.clone();
         let bytes = bytes.clone();
+        let audio = audio.expect("audio agent checked");
         plug_device_source(&pipeline, mic_src_name(), None, move |pad| {
-            link_audio_send(&pipeline_cb, &pad, agent, &bytes)
+            link_audio_send(&pipeline_cb, &pad, audio, &bytes)
         })?;
     }
 
@@ -287,7 +308,7 @@ fn build_audio_recv(
     cfg: &IceMediaConfig<'_>,
     bytes: &Arc<AtomicBytes>,
 ) -> Result<(), GstStreamError> {
-    let src = make_nice_element("nicesrc", agent, COMP_AUDIO)?;
+    let src = make_nice_element("nicesrc", agent, COMP_VIDEO)?;
     let depay = make("rtpopusdepay")?;
     let dec = make("opusdec")?;
     let conv = make("audioconvert")?;
@@ -413,7 +434,7 @@ fn link_audio_send(
     let enc = make("opusenc")?;
     let pay = make("rtpopuspay")?;
     pay.set_property("pt", 111u32);
-    let sink = make_nice_sink(agent, COMP_AUDIO)?;
+    let sink = make_nice_sink(agent, COMP_VIDEO)?;
     install_byte_probe(&static_pad(&sink, "sink")?, bytes, true);
     chain.extend([caps, enc, pay, sink]);
     plug_chain(pipeline, raw_pad, &chain, "ice audio send")
@@ -615,14 +636,14 @@ mod tests {
         let Ok(a) = IceAgent::new(IceConfig {
             stun: None,
             controlling: true,
-            components: 2,
+            components: 1,
         }) else {
             return; // libnice 不可用
         };
         let Ok(b) = IceAgent::new(IceConfig {
             stun: None,
             controlling: false,
-            components: 2,
+            components: 1,
         }) else {
             return;
         };

@@ -7,8 +7,9 @@ use std::time::Duration;
 use ipcam_gst::{
     AudioRecv, IceMediaConfig, IceMediaHandle, RawTaps, VideoFrameSink, start_ice_media,
 };
+use ipcam_ice::blob::IceBlob;
 use ipcam_ice::signal::{self, WsClient};
-use ipcam_ice::{IceAgent, IceConfig, IceState};
+use ipcam_ice::{IceAgent, IceConfig, IceState, sdp};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{error, info, warn};
@@ -189,11 +190,23 @@ async fn run_call(
     // join 先于 agent: controlling 由槽位决定 (slot 0 = offerer).
     let (ws, slot) = signal::ws_connect_join(&settings.sigserver, &settings.room).await?;
     info!(slot, room = %settings.room, "ice call: joined sigserver room");
-    let agent = IceAgent::new(IceConfig {
-        stun: settings.stun,
-        controlling: signal::is_offerer(slot),
-        components: 2,
+    let controlling = signal::is_offerer(slot);
+    let video_agent = IceAgent::new(IceConfig {
+        stun: settings.stun.clone(),
+        controlling,
+        components: 1,
     })?;
+    let audio_agent = match IceAgent::new(IceConfig {
+        stun: settings.stun,
+        controlling,
+        components: 1,
+    }) {
+        Ok(agent) => agent,
+        Err(e) => {
+            video_agent.close();
+            return Err(e.into());
+        }
+    };
     let mut media = None;
     let outcome = call_flow(
         cmd_rx,
@@ -201,7 +214,8 @@ async fn run_call(
         inner,
         sources,
         tap,
-        &agent,
+        &video_agent,
+        &audio_agent,
         (ws, slot),
         &mut media,
     )
@@ -212,11 +226,12 @@ async fn run_call(
         m.stop();
     }
     drop(media);
-    agent.close();
+    video_agent.close();
+    audio_agent.close();
     outcome
 }
 
-/// 呼叫主体 (agent 存活期内): 本地候选 → 对端 blob (WS 交换)
+/// 呼叫主体 (agent 存活期内): 本地候选 → 标准媒体 SDP (WS 交换)
 /// → 连通性检查 → 起媒体 → 通话期统计上报. 出错返回 Err, 媒体句柄经
 /// `media` 传出给 run_call 收尾 (本函数自身不停媒体/不关 agent).
 ///
@@ -229,7 +244,8 @@ async fn run_call(
 /// * `inner`: 对外可见的状态机阶段
 /// * `sources`: 本机媒体源配置
 /// * `tap`: 收端视频帧回调
-/// * `agent`: 已建好的 ICE agent (controlling 已按角色定好)
+/// * `video_agent`: 视频专用 ICE agent (controlling 已按角色定好)
+/// * `audio_agent`: 音频专用 ICE agent (同上)
 /// * `sig`: (WS 连接, 槽位)
 /// * `media`: 媒体句柄出参 (起媒体后由 run_call 负责停)
 ///
@@ -250,31 +266,56 @@ async fn call_flow(
     inner: &Arc<Mutex<IceInner>>,
     sources: &IceSources,
     tap: &VideoFrameSink,
-    agent: &IceAgent,
+    video_agent: &IceAgent,
+    audio_agent: &IceAgent,
     sig: (WsClient, u8),
     media: &mut Option<IceMediaHandle>,
 ) -> Result<(), IceCtlError> {
-    // 1. 本地候选: gather 完得到 blob
-    let local = agent.local_blob().await?;
-    info!("ice local blob gathered, local = {local:#?}");
+    // 1. 本地候选: 两路媒体各自 gather, 再合成标准媒体 SDP.
+    let (video_local, audio_local) =
+        tokio::join!(video_agent.local_blob(), audio_agent.local_blob());
+    let video_local = video_local?;
+    let audio_local = audio_local?;
+    let local = IceBlob::from_sdp(sdp::build_offer(&video_local, Some(&audio_local))?);
+    let pretty = local.as_str().replace("\r\n", "\n");
+    info!(
+        bytes = local.as_str().len(),
+        "ice local media SDP gathered:\n{}",
+        pretty.trim_end()
+    );
     if drain_hangup(cmd_rx) {
         return Ok(());
     }
 
-    // 2. 对端 blob: WS 角色交换 (连接在本函数结束时关闭)
+    // 2. 对端媒体 SDP: WS 角色交换 (连接在本函数结束时关闭)
     *inner.lock() = IceInner::Exchanging;
     let (ws, slot) = sig;
     let remote = signal::ws_exchange(ws, slot, &local, signal::OFFER, signal::ANSWER).await?;
-    info!(remote_sdp = ?remote, "ice remote blob received");
+    let pretty = remote.as_str().replace("\r\n", "\n");
+    info!(
+        bytes = remote.as_str().len(),
+        "ice remote media SDP received:\n{}",
+        pretty.trim_end()
+    );
     if drain_hangup(cmd_rx) {
         return Ok(());
     }
 
-    // 3. 喂入对端 blob, 等连通性检查 (两侧都喂入后才真正推进)
-    agent.add_remote(&remote).await?;
+    // 3. 解析对端媒体 SDP, 各自喂入 ICE agent 并等待连通.
+    let remote = sdp::parse_offer(remote.as_str())?;
+    video_agent.add_remote(&remote.video).await?;
+    let remote_audio = remote
+        .audio
+        .ok_or_else(|| IceCtlError::Sig("remote SDP has no audio media".into()))?;
+    audio_agent.add_remote(&remote_audio).await?;
     *inner.lock() = IceInner::Connecting;
     post_status(handle, "连接中", 0, 0);
-    agent.wait_connected(ICE_CONNECT_TIMEOUT).await?;
+    let (video_state, audio_state) = tokio::join!(
+        video_agent.wait_connected(ICE_CONNECT_TIMEOUT),
+        audio_agent.wait_connected(ICE_CONNECT_TIMEOUT)
+    );
+    video_state?;
+    audio_state?;
     if drain_hangup(cmd_rx) {
         return Ok(());
     }
@@ -287,7 +328,8 @@ async fn call_flow(
     #[cfg(not(target_os = "linux"))]
     let audio_recv = AudioRecv::TapOnly;
     let m = start_ice_media(&IceMediaConfig {
-        agent,
+        video_agent: Some(video_agent),
+        audio_agent: Some(audio_agent),
         video_src: sources.video_src.clone(),
         audio_send: sources.audio_send,
         audio_recv,
@@ -303,24 +345,30 @@ async fn call_flow(
     info!("ice media started");
 
     // 5. 通话期: 1s 上报收发字节; 挂断 / 掉线 / 通道断开退出
-    let state_rx = agent.state_rx();
+    let state_rx = video_agent.state_rx();
+    let audio_state_rx = audio_agent.state_rx();
     loop {
         match tokio::time::timeout(STATS_TICK, cmd_rx.recv()).await {
             Ok(Some(IceCmd::Hangup)) => return Ok(()),
             Ok(Some(IceCmd::Call)) => continue, // 占线中, 重复呼叫忽略
             Ok(None) => return Ok(()),
-            Err(_) => match *state_rx.borrow() {
-                IceState::Connected => {
-                    let (tx_b, rx_b) = media.as_ref().map_or((0, 0), IceMediaHandle::bytes);
-                    post_status(handle, "已连接", tx_b / 1024, rx_b / 1024);
+            Err(_) => {
+                if matches!(*audio_state_rx.borrow(), IceState::Failed) {
+                    return Err(IceCtlError::IceFailed);
                 }
-                IceState::Failed => return Err(IceCtlError::IceFailed),
-                other => {
-                    return Err(IceCtlError::Sig(format!(
-                        "ICE connection interrupted: {other:?}"
-                    )));
+                match *state_rx.borrow() {
+                    IceState::Connected => {
+                        let (tx_b, rx_b) = media.as_ref().map_or((0, 0), IceMediaHandle::bytes);
+                        post_status(handle, "已连接", tx_b / 1024, rx_b / 1024);
+                    }
+                    IceState::Failed => return Err(IceCtlError::IceFailed),
+                    other => {
+                        return Err(IceCtlError::Sig(format!(
+                            "ICE connection interrupted: {other:?}"
+                        )));
+                    }
                 }
-            },
+            }
         }
     }
 }

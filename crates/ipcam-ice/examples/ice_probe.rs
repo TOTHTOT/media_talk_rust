@@ -13,6 +13,8 @@
 use std::time::Duration;
 
 use clap::Parser as _;
+use ipcam_ice::blob::IceBlob;
+use ipcam_ice::sdp;
 use ipcam_ice::signal;
 use ipcam_ice::{IceAgent, IceConfig, SelectedKind};
 use tokio::time::{Instant, timeout};
@@ -99,24 +101,37 @@ async fn run(args: Args) -> i32 {
         return 1;
     }
 
-    // 3. 本地 blob + 信令交换 (call-ui 与 probe 共用 signal 模块).
-    //    sigserver 会缓存 offerer 的第一条 blob, answerer 晚加入也能收到.
-    let local = match timeout(remaining(), agent.local_blob()).await {
+    // 3. 本地 ICE + 标准媒体 SDP 信令交换 (call-ui 与 probe 共用).
+    //    sigserver 会缓存 offerer 的第一条 offer, answerer 晚加入也能收到.
+    let local_ice = match timeout(remaining(), agent.local_blob()).await {
         Ok(Ok(blob)) => blob,
         Ok(Err(e)) => {
-            error!("failed to gather local blob: {e}");
+            error!("failed to gather local ICE blob: {e}");
             agent.close();
             return 1;
         }
         Err(_) => {
-            error!("gathering local blob timed out");
+            error!("gathering local ICE blob timed out");
             agent.close();
             return 1;
         }
     };
+    {
+        let pretty = local_ice.as_str().replace("\r\n", "\n");
+        info!("local ICE SDP:\n{}", pretty.trim_end());
+    }
+    let local_sdp = match sdp::build_offer(&local_ice, None) {
+        Ok(sdp) => sdp,
+        Err(e) => {
+            error!("failed to build media SDP: {e}");
+            agent.close();
+            return 1;
+        }
+    };
+    let local = IceBlob::from_sdp(local_sdp);
     info!(
         bytes = local.as_str().len(),
-        "local blob gathered, sending to peer"
+        "local media SDP gathered, sending to peer"
     );
 
     let remote = match timeout(
@@ -137,9 +152,21 @@ async fn run(args: Args) -> i32 {
             return 1;
         }
     };
-    info!(bytes = remote.as_str().len(), "remote blob received");
-    if let Err(e) = agent.add_remote(&remote).await {
-        error!("remote blob rejected: {e}");
+    info!(bytes = remote.as_str().len(), "remote media SDP received");
+    let remote_ice = match sdp::parse_offer(remote.as_str()) {
+        Ok(media) => media.video,
+        Err(e) => {
+            error!("failed to parse remote media SDP: {e}");
+            agent.close();
+            return 1;
+        }
+    };
+    {
+        let pretty = remote_ice.as_str().replace("\r\n", "\n");
+        info!("remote ICE SDP:\n{}", pretty.trim_end());
+    }
+    if let Err(e) = agent.add_remote(&remote_ice).await {
+        error!("remote ICE blob rejected: {e}");
         agent.close();
         return 1;
     }
