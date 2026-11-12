@@ -104,38 +104,26 @@ struct OutgoingOffer {
 /// RTP socket. ICE 任一步失败都回退普通 RTP, 不让呼叫建立卡死.
 async fn prepare_offer(ctx: &OutgoingCtx) -> Result<OutgoingOffer> {
     if ctx.base.cfg.ice.enabled {
-        match ice::prepare(
+        let local = ice::prepare(
             ctx.base.local,
             ctx.base.cfg.ice.stun.clone(),
             true, // 主叫 = offerer = controlling
         )
-        .await
-        {
-            Ok(local) => {
-                let ports = local.ports();
-                let plain = build_av_offer(
-                    IpAddr::V4(ctx.base.local),
-                    ports.audio,
-                    ports.video,
-                    &[PT_PCMU, PT_PCMA, PT_OPUS],
-                )
-                .to_string();
-                match local.offer_sdp(&plain) {
-                    Ok(text) => {
-                        info!(%ctx.callee, ?ports, "calling with ICE, SDP offer:\n{text}");
-                        return Ok(OutgoingOffer {
-                            bytes: text.into_bytes(),
-                            transport: OutgoingTransport::Ice { ports, local },
-                        });
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "failed to build ICE offer, falling back to plain RTP");
-                        drop(local);
-                    }
-                }
-            }
-            Err(e) => warn!(error = %e, "ICE setup failed, falling back to plain RTP"),
-        }
+        .await?;
+        let ports = local.ports();
+        let plain = build_av_offer(
+            IpAddr::V4(ctx.base.local),
+            ports.audio,
+            ports.video,
+            &[PT_PCMU, PT_PCMA, PT_OPUS],
+        )
+        .to_string();
+        let text = local.offer_sdp(&plain)?;
+        info!(%ctx.callee, ?ports, "calling with ICE, SDP offer:\n{text}");
+        return Ok(OutgoingOffer {
+            bytes: text.into_bytes(),
+            transport: OutgoingTransport::Ice { ports, local },
+        });
     }
 
     let (ports, sockets) = super::types::bind_recv_sockets(ctx.base.local, None)?;
@@ -245,13 +233,9 @@ async fn outgoing_inner(
             let mut media = None;
             if ice::answer_supports_ice(&peers) {
                 let answer = String::from_utf8_lossy(resp.body());
-                match ice::activate(local, answer.as_ref(), &ctx.base.cfg, &ctx.base.tap).await {
-                    Ok(m) => media = Some(media::CallMedia::Ice(m)),
-                    Err(e) => warn!(
-                        error = %e,
-                        "SIP ICE activation failed, falling back to plain RTP"
-                    ),
-                }
+                media = Some(media::CallMedia::Ice(
+                    ice::activate(local, answer.as_ref(), &ctx.base.cfg, &ctx.base.tap).await?,
+                ));
             } else {
                 warn!("answer did not select Opus/H264 for ICE, falling back to plain RTP");
                 drop(local);
