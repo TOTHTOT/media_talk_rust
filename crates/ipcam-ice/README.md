@@ -13,7 +13,7 @@ glib/gio/tokio/tracing, 无桌面环境也能编译运行, 供 UI 与无头测�
 边界:
 
 - **不管媒体**: 音视频管线 (nicesink/nicesrc) 在 `ipcam-gst` 的
-  `ice_media.rs`, 它通过 [`IceAgent::raw_agent`](src/agent.rs:444) 拿裸指针
+  `ice_media.rs`, 它通过 [`IceAgent::raw_agent`](src/agent.rs:570) 拿裸指针
   注入元件属性 — 所以本 crate 不需要 gstreamer
 - **不管信令传输**: blob 怎么搬运 (WS 中继 / 复制粘贴) 是消费方的协议,
   本 crate 只生产/消费 blob 文本
@@ -54,7 +54,7 @@ NiceAgent 必须活在它被创建的 GMainContext 线程上. 本 crate 的做�
 MainLoop; **一切 `nice_*` 调用经 `invoke` marshal 回该线程执行**, 调用方
 线程绝不直接碰裸指针; GObject 信号回调同样在该线程触发, trampoline 内
 只做无锁 channel 发送, 不做业务 (src/agent.rs:1-10 模块注释,
-invoke 实现 src/agent.rs:453 附近).
+invoke 实现 src/agent.rs:579 附近).
 
 ```mermaid
 sequenceDiagram
@@ -71,16 +71,16 @@ sequenceDiagram
 ```
 
 状态订阅因此是免轮询的: `IceState` 变化经 watch channel 推给
-`state_rx()` 的订阅者 (src/agent.rs:399), 晚订阅也能读到当前值.
+`state_rx()` 的订阅者 (src/agent.rs:501), 晚订阅也能读到当前值.
 
 ### 生命周期与 GObject 引用账
 
 - `new()`: `nice_agent_new` 初始引用 + `from_glib_none` 显式强引用 =
   两份引用; 建流 component 数按 `IceConfig.components` (media 约定 1=video,
-  2=audio, 纯数据场景传 1, src/agent.rs:142 注释), 初始化上限 5s (src/agent.rs:157)
+  2=audio, 纯数据场景传 1, src/agent.rs:254 注释), 初始化上限 5s (src/agent.rs:269)
 - Drop (或等价的 `close()`): 先经 `ctx.invoke` 在 glib 线程归还第一份
   引用, **quit 必须在同一个 invoke 闭包内** (quit 在闭包外会被 MainLoop
-  边界检查跳过, unref 丢失 — src/agent.rs:282 的顺序论证), join 线程后
+  边界检查跳过, unref 丢失 — src/agent.rs:203 的顺序论证), join 线程后
   第二份随 gobj Drop 归还; 句柄离开作用域即自动关停, 忘了 close 不泄漏
 - 调用方纪律: drop 前必须停掉所有 nicesink/nicesrc 类使用者
   (媒体先停, agent 后离开作用域, 否则元件活在已 finalize 的 NiceAgent 上)
@@ -89,15 +89,15 @@ sequenceDiagram
 
 blob 就是 libnice 原生 SDP 文本: `local_blob()` 触发候选收集, 等
 gathering-done (上限 10s) 后 `nice_agent_generate_local_sdp` 一次性导出
-(src/agent.rs:326); 对端 blob 经 `add_remote()` 喂入
-`nice_agent_parse_remote_sdp` (src/agent.rs:383), 连通性检查随即开始.
+(src/agent.rs:403); 对端 blob 经 `add_remote()` 喂入
+`nice_agent_parse_remote_sdp` (src/agent.rs:485), 连通性检查随即开始.
 `blob.rs` 额外提供 `a=candidate:` 行解析供状态展示 (src/blob.rs:32),
 注意展示用的 `CandKind` 只有 Host/Srflx/Relay 三种 (SDP 里不出现 prflx),
 查询真实选中路径要用下面的 `SelectedKind`.
 
 ### 选中路径查询
 
-`selected_pair(component)` (src/agent.rs:407) 走
+`selected_pair(component)` (src/agent.rs:533) 走
 `nice_agent_get_selected_pair` FFI (src/sys.rs:87), 读 `NiceCandidate`
 首字段 `type` 得出 (本地, 远端) 候选类型. 布局依据是本机
 `nice/candidate.h`: `type` 是结构体第一成员, 枚举值
@@ -108,23 +108,23 @@ HOST=0/SRFLX=1/PRFLX=2/RELAYED=3 (src/sys.rs:25-31); 未连通或值越界
 
 本机 libnice (gst 捆绑 0.1.23) 枚举本机地址走 getnameinfo 但自身不调
 WSAStartup, 裸用会导致 gather 立即失败; `ensure_winsock` 用
-`g_networking_init` 幂等补齐 (src/agent.rs:29, cfg windows).
+`g_networking_init` 幂等补齐 (src/agent.rs:30, cfg windows).
 
 ## 公共 API 速览
 
 | 项 | 位置 | 说明 |
 |---|---|---|
-| `IceAgent::new(IceConfig)` | src/agent.rs:157 | 建 agent + glib 线程; `IceConfig{stun, controlling, components}` |
-| `local_blob()` | src/agent.rs:326 | gather 完成, 返回本地 blob (超时报错) |
+| `IceAgent::new(IceConfig)` | src/agent.rs:269 | 建 agent + glib 线程; `IceConfig{stun, controlling, components}` |
+| `local_blob()` | src/agent.rs:403 | gather 完成, 返回本地 blob (超时报错) |
 | `local_blob_within(limit)` | src/agent.rs | 有上限 gather; 超时用已收集候选 |
-| `add_remote(&IceBlob)` | src/agent.rs:383 | 喂对端 blob, 触发打洞 |
-| `state_rx()` | src/agent.rs:399 | watch 订阅 IceState 变化 |
-| `wait_connected(timeout)` | src/agent.rs:405 | 等 Connected; Failed/超时返回 IceError |
-| `selected_pair(u32)` | src/agent.rs:407 | 选中路径 (本地, 远端) 候选类型 |
-| `send(&[u8])` | src/agent.rs:472 | 数据面发送, 固定 component 1 |
-| `attach_recv(f)` | src/agent.rs:496 | 数据面接收回调, 固定 component 1 |
-| `raw_agent()` | src/agent.rs:444 | 裸指针, 仅供 ice_media 注入元件属性 |
-| `close()` / Drop | src/agent.rs:282 | 关停 (两者等价; 先停媒体再离开作用域, 见生命周期节) |
+| `add_remote(&IceBlob)` | src/agent.rs:485 | 喂对端 blob, 触发打洞 |
+| `state_rx()` | src/agent.rs:501 | watch 订阅 IceState 变化 |
+| `wait_connected(timeout)` | src/agent.rs:511 | 等 Connected; Failed/超时返回 IceError |
+| `selected_pair(u32)` | src/agent.rs:533 | 选中路径 (本地, 远端) 候选类型 |
+| `send(&[u8])` | src/agent.rs:598 | 数据面发送, 固定 component 1 |
+| `attach_recv(f)` | src/agent.rs:622 | 数据面接收回调, 固定 component 1 |
+| `raw_agent()` | src/agent.rs:570 | 裸指针, 仅供 ice_media 注入元件属性 |
+| `close()` / Drop | src/agent.rs:203/383 | 关停 (两者等价; 先停媒体再离开作用域, 见生命周期节) |
 | `IceBlob` | src/blob.rs:11 | SDP 文本薄包装, `from_sdp`/`as_str`/`candidates` |
 | `sdp::append_ice` | src/sdp.rs | 把本端 ICE 注入标准 SIP offer/answer |
 | `sdp::parse_offer` | src/sdp.rs | 从标准媒体 SDP 提取 video/audio ICE (可选路) |
@@ -134,7 +134,7 @@ WSAStartup, 裸用会导致 gather 立即失败; `ensure_winsock` 用
 
 `attach_recv` 每次调用会把回调通道 Box **和一个接收 std::thread 一起
 泄漏到进程退出** (blocking_recv 循环只随进程退出结束). 这是既有纪律升格
-为 pub  API 时的显式约定 (src/agent.rs:496 文档注释): 一次性测试工具/
+为 pub  API 时的显式约定 (src/agent.rs:622 文档注释): 一次性测试工具/
 单测场景无感知, **长驻进程请勿反复调用** — 长驻媒体收发请走
 ipcam-gst 的 nicesink/nicesrc 通路, 不经此 API.
 

@@ -250,6 +250,91 @@ impl Drop for IceAgent {
     }
 }
 
+/// new() 的就绪上报通道发送端: Ok 携带 (stream_id, NiceAgent 裸指针,
+/// MainLoop 关停把手), Err 为建 agent 任一步的失败.
+type ReadyTx = std_mpsc::Sender<Result<(u32, SendPtr<sys::NiceAgent>, glib::MainLoop), IceError>>;
+
+/// glib 线程主体 (作为 thread-default MainContext 上的闭包执行): 建
+/// MainLoop, 创建 NiceAgent 并完成全套配置 (角色 / STUN / 状态信号 /
+/// 建流 / 路由空回调), 经 ready 通道上报 (stream_id, 关停把手), 随后
+/// mainloop.run() 驱动 ctx 上排队的 invoke 与信号回调, 直至 Drop quit.
+/// 本函数返回即线程收尾 (run 闭包内 gobj 的 Drop 归还第二份 GObject 引用).
+fn glib_thread_main(
+    thread_ctx: glib::MainContext,
+    cfg: IceConfig,
+    state_tx: watch::Sender<IceState>,
+    ready_inner: ReadyTx,
+) {
+    let mainloop = glib::MainLoop::new(Some(&thread_ctx), false);
+    // SAFETY: agent 在本 ctx 线程创建并随线程存活; 后续一切 nice_* 调用
+    // 经 invoke 回到本线程, 指针不跨线程解引用.
+    let agent = unsafe { sys::nice_agent_new(thread_ctx.to_glib_none().0, sys::COMPAT_RFC5245) };
+    if agent.is_null() {
+        let _ = ready_inner.send(Err(IceError::NullAgent));
+        return;
+    }
+    let gobj: glib::Object = unsafe { glib::translate::from_glib_none(agent.cast()) };
+    gobj.set_property("controlling-mode", cfg.controlling);
+    if let Some(stun) = cfg.stun {
+        // libnice 的 stun-server 属性只接受主机名/IP, 端口单独走
+        // stun-port; 这里兼容 stun://host:port 与 host:port.
+        let (server, port) = match parse_stun_uri(&stun) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                let _ = ready_inner.send(Err(e));
+                return;
+            }
+        };
+        // 诊断可见性: srflx 缺失排查时先确认属性真的落在了 agent 上.
+        tracing::info!(stun_server = %server, stun_port = port, "ICE STUN configured");
+        gobj.set_property("stun-server", server);
+        gobj.set_property("stun-server-port", port as u32);
+    }
+    let state_cb = state_tx;
+    // SAFETY: agent 存活; 信号回调只发 watch (无锁单写), 符合线程纪律
+    // (业务不进 glib 线程).
+    unsafe {
+        sys::connect_state_changed(agent, move |_stream, _component, raw| {
+            let mapped = match raw {
+                sys::STATE_GATHERING => Some(IceState::Gathering),
+                sys::STATE_CONNECTING => Some(IceState::Connecting),
+                sys::STATE_CONNECTED | sys::STATE_READY => Some(IceState::Connected),
+                sys::STATE_FAILED => Some(IceState::Failed),
+                _ => None,
+            };
+            if let Some(s) = mapped {
+                let _ = state_cb.send_replace(s);
+            }
+        });
+    }
+    // SAFETY: add_stream 在 ctx 线程内调用, agent 存活.
+    let stream = unsafe { sys::nice_agent_add_stream(agent, cfg.components) };
+    if stream == 0 {
+        let _ = ready_inner.send(Err(IceError::CreateStream));
+        return;
+    }
+    // 路由锚定 (本版 libnice 收包依赖 attach_recv, 见 route_recv_trampoline
+    // 注释): 为每个 component 挂空回调, 把 socket I/O 锚定到本 ctx.
+    for component in 1..=cfg.components {
+        // SAFETY: ctx 线程; agent/stream 存活; 空 trampoline 无状态, data
+        // 传 NULL 且回调不触碰.
+        unsafe {
+            sys::nice_agent_attach_recv(
+                agent,
+                stream,
+                component,
+                thread_ctx.to_glib_none().0,
+                Some(route_recv_trampoline),
+                std::ptr::null_mut(),
+            )
+        };
+    }
+    // 关停把手随就绪信号传出; 线程自持本体跑到 Drop quit.
+    let _ = ready_inner.send(Ok((stream, SendPtr(agent), mainloop.clone())));
+    // 驱动 ctx 上排队的 invoke / 信号回调, 至 Drop quit.
+    mainloop.run();
+}
+
 impl IceAgent {
     /// 创建 agent: 起独立 glib 线程, 按 `cfg.components` 建流 (component
     /// 编号 1..N; 每路媒体独立 agent 固定传 1, 纯数据场景同样传 1),
@@ -284,100 +369,16 @@ impl IceAgent {
         let thread = std::thread::Builder::new()
             .name("ice-glib".into())
             .spawn(move || {
-                let ready_inner = ready_tx.clone();
-                let run = move || {
-                    let mainloop = glib::MainLoop::new(Some(&thread_ctx), false);
-                    // SAFETY: agent 在本 ctx 线程创建并随线程存活; 后续一切
-                    // nice_* 调用经 invoke 回到本线程, 指针不跨线程解引用.
-                    let agent = unsafe {
-                        sys::nice_agent_new(thread_ctx.to_glib_none().0, sys::COMPAT_RFC5245)
-                    };
-                    if agent.is_null() {
-                        let _ = ready_inner.send(Err(IceError::NullAgent));
-                        return;
-                    }
-                    // SAFETY: NiceAgent 是 GObject (G_TYPE_OBJECT) 子类实例,
-                    // 非浮态; glib-rs 的 from_glib_none 对非浮态对象等价
-                    // g_object_ref_sink, 即取得一份真实强引用 — 引用计数 =
-                    // nice_agent_new 初始 1 + 本份 1. 两份都待 IceAgent::close
-                    // 归还: 一份由 close 的 ctx.invoke 闭包在 glib 线程归还
-                    // (quit 同闭包、紧随 unref 之后, 见 close 的顺序论证),
-                    // 另一份由本闭包收尾时 gobj Drop 归还 — mainloop.run()
-                    // 不返回 gobj 就不会析构, 不 close 则两份引用都挂到进程
-                    // 退出 (历史泄漏行为, 引用账见 close 的文档).
-                    let gobj: glib::Object =
-                        unsafe { glib::translate::from_glib_none(agent.cast()) };
-                    gobj.set_property("controlling-mode", cfg.controlling);
-                    if let Some(stun) = cfg.stun {
-                        // libnice 的 stun-server 属性只接受主机名/IP, 端口单独
-                        // 走 stun-port; 这里兼容 stun://host:port 与 host:port.
-                        let (server, port) = match parse_stun_uri(&stun) {
-                            Ok(parsed) => parsed,
-                            Err(e) => {
-                                let _ = ready_inner.send(Err(e));
-                                return;
-                            }
-                        };
-                        // 诊断可见性: srflx 缺失排查时先确认属性真的落在了 agent 上.
-                        tracing::info!(stun_server = %server, stun_port = port, "ICE STUN configured");
-                        gobj.set_property("stun-server", server);
-                        gobj.set_property("stun-server-port", port as u32);
-                    }
-                    let state_cb = thread_state_tx.clone();
-                    // SAFETY: agent 存活; 信号回调只发 watch (无锁单写),
-                    // 符合线程纪律 (业务不进了 glib 线程).
-                    unsafe {
-                        sys::connect_state_changed(agent, move |_stream, _component, raw| {
-                            let mapped = match raw {
-                                sys::STATE_GATHERING => Some(IceState::Gathering),
-                                sys::STATE_CONNECTING => Some(IceState::Connecting),
-                                sys::STATE_CONNECTED | sys::STATE_READY => {
-                                    Some(IceState::Connected)
-                                }
-                                sys::STATE_FAILED => Some(IceState::Failed),
-                                _ => None,
-                            };
-                            if let Some(s) = mapped {
-                                let _ = state_cb.send_replace(s);
-                            }
-                        });
-                    }
-                    // SAFETY: add_stream 在 ctx 线程内调用, agent 存活.
-                    let stream = unsafe { sys::nice_agent_add_stream(agent, cfg.components) };
-                    if stream == 0 {
-                        let _ = ready_inner.send(Err(IceError::CreateStream));
-                        return;
-                    }
-                    // 路由锚定: 本版 libnice 的 socket I/O 收发依赖
-                    // attach_recv 落到被迭代的 ctx — 不挂则回包 (含 gather 期
-                    // STUN discovery 的 srflx 响应) 掉进无人迭代的默认 ctx,
-                    // 永远收不到 (2026-11-12 实测定位: 不 attach 时 srflx 必缺,
-                    // attach 后稳定出现). 这里为每个 component 挂空回调只为
-                    // 完成路由; libnice 每 component 只保留一个 recv 回调,
-                    // 之后 [`IceAgent::attach_recv`] 会用真回调覆盖对应
-                    // component, 仍路由到同一个被迭代的 ctx, 行为不变.
-                    for component in 1..=cfg.components {
-                        // SAFETY: ctx 线程; agent/stream 存活; 空 trampoline 无
-                        // 状态, data 传 NULL 且回调不触碰.
-                        unsafe {
-                            sys::nice_agent_attach_recv(
-                                agent,
-                                stream,
-                                component,
-                                thread_ctx.to_glib_none().0,
-                                Some(route_recv_trampoline),
-                                std::ptr::null_mut(),
-                            )
-                        };
-                    }
-                    // 关停把手随就绪信号传出; 线程自持本体跑到 close() quit.
-                    let _ = ready_inner.send(Ok((stream, SendPtr(agent), mainloop.clone())));
-                    // 驱动 ctx 上排队的 invoke / 信号回调, 至 close() quit.
-                    mainloop.run();
-                };
+                // run 闭包与错误兜底各持一份发送端.
+                let ready_for_run = ready_tx.clone();
                 // 新 ctx 不可能已被其他线程占用; 失败仅理论路径, 契约枚举无更
                 // 贴切变体, 借用 NullAgent 上报 (GLIB 线程根本没起来).
-                if loop_ctx.with_thread_default(run).is_err() {
+                if loop_ctx
+                    .with_thread_default(move || {
+                        glib_thread_main(thread_ctx, cfg, thread_state_tx, ready_for_run)
+                    })
+                    .is_err()
+                {
                     let _ = ready_tx.send(Err(IceError::NullAgent));
                 }
             })
@@ -682,20 +683,6 @@ impl IceAgent {
     }
 }
 
-/// 路由用空接收回调 (new() 为每个 component 挂): 不做任何业务, 只为把本版
-/// libnice 的 component socket I/O 锚定到 agent 自建的 glib ctx —
-/// 不挂的话收包路径 (gather 期 STUN discovery 的 srflx 响应, 连通性检查
-/// 回包) 落到进程默认 ctx, 无人迭代, 表现为"STUN 无回包/srflx 必缺".
-unsafe extern "C" fn route_recv_trampoline(
-    _agent: *mut sys::NiceAgent,
-    _stream: std::ffi::c_uint,
-    _component: std::ffi::c_uint,
-    _len: std::ffi::c_uint,
-    _buf: *mut std::ffi::c_char,
-    _data: *mut c_void,
-) {
-}
-
 unsafe extern "C" fn recv_trampoline(
     _agent: *mut sys::NiceAgent,
     _stream: std::ffi::c_uint,
@@ -710,6 +697,20 @@ unsafe extern "C" fn recv_trampoline(
     // SAFETY: libnice 保证 buf 有效且长度 len 个字节可读.
     let bytes = unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), len as usize) };
     let _ = tx.try_send(bytes.to_vec());
+}
+
+/// 路由用空接收回调 (new() 为每个 component 挂): 不做任何业务, 只为把本版
+/// libnice 的 component socket I/O 锚定到 agent 自建的 glib ctx —
+/// 不挂的话收包路径 (gather 期 STUN discovery 的 srflx 响应, 连通性检查
+/// 回包) 落到进程默认 ctx, 无人迭代, 表现为"STUN 无回包/srflx 必缺".
+unsafe extern "C" fn route_recv_trampoline(
+    _agent: *mut sys::NiceAgent,
+    _stream: std::ffi::c_uint,
+    _component: std::ffi::c_uint,
+    _len: std::ffi::c_uint,
+    _buf: *mut std::ffi::c_char,
+    _data: *mut c_void,
+) {
 }
 
 #[cfg(test)]
