@@ -12,6 +12,7 @@ gio = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+anyhow = {workspace = true}
 # signal feature: sigserver WS 客户端
 futures-util = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }

@@ -12,8 +12,8 @@
 
 use std::time::Duration;
 
+use anyhow::{Context as _, Result, bail};
 use clap::Parser as _;
-use ipcam_ice::blob::IceBlob;
 use ipcam_ice::sdp;
 use ipcam_ice::signal;
 use ipcam_ice::{IceAgent, IceConfig, SelectedKind};
@@ -50,141 +50,89 @@ fn parse_ws_url(s: &str) -> Result<String, String> {
     }
 }
 
-async fn run(args: Args) -> i32 {
+async fn run(args: Args) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(args.timeout);
     let remaining = || deadline.saturating_duration_since(Instant::now());
 
-    // 1. 连 sigserver 并 join 房间
-    let (ws, slot) =
-        match timeout(remaining(), signal::ws_connect_join(&args.sig, &args.room)).await {
-            Ok(Ok(pair)) => pair,
-            Ok(Err(e)) => {
-                error!(sig = %args.sig, "failed to connect/join sigserver: {e}");
-                return 1;
-            }
-            Err(_) => {
-                error!(sig = %args.sig, "connecting to sigserver timed out");
-                return 1;
-            }
-        };
+    // 1. 连 sigserver 并 join 房间 (agent 尚未创建, 失败无需清理)
+    let (ws, slot) = timeout(remaining(), signal::ws_connect_join(&args.sig, &args.room))
+        .await
+        .context("timed out connecting to the signaling server")??;
     info!(room = %args.room, slot, "joined room");
 
     // 2. 建 agent; slot 0 = offerer = controlling; 纯连通性测试单 component 即可
-    let agent = match IceAgent::new(IceConfig {
+    let agent = IceAgent::new(IceConfig {
         stun: args.stun.clone(),
         controlling: signal::is_offerer(slot),
         components: 1,
-    }) {
-        Ok(a) => a,
-        Err(e) => {
-            error!("failed to create IceAgent (libnice missing?): {e}");
-            return 1;
-        }
-    };
+    })
+    .context("failed to create ICE agent (libnice missing?)")?;
     info!(
         controlling = signal::is_offerer(slot),
         stun = ?args.stun,
         "ICE agent ready"
     );
 
+    // 业务主体无论成败, 都必须先 close agent 再向上报错 — 拆成内层函数,
+    // 让 anyhow 的 ? 传播和 close 的收尾互不干扰.
+    let outcome = probe(&agent, ws, slot, remaining).await;
+    agent.close();
+    outcome
+}
+
+/// 打洞 + 数据面验证主体 (agent 存活期内). 各步失败经 anyhow 上下文链
+/// 上抛, 由 run() 在 close 之后统一打印 (退出码 1).
+async fn probe(
+    agent: &IceAgent,
+    ws: signal::WsClient,
+    slot: u8,
+    remaining: impl Fn() -> Duration,
+) -> Result<()> {
     // attach 必须在等 Connected 之前 (同环回测试: attach 才把 component 的
     // socket I/O 路由到被迭代的 ctx, 否则连通性检查回包无人收).
     let (data_tx, mut data_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
-    if let Err(e) = agent
+    agent
         .attach_recv(move |d| {
             let _ = data_tx.try_send(d.to_vec());
         })
         .await
-    {
-        error!("attach_recv failed: {e}");
-        agent.close();
-        return 1;
-    }
+        .context("attach_recv failed")?;
 
     // 3. 本地 ICE + 标准媒体 SDP 信令交换 (call-ui 与 probe 共用).
     //    sigserver 会缓存 offerer 的第一条 offer, answerer 晚加入也能收到.
-    let local_ice = match timeout(remaining(), agent.local_blob()).await {
-        Ok(Ok(blob)) => blob,
-        Ok(Err(e)) => {
-            error!("failed to gather local ICE blob: {e}");
-            agent.close();
-            return 1;
-        }
-        Err(_) => {
-            error!("gathering local ICE blob timed out");
-            agent.close();
-            return 1;
-        }
-    };
-    {
-        let pretty = local_ice.as_str().replace("\r\n", "\n");
-        info!("local ICE SDP:\n{}", pretty.trim_end());
-    }
-    let local_sdp = match sdp::build_offer(&local_ice, None) {
-        Ok(sdp) => sdp,
-        Err(e) => {
-            error!("failed to build media SDP: {e}");
-            agent.close();
-            return 1;
-        }
-    };
-    let local = IceBlob::from_sdp(local_sdp);
+    let local_ice = timeout(remaining(), agent.local_blob())
+        .await
+        .context("gathering local ICE blob timed out")??;
+    info!("local ICE SDP:\n{}", local_ice.pretty());
+    let local = sdp::build_offer_blob(&local_ice, None).context("failed to build media SDP")?;
     info!(
         bytes = local.as_str().len(),
         "local media SDP gathered, sending to peer"
     );
 
-    let remote = match timeout(
+    let remote = timeout(
         remaining(),
         signal::ws_exchange(ws, slot, &local, signal::BLOB, signal::BLOB),
     )
     .await
-    {
-        Ok(Ok(blob)) => blob,
-        Ok(Err(e)) => {
-            error!("signaling exchange failed: {e}");
-            agent.close();
-            return 1;
-        }
-        Err(_) => {
-            error!("timed out waiting for peer");
-            agent.close();
-            return 1;
-        }
-    };
+    .context("timed out waiting for peer")??;
     info!(bytes = remote.as_str().len(), "remote media SDP received");
-    let remote_ice = match sdp::parse_offer(remote.as_str()) {
-        Ok(media) => match media.video {
-            Some(video) => video,
-            None => {
-                error!("remote media SDP has no video media");
-                agent.close();
-                return 1;
-            }
-        },
-        Err(e) => {
-            error!("failed to parse remote media SDP: {e}");
-            agent.close();
-            return 1;
-        }
-    };
-    {
-        let pretty = remote_ice.as_str().replace("\r\n", "\n");
-        info!("remote ICE SDP:\n{}", pretty.trim_end());
-    }
-    if let Err(e) = agent.add_remote(&remote_ice).await {
-        error!("remote ICE blob rejected: {e}");
-        agent.close();
-        return 1;
-    }
+    let remote_ice = sdp::parse_offer(remote.as_str())
+        .context("failed to parse remote media SDP")?
+        .video
+        .context("remote media SDP has no video media")?;
+    info!("remote ICE SDP:\n{}", remote_ice.pretty());
+    agent
+        .add_remote(&remote_ice)
+        .await
+        .context("remote ICE blob rejected")?;
 
     // 4. 等 Connected
     let t0 = Instant::now();
-    if let Err(e) = agent.wait_connected(remaining()).await {
-        error!("ICE not connected: {e}");
-        agent.close();
-        return 1;
-    }
+    agent
+        .wait_connected(remaining())
+        .await
+        .context("ICE not connected")?;
     info!(
         elapsed_ms = t0.elapsed().as_millis() as u64,
         "ICE Connected"
@@ -192,30 +140,14 @@ async fn run(args: Args) -> i32 {
 
     // 5. 数据面: 各发一个 payload, 各收对端一个
     const PING: &[u8] = b"ice-probe-ping";
-    if let Err(e) = agent.send(PING).await {
-        error!("data plane send failed: {e}");
-        agent.close();
-        return 1;
-    }
+    agent.send(PING).await.context("data plane send failed")?;
     match timeout(Duration::from_secs(10), data_rx.recv()).await {
         Ok(Some(got)) if got == PING => {
             info!(bytes = got.len(), "peer payload received, data plane works");
         }
-        Ok(Some(got)) => {
-            error!("payload mismatch: {:?}", String::from_utf8_lossy(&got));
-            agent.close();
-            return 1;
-        }
-        Ok(None) => {
-            error!("data channel closed");
-            agent.close();
-            return 1;
-        }
-        Err(_) => {
-            error!("timed out waiting for peer payload (10s), data plane failed");
-            agent.close();
-            return 1;
-        }
+        Ok(Some(got)) => bail!("payload mismatch: {:?}", String::from_utf8_lossy(&got)),
+        Ok(None) => bail!("data channel closed"),
+        Err(_) => bail!("timed out waiting for peer payload (10s), data plane failed"),
     }
 
     // 6. 选中路径候选类型 + 结果输出
@@ -236,8 +168,7 @@ async fn run(args: Args) -> i32 {
         None => println!("ICE OK local=unknown remote=unknown slot={slot}"),
     }
     info!(?pair, "selected pair");
-    agent.close();
-    0
+    Ok(())
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -247,6 +178,13 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    // clap 解析失败自带用法 + 退出码 2 (与退出码契约一致)
-    std::process::exit(run(Args::parse()).await);
+    // clap 解析失败自带用法 + 退出码 2 (与退出码契约一致); 运行期失败
+    // 打印 anyhow 上下文链 (冒号分隔), 退出码 1.
+    std::process::exit(match run(Args::parse()).await {
+        Ok(()) => 0,
+        Err(e) => {
+            error!("{:#}", e);
+            1
+        }
+    });
 }

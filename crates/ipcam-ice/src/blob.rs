@@ -28,6 +28,12 @@ impl IceBlob {
         &self.0
     }
 
+    /// 日志友好副本: CRLF 归一为 LF 并去掉尾部空行 (SDP 原文是 CRLF,
+    /// 直接打进终端日志会带多余 \r). 仅用于展示, 信令搬运仍走 [`as_str`].
+    pub fn pretty(&self) -> String {
+        self.0.replace("\r\n", "\n").trim_end().to_string()
+    }
+
     /// 解析 `a=candidate:` 行 (RFC 5245 语法) 供状态展示; 坏行跳过不 panic.
     pub fn candidates(&self) -> Vec<CandidateLine> {
         self.0

@@ -86,6 +86,14 @@ pub fn build_offer(video_ice: &IceBlob, audio_ice: Option<&IceBlob>) -> Result<S
     Ok(sdp)
 }
 
+/// build_offer 的 IceBlob 包装: 调用点少一层 from_sdp 样板.
+pub fn build_offer_blob(
+    video_ice: &IceBlob,
+    audio_ice: Option<&IceBlob>,
+) -> Result<IceBlob, SdpError> {
+    build_offer(video_ice, audio_ice).map(IceBlob::from_sdp)
+}
+
 /// 从对端标准媒体 SDP 中提取 video/audio 各自的 ICE 参数.
 /// 至少一路带完整 ICE (ufrag+pwd+候选), 否则报错; 只有一路是正常情况.
 pub fn parse_offer(sdp: &str) -> Result<RemoteMedia, SdpError> {
