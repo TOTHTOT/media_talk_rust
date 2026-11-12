@@ -31,9 +31,31 @@ mod ctl;
 mod ui;
 
 use ipcam_gst::{GstStreamError, TrackSource};
+use ipcam_ice::{IceAgent, IceConfig, IceError};
 
 pub(crate) use ctl::{IceController, spawn};
 pub(crate) use ui::wire_ice;
+
+/// 建视频/音频 ICE agent 对 (SIP 与设置页验证两路径共用同配置).
+/// SDP 约定每个媒体线独立 ICE 凭证 (一份 ufrag/pwd 只属于一个 agent),
+/// 故视频/音频必须各一个 agent, 各 1 个 component. 音频 agent 建失败时
+/// 视频 agent 随早期返回自动 Drop 关闭, 无需手动清理.
+pub(crate) fn agent_pair(
+    stun: Option<String>,
+    controlling: bool,
+) -> Result<(IceAgent, IceAgent), IceError> {
+    let video = IceAgent::new(IceConfig {
+        stun: stun.clone(),
+        controlling,
+        components: 1,
+    })?;
+    let audio = IceAgent::new(IceConfig {
+        stun,
+        controlling,
+        components: 1,
+    })?;
+    Ok((video, audio))
+}
 
 /// kv 键: sigserver WS 地址.
 pub(crate) const KV_SIGSERVER: &str = "ice_sigserver";

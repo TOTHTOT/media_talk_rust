@@ -11,14 +11,15 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use ipcam_core::{AudioCodec, VideoCodec};
 use ipcam_gst::VideoFrameSink;
+use ipcam_ice::IceAgent;
 use ipcam_ice::blob::IceBlob;
 use ipcam_ice::sdp::{self, RemoteMedia};
-use ipcam_ice::{IceAgent, IceConfig};
 use ipcam_sip::negotiate;
 use ipcam_sip::sdp::{OfferMedias, PT_H264, PT_OPUS, PeerMedias};
 use tracing::info;
 
 use super::types::{GuiSipConfig, RtpPorts};
+use crate::ice::agent_pair;
 use crate::media::IceCallMedia;
 
 /// 建立阶段候选收集上限: 超时也接受已收集到的 host 候选, 不让 STUN
@@ -112,13 +113,12 @@ impl LocalIce {
     }
 
     /// 起 nicesink/nicesrc 媒体管线 (agent 所有权移入媒体句柄).
-    pub fn into_media(self, cfg: &GuiSipConfig, tap: &VideoFrameSink) -> Result<IceCallMedia> {
-        let mut this = self;
-        let video = this
+    pub fn into_media(mut self, cfg: &GuiSipConfig, tap: &VideoFrameSink) -> Result<IceCallMedia> {
+        let video = self
             .video_agent
             .take()
             .context("video ICE agent already taken")?;
-        let audio = this
+        let audio = self
             .audio_agent
             .take()
             .context("audio ICE agent already taken")?;
@@ -151,55 +151,20 @@ pub async fn prepare(
     stun: Option<String>,
     controlling: bool,
 ) -> Result<LocalIce> {
-    let video_agent = IceAgent::new(IceConfig {
-        stun: stun.clone(),
-        controlling,
-        components: 1,
-    })?;
-    let audio_agent = match IceAgent::new(IceConfig {
-        stun,
-        controlling,
-        components: 1,
-    }) {
-        Ok(agent) => agent,
-        Err(e) => {
-            video_agent.close();
-            return Err(e.into());
-        }
-    };
-    let gathered = tokio::try_join!(
+    // 建失败或后续任一步失败, 两个 agent 都随早期返回自动 Drop 关闭
+    // (agent_pair 统一构造, 错误清理交给 IceAgent 的 Drop).
+    let (video_agent, audio_agent) = agent_pair(stun, controlling)?;
+    let (video_blob, audio_blob) = tokio::try_join!(
         video_agent.local_blob_within(GATHER_TIMEOUT),
         audio_agent.local_blob_within(GATHER_TIMEOUT),
-    );
-    let (video_blob, audio_blob) = match gathered {
-        Ok(blobs) => blobs,
-        Err(e) => {
-            video_agent.close();
-            audio_agent.close();
-            return Err(e.into());
-        }
-    };
+    )?;
     let endpoint = |blob: &IceBlob, what: &str| -> Result<u16> {
         sdp::media_endpoint(blob, IpAddr::V4(local_ip))
             .map(|addr| addr.port())
             .with_context(|| format!("ICE has no {what} UDP host candidate on {local_ip}"))
     };
-    let video_port = match endpoint(&video_blob, "video") {
-        Ok(port) => port,
-        Err(e) => {
-            video_agent.close();
-            audio_agent.close();
-            return Err(e);
-        }
-    };
-    let audio_port = match endpoint(&audio_blob, "audio") {
-        Ok(port) => port,
-        Err(e) => {
-            video_agent.close();
-            audio_agent.close();
-            return Err(e);
-        }
-    };
+    let video_port = endpoint(&video_blob, "video")?;
+    let audio_port = endpoint(&audio_blob, "audio")?;
     info!(video_port, audio_port, "SIP ICE local candidates gathered");
     Ok(LocalIce {
         video_agent: Some(video_agent),

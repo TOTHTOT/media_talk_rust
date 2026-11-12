@@ -4,12 +4,12 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use anyhow::Result;
 use ipcam_gst::{
     AudioRecv, IceMediaConfig, IceMediaHandle, RawTaps, VideoFrameSink, start_ice_media,
 };
-use ipcam_ice::blob::IceBlob;
 use ipcam_ice::signal::{self, WsClient};
-use ipcam_ice::{IceAgent, IceConfig, IceState, sdp};
+use ipcam_ice::{IceAgent, IceState, sdp};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{error, info, warn};
@@ -18,7 +18,7 @@ use crate::app::UiEvent;
 use crate::bridge::UiHandle;
 use crate::ice::{
     DEFAULT_ROOM, DEFAULT_SIGSERVER, DEFAULT_STUN, IceCmd, IceCtlError, IceInner, IceSettings,
-    IceSources, KV_ROOM, KV_SIGSERVER, KV_STUN,
+    IceSources, KV_ROOM, KV_SIGSERVER, KV_STUN, agent_pair,
 };
 use crate::store::Store;
 
@@ -191,22 +191,7 @@ async fn run_call(
     let (ws, slot) = signal::ws_connect_join(&settings.sigserver, &settings.room).await?;
     info!(slot, room = %settings.room, "ice call: joined sigserver room");
     let controlling = signal::is_offerer(slot);
-    let video_agent = IceAgent::new(IceConfig {
-        stun: settings.stun.clone(),
-        controlling,
-        components: 1,
-    })?;
-    let audio_agent = match IceAgent::new(IceConfig {
-        stun: settings.stun,
-        controlling,
-        components: 1,
-    }) {
-        Ok(agent) => agent,
-        Err(e) => {
-            video_agent.close();
-            return Err(e.into());
-        }
-    };
+    let (video_agent, audio_agent) = agent_pair(settings.stun.clone(), controlling)?;
     let mut media = None;
     let outcome = call_flow(
         cmd_rx,
@@ -276,12 +261,11 @@ async fn call_flow(
         tokio::join!(video_agent.local_blob(), audio_agent.local_blob());
     let video_local = video_local?;
     let audio_local = audio_local?;
-    let local = IceBlob::from_sdp(sdp::build_offer(&video_local, Some(&audio_local))?);
-    let pretty = local.as_str().replace("\r\n", "\n");
+    let local = sdp::build_offer_blob(&video_local, Some(&audio_local))?;
     info!(
         bytes = local.as_str().len(),
         "ice local media SDP gathered:\n{}",
-        pretty.trim_end()
+        local.pretty()
     );
     if drain_hangup(cmd_rx) {
         return Ok(());
