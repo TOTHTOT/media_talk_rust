@@ -5,9 +5,10 @@
 //! 回该线程执行; GObject 信号回调同样在该线程触发, trampoline 内只做
 //! 无锁 channel 发送, 不做业务.
 //!
-//! 关停: [`IceAgent::close`] — 退出 MainLoop, join glib 线程, 归还两份
-//! GObject 引用 (引用账见该方法的文档). 接收回调 (attach_recv) 与
-//! candidate-gathering-done 的装箱数据不拆连, 存活至进程退出 (记录不修).
+//! 关停: Drop (或显式 [`IceAgent::close`], 两者等价) — 退出 MainLoop,
+//! join glib 线程, 归还两份 GObject 引用 (引用账/顺序论证见 Drop 实现).
+//! 接收回调 (attach_recv) 与 candidate-gathering-done 的装箱数据不拆连,
+//! 存活至进程退出 (记录不修).
 
 use std::ffi::{CString, c_uint, c_void};
 use std::sync::{Mutex, mpsc as std_mpsc};
@@ -178,7 +179,8 @@ unsafe impl<T> Send for SendPtr<T> {}
 /// 所有方法把 `nice_*` 调用 marshal 回内部 glib 线程 (见模块注释),
 /// 句柄自身可跨线程自由传递. 关停走 [`IceAgent::close`]: 退出 mainloop,
 /// join glib 线程, 归还全部 GObject 引用; 调用方 MUST 先停掉所有
-/// nicesink/nicesrc 类使用者再 close (顺序纪律见 ice_media 模块注释).
+/// nicesink/nicesrc 类使用者再让句柄离开作用域 (顺序纪律见 ice_media
+/// 模块注释). 忘了显式 close 也没关系: Drop 自动完成同一套收尾.
 pub struct IceAgent {
     ctx: glib::MainContext,
     /// 关停把手: glib 线程里那个 MainLoop 的克隆 (glib::MainLoop 是
@@ -187,7 +189,9 @@ pub struct IceAgent {
     agent: *mut sys::NiceAgent,
     stream: u32,
     state_tx: watch::Sender<IceState>,
-    _loop_thread: std::thread::JoinHandle<()>,
+    /// glib 线程句柄; Option 只为 Drop 里 take() 后 join (Drop 拿的是
+    /// &mut self, 不能消费字段).
+    loop_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 // SAFETY: agent 裸指针只在 glib 线程解引用 (invoke 纪律), 其余线程仅整体传递.
@@ -195,6 +199,56 @@ unsafe impl Send for IceAgent {}
 // SAFETY: 共享访问只触及只读元数据与内部 channel/watch 端点; agent 指针仍
 // 只经 invoke 在 glib 线程触达, 不存在跨线程数据竞争.
 unsafe impl Sync for IceAgent {}
+
+impl Drop for IceAgent {
+    /// 关停 agent: 退出 glib 线程的 MainLoop, join 线程, 归还两份 GObject
+    /// 引用, NiceAgent 随之 finalize. 全程在 glib 线程完成 (GObject 线程
+    /// 亲和约定).
+    ///
+    /// 引用账 (与 new() 里的 from_glib_none SAFETY 注释一致):
+    /// 1. 第一次 unref 归还 `nice_agent_new` 的初始引用 — 经 `ctx.invoke`
+    ///    排入 glib 线程, 在闭包内 unref 后立即 `quit` (见下方顺序论证);
+    /// 2. glib 线程收尾时 `run` 闭包内的 gobj (from_glib_none 取得的那份)
+    ///    Drop 再 unref 一次 — join 保证它先于本函数返回完成.
+    ///
+    /// 顺序论证: `g_main_context_invoke` 只是往 ctx 挂 idle 源, 而
+    /// `g_main_loop_quit` 仅翻转 is_running, 由 run() 在迭代边界检查 —
+    /// 若 quit 在闭包外调用, 闭包可能被边界检查跳过 (unref 丢失, 正是
+    /// Drop 要修的泄漏). quit 移进闭包后: unref 先于 quit 执行,
+    /// is_running 的翻转在闭包返回后的下一个边界才生效, unref#1 不可能
+    /// 被跳过.
+    ///
+    /// 调用方 MUST 保证: drop 时没有未完成的 [`IceAgent::invoke`] 类调用
+    /// (drop 与业务调用互斥), 且所有 nicesink/nicesrc 类使用者已先停用
+    /// (ice_media 模块的顺序纪律: 先停媒体, 再让 agent 离开作用域).
+    /// 在 glib 线程自身 drop (invoke 闭包里 move 进来) 时跳过 self-join
+    /// (join 当前线程会 panic); invoke 已把 unref#1 + quit 排入 ctx,
+    /// run() 闭包收尾时完成 unref#2, 循环随后退出 — 不自 join 也完整收尾.
+    /// candidate-gathering-done 的信号 handler 装箱数据随连接存活, 本版
+    /// 不拆连, 进程退出才回收 (与 attach_recv 的 Box 同纪律, 记录不修).
+    fn drop(&mut self) {
+        let ptr = SendPtr(self.agent);
+        // 同底层 GMainLoop 的第二把手 (Shared 引用计数包装, clone 不复制
+        // 循环本体), 随闭包进 glib 线程做 quit.
+        let quit_loop = self.mainloop.clone();
+        // SAFETY: agent 指针在 IceAgent 整个存活期有效 (从未 unref); drop
+        // 之后字段不再被任何人使用; 闭包由 ctx 调度在 glib 线程执行, 内部
+        // 先 unref#1 再 quit — unref 先于 loop 边界检查, 不可能被跳过;
+        // 本次 unref 后 gobj 仍持有一份引用, 对象不会在本闭包内 finalize.
+        self.ctx.invoke(move || {
+            unsafe { glib::gobject_ffi::g_object_unref(ptr.into_ptr().cast()) };
+            quit_loop.quit();
+        });
+        // 第二份引用 (gobj Drop) 的归还发生在线程收尾; join 确保它先于
+        // drop 返回完成. glib 线程自身 drop 时跳过 join (不能 join 自己,
+        // 收尾由该线程自行完成). 线程 panic 不属于契约路径, 只记日志.
+        if let Some(t) = self.loop_thread.take() {
+            if t.thread().id() != std::thread::current().id() && t.join().is_err() {
+                tracing::warn!("ice glib thread panicked during close");
+            }
+        }
+    }
+}
 
 impl IceAgent {
     /// 创建 agent: 起独立 glib 线程, 按 `cfg.components` 建流 (component
@@ -343,60 +397,15 @@ impl IceAgent {
             agent: agent.0,
             stream,
             state_tx,
-            _loop_thread: thread,
+            loop_thread: Some(thread),
         })
     }
 
-    /// 关停 agent: 退出 glib 线程的 MainLoop, join 线程, 归还两份 GObject
-    /// 引用, NiceAgent 随之 finalize. 全程在 glib 线程完成 (GObject 线程
-    /// 亲和约定).
-    ///
-    /// 引用账 (与 new() 里的 from_glib_none SAFETY 注释一致):
-    /// 1. 第一次 unref 归还 `nice_agent_new` 的初始引用 — 经 `ctx.invoke`
-    ///    排入 glib 线程, 在闭包内 unref 后立即 `quit` (见下方顺序论证);
-    /// 2. glib 线程收尾时 `run` 闭包内的 gobj (from_glib_none 取得的那份)
-    ///    Drop 再 unref 一次 — join 保证它先于本函数返回完成.
-    ///
-    /// 顺序论证 (review fix): `g_main_context_invoke` 只是往 ctx 挂 idle
-    /// 源, 而 `g_main_loop_quit` 仅翻转 is_running, 由 run() 在迭代边界
-    /// 检查 — 若 quit 在闭包外调用, 闭包可能被边界检查跳过 (unref 丢失,
-    /// 正是 close 要修的泄漏). quit 移进闭包后: unref 先于 quit 执行,
-    /// is_running 的翻转在闭包返回后的下一个边界才生效, unref#1 不可能
-    /// 被跳过.
-    ///
-    /// 调用方 MUST 保证: close 时没有未完成的 [`IceAgent::invoke`] 类
-    /// 调用 (close 与业务调用互斥), 且所有 nicesink/nicesrc 类使用者已先
-    /// 停用 (ice_media 模块的顺序纪律: 先停媒体, 再关 agent). close 不可
-    /// 在 glib 线程自身调用 (invoke 对 owner 线程是同步直调, join 当前
-    /// 线程会 panic). candidate-gathering-done 的信号 handler 装箱数据随
-    /// 连接存活, 本版不拆连, 进程退出才回收 (与 attach_recv 的 Box 同纪律,
-    /// 记录不修).
+    /// 立即关停 agent. 与 drop 完全等价 (内部就是 `drop(self)`), 只是让
+    /// "在这里关掉" 的意图在调用点更显式; 引用账/顺序论证见 [`Drop`]
+    /// 实现, 调用方纪律 (先停媒体等) 与之一致.
     pub fn close(self) {
-        let Self {
-            ctx,
-            mainloop,
-            agent,
-            stream: _,
-            state_tx: _,
-            _loop_thread,
-        } = self;
-        let ptr = SendPtr(agent);
-        // 同底层 GMainLoop 的第二把手 (Shared 引用计数包装, clone 不复制
-        // 循环本体), 随闭包进 glib 线程做 quit.
-        let quit_loop = mainloop.clone();
-        // SAFETY: agent 指针在 IceAgent 整个存活期有效 (从未 unref); 本方法
-        // 消费 self, 之后无任何使用者; 闭包由 ctx 调度在 glib 线程执行,
-        // 内部先 unref#1 再 quit — unref 先于 loop 边界检查, 不可能被跳过;
-        // 本次 unref 后 gobj 仍持有一份引用, 对象不会在本闭包内 finalize.
-        ctx.invoke(move || {
-            unsafe { glib::gobject_ffi::g_object_unref(ptr.into_ptr().cast()) };
-            quit_loop.quit();
-        });
-        // 第二份引用 (gobj Drop) 的归还发生在线程收尾; join 确保它先于
-        // 本函数返回完成. 线程 panic 不属于契约路径, 只记日志.
-        if _loop_thread.join().is_err() {
-            tracing::warn!("ice glib thread panicked during close");
-        }
+        drop(self);
     }
 
     /// 收集本地候选并生成可交换的 ICE blob (至 gathering-done, 上限 10s).
@@ -817,9 +826,10 @@ mod tests {
         );
         println!("loopback: selected pair a={pair_a:?} b={pair_b:?}");
 
-        // 收尾回归: close (quit + join + 双 unref) 不得挂起/崩溃
-        a.close();
-        b.close();
+        // 收尾回归: 裸 drop (quit + join + 双 unref) 不得挂起/崩溃 ——
+        // close() 只是 drop(self) 的显式写法, 行为由这里直接覆盖.
+        drop(a);
+        drop(b);
         println!("loopback: both agents closed");
     }
 

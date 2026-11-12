@@ -78,12 +78,12 @@ sequenceDiagram
 - `new()`: `nice_agent_new` 初始引用 + `from_glib_none` 显式强引用 =
   两份引用; 建流 component 数按 `IceConfig.components` (media 约定 1=video,
   2=audio, 纯数据场景传 1, src/agent.rs:142 注释), 初始化上限 5s (src/agent.rs:157)
-- `close()`: 消费 self, 先经 `ctx.invoke` 在 glib 线程归还第一份引用,
-  **quit 必须在同一个 invoke 闭包内** (quit 在闭包外会被 MainLoop 边界
-  检查跳过, unref 丢失 — src/agent.rs:282 的顺序论证), join 线程后
-  第二份随 gobj Drop 归还
-- 调用方纪律: close 前必须停掉所有 nicesink/nicesrc 类使用者
-  (媒体先停, agent 后关, 否则元件活在已 finalize 的 NiceAgent 上)
+- Drop (或等价的 `close()`): 先经 `ctx.invoke` 在 glib 线程归还第一份
+  引用, **quit 必须在同一个 invoke 闭包内** (quit 在闭包外会被 MainLoop
+  边界检查跳过, unref 丢失 — src/agent.rs:282 的顺序论证), join 线程后
+  第二份随 gobj Drop 归还; 句柄离开作用域即自动关停, 忘了 close 不泄漏
+- 调用方纪律: drop 前必须停掉所有 nicesink/nicesrc 类使用者
+  (媒体先停, agent 后离开作用域, 否则元件活在已 finalize 的 NiceAgent 上)
 
 ### 信令 blob 原理
 
@@ -124,7 +124,7 @@ WSAStartup, 裸用会导致 gather 立即失败; `ensure_winsock` 用
 | `send(&[u8])` | src/agent.rs:472 | 数据面发送, 固定 component 1 |
 | `attach_recv(f)` | src/agent.rs:496 | 数据面接收回调, 固定 component 1 |
 | `raw_agent()` | src/agent.rs:444 | 裸指针, 仅供 ice_media 注入元件属性 |
-| `close()` | src/agent.rs:282 | 关停 (先停媒体再关, 见生命周期节) |
+| `close()` / Drop | src/agent.rs:282 | 关停 (两者等价; 先停媒体再离开作用域, 见生命周期节) |
 | `IceBlob` | src/blob.rs:11 | SDP 文本薄包装, `from_sdp`/`as_str`/`candidates` |
 | `sdp::append_ice` | src/sdp.rs | 把本端 ICE 注入标准 SIP offer/answer |
 | `sdp::parse_offer` | src/sdp.rs | 从标准媒体 SDP 提取 video/audio ICE (可选路) |
