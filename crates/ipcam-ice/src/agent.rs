@@ -264,6 +264,8 @@ impl IceAgent {
                                 return;
                             }
                         };
+                        // 诊断可见性: srflx 缺失排查时先确认属性真的落在了 agent 上.
+                        tracing::info!(stun_server = %server, stun_port = port, "ICE STUN configured");
                         gobj.set_property("stun-server", server);
                         gobj.set_property("stun-server-port", port as u32);
                     }
@@ -291,6 +293,28 @@ impl IceAgent {
                     if stream == 0 {
                         let _ = ready_inner.send(Err(IceError::CreateStream));
                         return;
+                    }
+                    // 路由锚定: 本版 libnice 的 socket I/O 收发依赖
+                    // attach_recv 落到被迭代的 ctx — 不挂则回包 (含 gather 期
+                    // STUN discovery 的 srflx 响应) 掉进无人迭代的默认 ctx,
+                    // 永远收不到 (2026-11-12 实测定位: 不 attach 时 srflx 必缺,
+                    // attach 后稳定出现). 这里为每个 component 挂空回调只为
+                    // 完成路由; libnice 每 component 只保留一个 recv 回调,
+                    // 之后 [`IceAgent::attach_recv`] 会用真回调覆盖对应
+                    // component, 仍路由到同一个被迭代的 ctx, 行为不变.
+                    for component in 1..=cfg.components {
+                        // SAFETY: ctx 线程; agent/stream 存活; 空 trampoline 无
+                        // 状态, data 传 NULL 且回调不触碰.
+                        unsafe {
+                            sys::nice_agent_attach_recv(
+                                agent,
+                                stream,
+                                component,
+                                thread_ctx.to_glib_none().0,
+                                Some(route_recv_trampoline),
+                                std::ptr::null_mut(),
+                            )
+                        };
                     }
                     // 关停把手随就绪信号传出; 线程自持本体跑到 close() quit.
                     let _ = ready_inner.send(Ok((stream, SendPtr(agent), mainloop.clone())));
@@ -603,7 +627,8 @@ impl IceAgent {
         Ok(())
     }
 
-    /// component 1 挂数据接收回调.
+    /// component 1 挂数据接收回调 (覆盖 new() 为该 component 挂的路由空回调,
+    /// 路由语义不变, 只是收到数据时改调 `f`).
     ///
     /// glib trampoline 把数据 marshal 进 mpsc, 由独立线程调 `f`, 用户回调
     /// 永远不占用 glib 线程。注意 (既有纪律, 升格为 pub 后更显式): 每次调用
@@ -646,6 +671,20 @@ impl IceAgent {
         }
         Ok(())
     }
+}
+
+/// 路由用空接收回调 (new() 为每个 component 挂): 不做任何业务, 只为把本版
+/// libnice 的 component socket I/O 锚定到 agent 自建的 glib ctx —
+/// 不挂的话收包路径 (gather 期 STUN discovery 的 srflx 响应, 连通性检查
+/// 回包) 落到进程默认 ctx, 无人迭代, 表现为"STUN 无回包/srflx 必缺".
+unsafe extern "C" fn route_recv_trampoline(
+    _agent: *mut sys::NiceAgent,
+    _stream: std::ffi::c_uint,
+    _component: std::ffi::c_uint,
+    _len: std::ffi::c_uint,
+    _buf: *mut std::ffi::c_char,
+    _data: *mut c_void,
+) {
 }
 
 unsafe extern "C" fn recv_trampoline(

@@ -189,3 +189,8 @@ blob → 等 Connected → 双向各发一帧 payload 断言互通 → 打印
 - `nice_agent_set_remote_credentials` 已封装但暂无调用点 (blob SDP 路径
   不经过它), 保留供后续直喂 credentials 的场景 (src/sys.rs:5-7 注释)
 - 呼叫期对端 hangup 的 WS 转发不读 (协议保留, 消费方各自取舍)
+- **本版 libnice 的收包路径依赖 attach_recv 路由**: 不挂回调时 socket I/O
+  落到进程默认 ctx (无人迭代), 表现为 "STUN 无回包 / srflx 必缺 / 连通性
+  检查无响应". `IceAgent::new` 已为每个 component 自动挂路由空回调, 正常
+  使用无需关心; 仅当绕过 `IceAgent` 直接用裸 NiceAgent 时才需要自行处理
+  (2026-11-12 实测定位, 曾误判为 Windows 进程级不确定性)
