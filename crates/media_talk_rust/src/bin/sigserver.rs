@@ -2,14 +2,19 @@
 //! 生产形态由 kamailio 取代 (spec 产品化路线), 本服务仅测试期用.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::{
+    Callback, ErrorResponse, Request, Response,
+};
+use tokio_tungstenite::{WebSocketStream, accept_hdr_async};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Frame {
@@ -49,19 +54,56 @@ type Rooms = Arc<Mutex<HashMap<String, Room>>>;
 /// ```
 async fn serve(l: TcpListener) -> std::io::Result<()> {
     let rooms: Rooms = Arc::new(Mutex::new(HashMap::new()));
+    // 当前 TCP 连接数, 只用于日志; 判断"远程设备到底有没有连上来"时
+    // active=0 → 包没到本机; active=1 但没有 join → 到了但没发 join.
+    let active = Arc::new(AtomicUsize::new(0));
     loop {
-        let (stream, _) = l.accept().await?;
+        let (stream, peer) = l.accept().await?;
+        let now = active.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(%peer, active = now, "tcp accepted");
         let rooms = rooms.clone();
+        let active = active.clone();
         tokio::spawn(async move {
-            match tokio_tungstenite::accept_async(stream).await {
+            match accept_hdr_async(stream, LogHandshake { peer }).await {
                 Ok(ws) => {
-                    if let Err(e) = handle(ws, rooms).await {
-                        tracing::warn!(?e, "connection handler error");
+                    tracing::info!(%peer, "ws handshake ok");
+                    if let Err(e) = handle(ws, rooms, peer).await {
+                        tracing::warn!(%peer, error = %e, "connection handler error");
                     }
                 }
-                Err(e) => tracing::warn!(?e, "ws handshake failed"),
+                Err(e) => tracing::warn!(%peer, error = %e, "ws handshake failed"),
             }
+            let left = active.fetch_sub(1, Ordering::Relaxed) - 1;
+            tracing::info!(%peer, active = left, "connection gone");
         });
+    }
+}
+
+/// WS 升级回调: 把握手请求里的来源信息打进日志, 便于确认远程设备是谁
+/// (NAT/反代后面 `peer` 只剩网关地址, 靠 UA / X-Forwarded-For 区分).
+struct LogHandshake {
+    peer: SocketAddr,
+}
+
+impl Callback for LogHandshake {
+    fn on_request(self, request: &Request, response: Response) -> Result<Response, ErrorResponse> {
+        let header = |name: &str| {
+            request
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("-")
+        };
+        tracing::info!(
+            peer = %self.peer,
+            method = %request.method(),
+            path = %request.uri(),
+            user_agent = header("user-agent"),
+            origin = header("origin"),
+            forwarded_for = header("x-forwarded-for"),
+            "ws upgrade request"
+        );
+        Ok(response)
     }
 }
 
@@ -71,6 +113,7 @@ async fn serve(l: TcpListener) -> std::io::Result<()> {
 ///
 /// * `ws`: 已完成 HTTP 升级的 WebSocket 连接.
 /// * `rooms`: 共享房间表, 函数返回前清理本连接占用的槽位.
+/// * `peer`: 对端地址 (仅用于日志; NAT 后是网关地址).
 ///
 /// returns: Result<(), tokio_tungstenite::tungstenite::Error>
 ///
@@ -82,18 +125,27 @@ async fn serve(l: TcpListener) -> std::io::Result<()> {
 async fn handle(
     mut ws: WebSocketStream<TcpStream>,
     rooms: Rooms,
+    peer: SocketAddr,
 ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
     let Some(first) = ws.next().await else {
+        tracing::info!(%peer, "peer closed before first frame");
         return Ok(());
     };
     let frame: Frame = match serde_json::from_slice(&first?.into_data()) {
         Ok(f) => f,
         Err(_) => {
+            tracing::warn!(%peer, "first frame is not valid json");
             ws.send(Message::text(error_frame("bad json"))).await?;
             return Ok(());
         }
     };
     if frame.kind != "join" || frame.room.is_empty() {
+        tracing::warn!(
+            %peer,
+            kind = %frame.kind,
+            room = %frame.room,
+            "first frame must be join with room"
+        );
         ws.send(Message::text(error_frame("first frame must be join")))
             .await?;
         return Ok(());
@@ -112,18 +164,31 @@ async fn handle(
             } else {
                 None
             };
-            Some((slot, rx, cached_offer))
+            let occupied =
+                usize::from(room.peers[0].is_some()) + usize::from(room.peers[1].is_some());
+            Some((slot, rx, cached_offer, occupied))
         } else {
             None
         }
     };
-    let Some((slot, mut rx, cached_offer)) = joined else {
+    let Some((slot, mut rx, cached_offer, occupied)) = joined else {
+        tracing::warn!(%peer, room = %frame.room, "room full, rejecting");
         ws.send(Message::text(error_frame("room full"))).await?;
         return Ok(());
     };
+    let room = frame.room.clone();
+    tracing::info!(
+        %peer,
+        %room,
+        slot,
+        peers = occupied,
+        cached_offer = cached_offer.is_some(),
+        "room joined"
+    );
     ws.send(Message::text(joined_frame(slot as u8))).await?;
     if let Some(cached) = cached_offer {
         // joined 必须先到, 客户端拿到槽位后才能把 offer 当对端 blob 处理.
+        tracing::info!(%peer, %room, slot, "replay cached offer to late peer");
         ws.send(cached).await?;
     }
 
@@ -140,34 +205,49 @@ async fn handle(
         let msg = match msg {
             Ok(m) => m,
             Err(e) => {
-                tracing::debug!(?e, "ws read ended with error");
+                tracing::warn!(%peer, %room, slot, error = %e, "ws read ended with error");
                 break;
             }
         };
         if msg.is_close() {
+            tracing::info!(%peer, %room, slot, "peer sent close frame");
             break;
         }
         // 原样转发 JSON 文本帧 (offer/answer/hangup), payload 含换行也不变.
         // slot 0 的初始 SDP 同时写入缓存, 供晚加入的 slot 1 补发.
-        let kind = msg
-            .to_text()
-            .ok()
-            .and_then(|text| serde_json::from_str::<Frame>(text).ok())
-            .map(|frame| frame.kind);
-        let peer = {
+        let text = msg.to_text().ok();
+        let parsed = text.and_then(|text| serde_json::from_str::<Frame>(text).ok());
+        let kind = parsed.as_ref().map(|frame| frame.kind.as_str());
+        let payload_len = parsed.as_ref().map_or(0, |frame| frame.payload.len());
+        let peer_slot = 1 - slot;
+        let (peer_tx, cached) = {
             let mut rooms = rooms.lock().unwrap();
             let Some(room) = rooms.get_mut(&frame.room) else {
+                tracing::warn!(%peer, room = %frame.room, slot, "room gone while forwarding");
                 break;
             };
-            if slot == 0 && matches!(kind.as_deref(), Some("offer" | "blob")) {
+            let mut cached = false;
+            if slot == 0 && matches!(kind, Some("offer" | "blob")) {
                 room.cached_offer = Some(msg.clone());
-            } else if matches!(kind.as_deref(), Some("hangup")) {
+                cached = true;
+            } else if matches!(kind, Some("hangup")) {
                 room.cached_offer = None;
             }
-            room.peers[1 - slot].clone()
+            (room.peers[peer_slot].clone(), cached)
         };
-        if let Some(peer) = peer {
-            let _ = peer.send(msg);
+        tracing::info!(
+            %peer,
+            room = %frame.room,
+            from_slot = slot,
+            to_slot = peer_slot,
+            kind = kind.unwrap_or("?"),
+            payload_len,
+            cached,
+            delivered = peer_tx.is_some(),
+            "frame relayed"
+        );
+        if let Some(peer_tx) = peer_tx {
+            let _ = peer_tx.send(msg);
         }
     }
     fwd.abort();
@@ -175,13 +255,16 @@ async fn handle(
     // 清理槽位; offerer (slot 0) 离开时清掉缓存, 避免给新 answerer 发过期 SDP.
     // 房间空了就从表里删除.
     let mut rooms = rooms.lock().unwrap();
-    if let Some(room) = rooms.get_mut(&frame.room) {
-        room.peers[slot] = None;
+    if let Some(entry) = rooms.get_mut(&room) {
+        entry.peers[slot] = None;
         if slot == 0 {
-            room.cached_offer = None;
+            entry.cached_offer = None;
         }
-        if room.peers[0].is_none() && room.peers[1].is_none() {
-            rooms.remove(&frame.room);
+        if entry.peers[0].is_none() && entry.peers[1].is_none() {
+            rooms.remove(&room);
+            tracing::info!(%peer, %room, slot, "room removed (empty)");
+        } else {
+            tracing::info!(%peer, %room, slot, "slot released, waiting for peer");
         }
     }
     Ok(())
