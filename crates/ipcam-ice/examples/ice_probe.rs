@@ -216,6 +216,19 @@ async fn recv_mapped(
     None
 }
 
+/// 显式解析并选定 IPv4 地址. 判定 socket 绑 0.0.0.0 (IPv4); macOS 等系统
+/// 的 getaddrinfo 会把有 AAAA 记录的域名排在前面 (如 stun.l.google.com),
+/// 直接 (host, port) 发送会对 IPv4 socket 报 EINVAL (os error 22).
+async fn resolve_v4(host: &str, port: u16) -> Result<std::net::SocketAddr> {
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .with_context(|| format!("resolve {host}:{port}"))?;
+    addrs
+        .into_iter()
+        .find(|a| a.is_ipv4())
+        .with_context(|| format!("{host} 无 IPv4 地址 (判定 socket 为 IPv4)"))
+}
+
 /// NAT 类型判定主流程.
 async fn stun_nat_probe(args: &Args) -> Result<()> {
     let primary = args
@@ -228,17 +241,22 @@ async fn stun_nat_probe(args: &Args) -> Result<()> {
         .unwrap_or_else(|| "stun://stun.l.google.com:19302".into());
     let (h1, p1) = stun_host_port(&primary)?;
     let (h2, p2) = stun_host_port(&secondary)?;
-    info!("binding from one socket to {primary} and {secondary}");
+    // 显式解析并只取 IPv4: 判定 socket 绑 0.0.0.0 (IPv4), 而 macOS 等系统的
+    // getaddrinfo 会把有 AAAA 记录的域名排在前面 (如 stun.l.google.com),
+    // 直接 (host, port) 发送会对 IPv4 socket 报 EINVAL (os error 22).
+    let addr1 = resolve_v4(&h1, p1).await?;
+    let addr2 = resolve_v4(&h2, p2).await?;
+    info!("binding from one socket to {addr1} and {addr2}");
 
     let sock = tokio::net::UdpSocket::bind("0.0.0.0:0")
         .await
         .context("bind udp")?;
     let tid1 = make_tid();
-    sock.send_to(&build_binding(tid1), (h1.as_str(), p1))
+    sock.send_to(&build_binding(tid1), addr1)
         .await
         .context("send to primary stun")?;
     let tid2 = make_tid();
-    sock.send_to(&build_binding(tid2), (h2.as_str(), p2))
+    sock.send_to(&build_binding(tid2), addr2)
         .await
         .context("send to secondary stun")?;
 
