@@ -39,6 +39,10 @@ struct Args {
     /// 整体超时 (秒)
     #[arg(long, default_value_t = 30)]
     timeout: u64,
+    /// 只留 srflx/relay 候选 (丢全部 typ host 行), 强制走 NAT 打洞路径
+    /// 验证 srflx 互穿; 需双方同时加本旗标, 同机自测受 NAT hairpin 限制
+    #[arg(long)]
+    srflx_only: bool,
 }
 
 /// --sig 的协议校验: clap value_parser, 非法值按参数错误处理 (退出码 2).
@@ -48,6 +52,18 @@ fn parse_ws_url(s: &str) -> Result<String, String> {
     } else {
         Err("expected a ws:// or wss:// URL".to_string())
     }
+}
+
+/// --srflx-only: 过滤本地 ICE blob, 丢掉全部 `typ host` 候选行, 只留
+/// srflx/relay. 用于强制走 NAT 打洞路径 (需双方同时加本旗标;
+/// 同机自测受 NAT hairpin 限制, 需双机跨 NAT 验证).
+fn keep_only_public_mapped(blob: &ipcam_ice::blob::IceBlob) -> ipcam_ice::blob::IceBlob {
+    let filtered: String = blob
+        .as_str()
+        .split_inclusive('\n')
+        .filter(|line| !line.contains(" typ host"))
+        .collect();
+    ipcam_ice::blob::IceBlob::from_sdp(filtered)
 }
 
 async fn run(args: Args) -> Result<()> {
@@ -75,7 +91,7 @@ async fn run(args: Args) -> Result<()> {
 
     // 业务主体无论成败, 都必须先 close agent 再向上报错 — 拆成内层函数,
     // 让 anyhow 的 ? 传播和 close 的收尾互不干扰.
-    let outcome = probe(&agent, ws, slot, remaining).await;
+    let outcome = probe(&agent, ws, slot, remaining, args.srflx_only).await;
     agent.close();
     outcome
 }
@@ -87,6 +103,7 @@ async fn probe(
     ws: signal::WsClient,
     slot: u8,
     remaining: impl Fn() -> Duration,
+    srflx_only: bool,
 ) -> Result<()> {
     // attach 必须在等 Connected 之前 (同环回测试: attach 才把 component 的
     // socket I/O 路由到被迭代的 ctx, 否则连通性检查回包无人收).
@@ -103,6 +120,18 @@ async fn probe(
     let local_ice = timeout(remaining(), agent.local_blob())
         .await
         .context("gathering local ICE blob timed out")??;
+    // --srflx-only: 发送前滤掉 host 候选, 强制双方 srflx 互穿.
+    let local_ice = if srflx_only {
+        let kept = keep_only_public_mapped(&local_ice);
+        info!(
+            before = local_ice.candidates().len(),
+            after = kept.candidates().len(),
+            "srflx-only: host candidates filtered out"
+        );
+        kept
+    } else {
+        local_ice
+    };
     info!("local ICE SDP:\n{}", local_ice.pretty());
     let local = sdp::build_offer_blob(&local_ice, None).context("failed to build media SDP")?;
     info!(
