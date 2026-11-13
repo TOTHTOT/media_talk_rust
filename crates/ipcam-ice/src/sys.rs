@@ -47,6 +47,49 @@ pub(crate) const STATE_CONNECTED: c_uint = 3;
 pub(crate) const STATE_READY: c_uint = 4;
 pub(crate) const STATE_FAILED: c_uint = 5;
 
+/// NiceCandidate 内 `addr` 字段的偏移 (type/transport 两个枚举各 4 字节,
+/// 依据 candidate.h struct _NiceCandidate 布局, 本机 0.1.23 头文件核实).
+pub(crate) const CAND_ADDR_OFFSET: usize = 8;
+
+/// 取 NiceCandidate 的 NiceAddress 字段指针.
+///
+/// # Safety
+/// `c` 同 [`candidate_type`]. 返回指针指向候选内部, 不得越过候选存活期使用.
+pub(crate) unsafe fn candidate_addr(c: *mut NiceCandidate) -> *const u8 {
+    unsafe { (c as *const u8).add(CAND_ADDR_OFFSET) }
+}
+
+// ---- NiceAddress 读取 (纯 sockaddr 联合体, 依据 address.h 本机头文件) ----
+// 布局: offset 0 = sa_family (AF_INET=2 / AF_INET6=23),
+//       sockaddr_in:  port @+2 (u16 网络序), addr @+4 (4 字节)
+//       sockaddr_in6: port @+2 (u16 网络序), addr @+8 (16 字节)
+// sockaddr 系列布局由 POSIX/WinSock 标准固定, 用 read_unaligned 避免对齐假设.
+
+/// # Safety
+/// `a` 必须指向合法 NiceAddress.
+pub(crate) unsafe fn addr_family(a: *const u8) -> u16 {
+    unsafe { (a as *const u16).read_unaligned() }
+}
+
+/// # Safety
+/// 同 [`addr_family`].
+pub(crate) unsafe fn addr_port(a: *const u8) -> u16 {
+    // SAFETY: sockaddr sin_port/sin6_port 均在 +2, 网络字节序.
+    u16::from_be(unsafe { (a.add(2) as *const u16).read_unaligned() })
+}
+
+/// # Safety
+/// 同 [`addr_family`], 且 family 为 AF_INET.
+pub(crate) unsafe fn addr_ipv4(a: *const u8) -> [u8; 4] {
+    unsafe { (a.add(4) as *const [u8; 4]).read_unaligned() }
+}
+
+/// # Safety
+/// 同 [`addr_family`], 且 family 为 AF_INET6.
+pub(crate) unsafe fn addr_ipv6(a: *const u8) -> [u8; 16] {
+    unsafe { (a.add(8) as *const [u8; 16]).read_unaligned() }
+}
+
 #[link(name = "nice")]
 unsafe extern "C" {
     #[link_name = "g_object_unref"]

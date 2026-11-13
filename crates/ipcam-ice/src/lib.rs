@@ -11,4 +11,4 @@ pub mod sdp;
 pub mod signal;
 pub(crate) mod sys;
 
-pub use agent::{IceAgent, IceConfig, IceError, IceState, SelectedKind};
+pub use agent::{IceAgent, IceConfig, IceError, IceState, SelectedKind, SelectedPair};

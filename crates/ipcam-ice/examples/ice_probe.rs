@@ -150,7 +150,7 @@ async fn probe(
         Err(_) => bail!("timed out waiting for peer payload (10s), data plane failed"),
     }
 
-    // 6. 选中路径候选类型 + 结果输出
+    // 6. 选中路径候选类型 + 真实地址 + 结果输出
     let pair = agent.selected_pair(1).await;
     let name = |k: SelectedKind| match k {
         SelectedKind::Host => "host",
@@ -159,13 +159,15 @@ async fn probe(
         SelectedKind::Relay => "relay",
     };
     match pair {
-        Some((local, remote)) => println!(
-            "ICE OK local={} remote={} slot={}",
-            name(local),
-            name(remote),
+        Some(p) => println!(
+            "ICE OK local={}({}) remote={}({}) slot={}",
+            name(p.local_kind),
+            p.local,
+            name(p.remote_kind),
+            p.remote,
             slot
         ),
-        None => println!("ICE OK local=unknown remote=unknown slot={slot}"),
+        None => println!("ICE OK (selected pair unavailable) slot={slot}"),
     }
     info!(?pair, "selected pair");
     Ok(())

@@ -120,6 +120,38 @@ pub enum SelectedKind {
     Relay,
 }
 
+/// 选中路径快照 (component 连通后查询, 诊断展示用): 本地/远端各自的
+/// 候选类型与真实 IP:端口.
+#[derive(Debug, Clone, Copy)]
+pub struct SelectedPair {
+    pub local_kind: SelectedKind,
+    pub local: std::net::SocketAddr,
+    pub remote_kind: SelectedKind,
+    pub remote: std::net::SocketAddr,
+}
+
+/// NiceAddress (纯 sockaddr 联合体) 解析为 SocketAddr; 布局依据见
+/// sys.rs 的 addr_* 系列注释. family 非法时返回 None.
+///
+/// # Safety
+/// `p` 必须指向库返回候选内的合法 NiceAddress.
+unsafe fn nice_addr_to_socket(p: *const u8) -> Option<std::net::SocketAddr> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    // SAFETY: 见函数文档; 各字段读取都在本调用内完成.
+    let family = unsafe { sys::addr_family(p) };
+    match family {
+        2 => {
+            let ip = IpAddr::V4(Ipv4Addr::from(unsafe { sys::addr_ipv4(p) }));
+            Some(SocketAddr::new(ip, unsafe { sys::addr_port(p) }))
+        }
+        23 => {
+            let ip = IpAddr::V6(Ipv6Addr::from(unsafe { sys::addr_ipv6(p) }));
+            Some(SocketAddr::new(ip, unsafe { sys::addr_port(p) }))
+        }
+        _ => None,
+    }
+}
+
 impl SelectedKind {
     fn from_raw(raw: c_uint) -> Option<Self> {
         match raw {
@@ -555,8 +587,13 @@ impl IceAgent {
     ///
     /// component 连通 ([`IceState::Connected`]) 后可用; 未连通 / 库未选中 /
     /// 类型值越界时返回 None。走 invoke 纪律, 可在任意线程调用。
-    pub async fn selected_pair(&self, component: u32) -> Option<(SelectedKind, SelectedKind)> {
-        let raw = self
+    /// 查询 component 当前选中路径 (候选类型 + 真实 IP:端口).
+    ///
+    /// component 连通 ([`IceState::Connected`]) 后可用; 未连通 / 库未选中 /
+    /// 类型或地址无法解析时返回 None. 走 invoke 纪律; sockaddr 解析在
+    /// glib 线程内完成, 不持有指向库内候选的任何引用.
+    pub async fn selected_pair(&self, component: u32) -> Option<SelectedPair> {
+        let (lk, laddr, rk, raddr) = self
             .invoke(move |agent, stream| {
                 let mut local: *mut sys::NiceCandidate = std::ptr::null_mut();
                 let mut remote: *mut sys::NiceCandidate = std::ptr::null_mut();
@@ -571,21 +608,25 @@ impl IceAgent {
                         &mut remote,
                     )
                 };
-                if ok == 1 && !local.is_null() && !remote.is_null() {
-                    // SAFETY: 两指针均已判空且为库返回的合法候选.
-                    Some((unsafe { sys::candidate_type(local) }, unsafe {
-                        sys::candidate_type(remote)
-                    }))
-                } else {
-                    None
+                if ok != 1 || local.is_null() || remote.is_null() {
+                    return None;
                 }
+                // SAFETY: 两指针均已判空且为库返回的合法候选; 类型/地址读取
+                // 在本闭包内完成, 拷贝出值, 候选指针不流出.
+                let lk = unsafe { sys::candidate_type(local) };
+                let laddr = unsafe { nice_addr_to_socket(sys::candidate_addr(local)) }?;
+                let rk = unsafe { sys::candidate_type(remote) };
+                let raddr = unsafe { nice_addr_to_socket(sys::candidate_addr(remote)) }?;
+                Some((lk, laddr, rk, raddr))
             })
             .await
             .ok()??;
-        Some((
-            SelectedKind::from_raw(raw.0)?,
-            SelectedKind::from_raw(raw.1)?,
-        ))
+        Some(SelectedPair {
+            local_kind: SelectedKind::from_raw(lk)?,
+            local: laddr,
+            remote_kind: SelectedKind::from_raw(rk)?,
+            remote: raddr,
+        })
     }
 
     /// 原始 NiceAgent 指针, 仅供 ice_media 设置 nicesink/nicesrc `agent` 属性.
@@ -813,19 +854,29 @@ mod tests {
         );
 
         // 选中路径查询: 本机环回两侧都是 host 候选 (Task 5 新增 API 的 TDD 断言)
-        let pair_a = a.selected_pair(1).await;
-        let pair_b = b.selected_pair(1).await;
+        let pair_a = a.selected_pair(1).await.expect("A 侧选中路径");
+        let pair_b = b.selected_pair(1).await.expect("B 侧选中路径");
         assert_eq!(
-            pair_a,
-            Some((SelectedKind::Host, SelectedKind::Host)),
-            "A 侧选中路径应为 host/host"
+            pair_a.local_kind,
+            SelectedKind::Host,
+            "A 侧本地候选应为 host"
         );
         assert_eq!(
-            pair_b,
-            Some((SelectedKind::Host, SelectedKind::Host)),
-            "B 侧选中路径应为 host/host"
+            pair_a.remote_kind,
+            SelectedKind::Host,
+            "A 侧远端候选应为 host"
         );
-        println!("loopback: selected pair a={pair_a:?} b={pair_b:?}");
+        assert_eq!(
+            pair_b.local_kind,
+            SelectedKind::Host,
+            "B 侧本地候选应为 host"
+        );
+        assert_eq!(
+            pair_b.remote_kind,
+            SelectedKind::Host,
+            "B 侧远端候选应为 host"
+        );
+        println!("loopback: selected a={pair_a:?} b={pair_b:?}");
 
         // 收尾回归: 裸 drop (quit + join + 双 unref) 不得挂起/崩溃 ——
         // close() 只是 drop(self) 的显式写法, 行为由这里直接覆盖.

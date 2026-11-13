@@ -97,12 +97,17 @@ gathering-done (上限 10s) 后 `nice_agent_generate_local_sdp` 一次性导出
 
 ### 选中路径查询
 
-`selected_pair(component)` (src/agent.rs:533) 走
-`nice_agent_get_selected_pair` FFI (src/sys.rs:87), 读 `NiceCandidate`
-首字段 `type` 得出 (本地, 远端) 候选类型. 布局依据是本机
-`nice/candidate.h`: `type` 是结构体第一成员, 枚举值
-HOST=0/SRFLX=1/PRFLX=2/RELAYED=3 (src/sys.rs:25-31); 未连通或值越界
-返回 None, 不会误读.
+`selected_pair(component)` (src/agent.rs:595) 走
+`nice_agent_get_selected_pair` FFI (src/sys.rs:87), 返回
+`Option<SelectedPair>` — 本地/远端各自的候选类型与真实 IP:端口.
+类型读 `NiceCandidate` 首字段 `type` (布局依据本机
+`nice/candidate.h`: 结构体第一成员, 枚举值
+HOST=0/SRFLX=1/PRFLX=2/RELAYED=3, src/sys.rs:25-28); 地址读候选内
+`addr` 字段 (NiceAddress = 纯 sockaddr 联合体, 依据 `nice/address.h`,
+family/port/ipv4/ipv6 的读取见 src/sys.rs 的 addr_* 系列).
+解析在 glib 线程内完成, 不持有指向库内候选的引用; family 非法或
+查询失败返回 None, 不会误读. ice_probe 的结果行就出自这里:
+`ICE OK local=host(192.168.x.x:50001) remote=srflx(59.61.x.x:60002)`.
 
 ### Windows 补丁
 
@@ -120,7 +125,7 @@ WSAStartup, 裸用会导致 gather 立即失败; `ensure_winsock` 用
 | `add_remote(&IceBlob)` | src/agent.rs:485 | 喂对端 blob, 触发打洞 |
 | `state_rx()` | src/agent.rs:501 | watch 订阅 IceState 变化 |
 | `wait_connected(timeout)` | src/agent.rs:511 | 等 Connected; Failed/超时返回 IceError |
-| `selected_pair(u32)` | src/agent.rs:533 | 选中路径 (本地, 远端) 候选类型 |
+| `selected_pair(u32)` | src/agent.rs:595 | 选中路径: 两端候选类型 + 真实 IP:端口 (SelectedPair) |
 | `send(&[u8])` | src/agent.rs:598 | 数据面发送, 固定 component 1 |
 | `attach_recv(f)` | src/agent.rs:622 | 数据面接收回调, 固定 component 1 |
 | `raw_agent()` | src/agent.rs:570 | 裸指针, 仅供 ice_media 注入元件属性 |
