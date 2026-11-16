@@ -60,7 +60,8 @@ pub(crate) unsafe fn candidate_addr(c: *mut NiceCandidate) -> *const u8 {
 }
 
 // ---- NiceAddress 读取 (纯 sockaddr 联合体, 依据 address.h 本机头文件) ----
-// 布局: offset 0 = sa_family (AF_INET=2 / AF_INET6=23),
+// 布局: offset 0 = sa_family (AF_INET=2 全平台恒等; AF_INET6 Winsock=23,
+//       POSIX=10 — 用处的常量定义见 agent.rs 的 AF_INET6),
 //       sockaddr_in:  port @+2 (u16 网络序), addr @+4 (4 字节)
 //       sockaddr_in6: port @+2 (u16 网络序), addr @+8 (16 字节)
 // sockaddr 系列布局由 POSIX/WinSock 标准固定, 用 read_unaligned 避免对齐假设.

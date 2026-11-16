@@ -130,6 +130,13 @@ pub struct SelectedPair {
     pub remote: std::net::SocketAddr,
 }
 
+/// AF_INET 全平台恒为 2; AF_INET6 平台相关 (Winsock=23, POSIX=10),
+/// 依据本机 Windows 头文件硬编码会让 Linux/macOS 的 v6 候选解析失败.
+#[cfg(windows)]
+const AF_INET6: u16 = 23;
+#[cfg(not(windows))]
+const AF_INET6: u16 = 10;
+
 /// NiceAddress (纯 sockaddr 联合体) 解析为 SocketAddr; 布局依据见
 /// sys.rs 的 addr_* 系列注释. family 非法时返回 None.
 ///
@@ -144,7 +151,7 @@ unsafe fn nice_addr_to_socket(p: *const u8) -> Option<std::net::SocketAddr> {
             let ip = IpAddr::V4(Ipv4Addr::from(unsafe { sys::addr_ipv4(p) }));
             Some(SocketAddr::new(ip, unsafe { sys::addr_port(p) }))
         }
-        23 => {
+        AF_INET6 => {
             let ip = IpAddr::V6(Ipv6Addr::from(unsafe { sys::addr_ipv6(p) }));
             Some(SocketAddr::new(ip, unsafe { sys::addr_port(p) }))
         }
