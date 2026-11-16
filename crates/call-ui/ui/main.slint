@@ -167,10 +167,17 @@ export component MainWindow inherits MaterialWindow {
 
     // 屏幕键盘全局上下文镜像 (Task 3): slint 元素体内不能绑定 global 属性
     // (绑定语法仅限本元素属性), 根部用 changed 处理器把 kb-* 属性镜像进
-    // KeyboardCtx, 任意深度的 KbTextField 实例直读. visible 方向相反:
-    // 实例聚焦/失焦直写 KeyboardCtx.visible, 键盘浮层改读它; "完成"键由
-    // Rust 写 root.kb-visible, 经此同步进来
-    changed kb-visible => { KeyboardCtx.visible = root.kb-visible; }
+    // KeyboardCtx, 任意深度的 KbTextField 实例直读. focused-id 方向相反:
+    // 实例聚焦/失焦直写 KeyboardCtx.focused-id, 键盘浮层读它显隐; "完成"键
+    // 由 Rust 写 root.kb-visible=false, 这里只在转 false 时同步进 global
+    // 并调用 fs.focus() 真正移走输入框焦点 (否则再点同一输入框不产生
+    // 聚焦迁移, 键盘弹不回来)
+    changed kb-visible => {
+        if !root.kb-visible {
+            KeyboardCtx.focused-id = -1;
+            fs.focus();
+        }
+    }
     changed kb-commit-seq => { KeyboardCtx.commit-seq = root.kb-commit-seq; }
     changed kb-commit-text => { KeyboardCtx.commit-text = root.kb-commit-text; }
     changed kb-delete-field => { KeyboardCtx.delete-field = root.kb-delete-field; }
@@ -258,6 +265,28 @@ export component MainWindow inherits MaterialWindow {
     preferred-height: 600px;
     min-width: 1024px;
     min-height: 600px;
+
+    // ===== 屏幕键盘兜底 (z 序最低, 先于页面内容声明): 全窗背景点击区 +
+    // 隐藏焦点汇. 背景 TouchArea 压在页面内容之下, 点按钮/输入框仍由上层
+    // 元素消费, 只有点空白处才落到这里收起键盘; fs 收键盘时抢焦点, 让
+    // 输入框真正失焦 =====
+    TouchArea {
+        width: 100%;
+        height: 100%;
+
+        clicked => {
+            if KeyboardCtx.focused-id >= 0 {
+                KeyboardCtx.focused-id = -1;
+                fs.focus();
+                root.kb-field-focused(-1);
+            }
+        }
+    }
+
+    fs := FocusScope {
+        width: 1px;
+        height: 1px;
+    }
 
     // ===== 根布局: 状态栏 + 主页区域, 靠 spacing 控制间距 =====
     VerticalLayout {
@@ -419,9 +448,9 @@ export component MainWindow inherits MaterialWindow {
     }
 
     // ===== 屏幕键盘: 底部滑出浮层, 不参与主布局 (z 序最高的同级层) =====
-    // 显隐读 KeyboardCtx.visible: 聚焦实例直写弹键盘, "完成"键经 Rust 写
-    // root.kb-visible → 根部 changed 处理器同步进 global
-    if KeyboardCtx.visible: Keyboard {
+    // 显隐读 KeyboardCtx.focused-id: 聚焦实例直写弹键盘, "完成"键经 Rust 写
+    // root.kb-visible=false → 根部 changed 处理器同步进 global
+    if KeyboardCtx.focused-id >= 0: Keyboard {
         width: 100%;
         y: parent.height - self.height;
         height: 45%;

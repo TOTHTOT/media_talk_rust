@@ -27,6 +27,9 @@ export component GeneralSettingsCard inherits FilledCard {
     // 屏幕亮度: 单位百分比. 所有平台都显示滑块, 不支持时由 Rust 侧
     // 在松手回调里弹 toast (滑块本身仍可拖动)
     in-out property <float> brightness: 80;
+    // 聚焦输入框在卡片内的 y 偏移 (相对卡片根), 设置页据此滚动定位;
+    // 由 KbTextField focus-changed 在聚焦时写入
+    in-out property <length> focus-offset-y: 0px;
     callback set-brightness(float);
 
     VerticalLayout {
@@ -106,7 +109,7 @@ export component GeneralSettingsCard inherits FilledCard {
         // placeholder_text 不渲染 (只进 accessibility), 提示走 supporting-text;
         // 定位成功后提示当前生效城市. edited 每次输入即提交 (不依赖回车),
         // 退出设置页时输入框的值必然已生效. 聚焦弹屏幕键盘 (KbTextField)
-        KbTextField {
+        f1 := KbTextField {
             // field-id 对应 Rust 侧 keyboard::FIELD_CITY
             field-id: 1;
             label: @tr("城市");
@@ -119,13 +122,14 @@ export component GeneralSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(city) => { root.set-city(city); }
             focus-changed(id) => {
-                KeyboardCtx.visible = id >= 0;
+                if id >= 0 { root.focus-offset-y = f1.y; }
+                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
 
         // 和风 key: 密码样式遮蔽, 留空回退免 key 的 Open-Meteo. 同上, 输入即提交
-        KbTextField {
+        f2 := KbTextField {
             // field-id 对应 Rust 侧 keyboard::FIELD_WEATHER_KEY
             field-id: 2;
             label: @tr("和风 Key");
@@ -137,7 +141,8 @@ export component GeneralSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(key) => { root.set-weather-key(key); }
             focus-changed(id) => {
-                KeyboardCtx.visible = id >= 0;
+                if id >= 0 { root.focus-offset-y = f2.y; }
+                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }

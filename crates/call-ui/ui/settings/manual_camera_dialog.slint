@@ -30,7 +30,7 @@ export component ManualCameraDialog inherits VerticalLayout {
         commit-text: KeyboardCtx.commit-text;
         delete-field: KeyboardCtx.delete-field;
         focus-changed(id) => {
-            KeyboardCtx.visible = id >= 0;
+            KeyboardCtx.focused-id = id;
             root.kb-field-focused(id);
         }
     }
@@ -43,7 +43,7 @@ export component ManualCameraDialog inherits VerticalLayout {
         commit-text: KeyboardCtx.commit-text;
         delete-field: KeyboardCtx.delete-field;
         focus-changed(id) => {
-            KeyboardCtx.visible = id >= 0;
+            KeyboardCtx.focused-id = id;
             root.kb-field-focused(id);
         }
     }
@@ -58,7 +58,7 @@ export component ManualCameraDialog inherits VerticalLayout {
         commit-text: KeyboardCtx.commit-text;
         delete-field: KeyboardCtx.delete-field;
         focus-changed(id) => {
-            KeyboardCtx.visible = id >= 0;
+            KeyboardCtx.focused-id = id;
             root.kb-field-focused(id);
         }
     }
@@ -73,7 +73,7 @@ export component ManualCameraDialog inherits VerticalLayout {
         commit-text: KeyboardCtx.commit-text;
         delete-field: KeyboardCtx.delete-field;
         focus-changed(id) => {
-            KeyboardCtx.visible = id >= 0;
+            KeyboardCtx.focused-id = id;
             root.kb-field-focused(id);
         }
     }

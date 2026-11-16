@@ -27,6 +27,9 @@ export component IceSettingsCard inherits FilledCard {
     // 状态行 + 统计行 (ice worker 投递, 文案后端直出不进 @tr)
     in property <string> status-text: "";
     in property <string> stats-text: "";
+    // 聚焦输入框在卡片内的 y 偏移 (相对卡片根), 设置页据此滚动定位;
+    // 由 KbTextField focus-changed 在聚焦时写入
+    in-out property <length> focus-offset-y: 0px;
 
     // 呼叫进行中: 状态文案是 ice.rs post_status 的直出字面量, 这里按
     // 三个建立中/通话中的状态推导 (错误文案与空闲都回可呼叫)
@@ -34,8 +37,8 @@ export component IceSettingsCard inherits FilledCard {
         || root.status-text == "连接中" || root.status-text == "已连接";
 
     VerticalLayout {
-        padding: 28px;
-        spacing: 20px;
+        padding: 24px;
+        spacing: 16px;
         MaterialText {
             text: @tr("ICE 通话");
             style: MaterialTypography.headline_small;
@@ -45,7 +48,7 @@ export component IceSettingsCard inherits FilledCard {
 
         // 信令服务器: 留空用默认 ws://127.0.0.1:9000. material TextField
         // placeholder 不渲染, 提示走 supporting-text; edited 输入即提交
-        KbTextField {
+        f1 := KbTextField {
             // field-id 对应 Rust 侧 keyboard::FIELD_ICE_SIGSERVER
             field-id: 9;
             label: @tr("信令服务器");
@@ -56,13 +59,14 @@ export component IceSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-sigserver(text); }
             focus-changed(id) => {
-                KeyboardCtx.visible = id >= 0;
+                if id >= 0 { root.focus-offset-y = f1.y; }
+                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
 
         // 房间名: 两人填同一个
-        KbTextField {
+        f2 := KbTextField {
             // field-id 对应 Rust 侧 keyboard::FIELD_ICE_ROOM
             field-id: 10;
             label: @tr("房间名");
@@ -73,13 +77,14 @@ export component IceSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-room(text); }
             focus-changed(id) => {
-                KeyboardCtx.visible = id >= 0;
+                if id >= 0 { root.focus-offset-y = f2.y; }
+                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
 
         // STUN URI: 显式留空 = 仅 host 候选 (局域网调试)
-        KbTextField {
+        f3 := KbTextField {
             // field-id 对应 Rust 侧 keyboard::FIELD_ICE_STUN
             field-id: 11;
             label: "STUN";
@@ -90,7 +95,8 @@ export component IceSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-stun(text); }
             focus-changed(id) => {
-                KeyboardCtx.visible = id >= 0;
+                if id >= 0 { root.focus-offset-y = f3.y; }
+                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }

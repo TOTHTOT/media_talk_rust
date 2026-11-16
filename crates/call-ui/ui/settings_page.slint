@@ -85,7 +85,7 @@ export component SettingsPage inherits Rectangle {
             }
         }
 
-        ScrollView {
+        sv := ScrollView {
             vertical-stretch: 1;
             // 卡片水平居中: VerticalLayout 的 alignment 只管纵轴,
             // 横轴居中要套 HorizontalLayout
@@ -93,12 +93,12 @@ export component SettingsPage inherits Rectangle {
                 alignment: start;
                 spacing: 16px;
 
-                HorizontalLayout {
+                hl_general := HorizontalLayout {
                     alignment: center;
-                    GeneralSettingsCard {
+                    general_card := GeneralSettingsCard {
                         // 宽度基准用页面宽度, 不能用父布局 (ScrollView 内容宽度
                         // 反过来依赖子元素, 构成绑定环)
-                        width: min(640px, root.width - 48px);
+                        width: min(760px, root.width - 48px);
                         city <=> root.city;
                         weather-key <=> root.weather-key;
                         resolved-city: root.resolved-city;
@@ -107,14 +107,23 @@ export component SettingsPage inherits Rectangle {
                         set-city(city) => { root.set-city(city); }
                         set-weather-key(key) => { root.set-weather-key(key); }
                         set-brightness(v) => { root.set-screen-brightness(v); }
-                        kb-field-focused(id) => { root.kb-field-focused(id); }
+                        // 聚焦时把输入框滚到页顶下方约 24px (卡片 focus-changed
+                        // 已先写好 focus-offset-y, 这里直接读). content-y 负值
+                        // 向下滚 (露出下方内容); 只在聚焦回调里赋值一次, 不做
+                        // 常驻绑定, 不跟用户滚动抢 viewport
+                        kb-field-focused(id) => {
+                            if id >= 0 {
+                                sv.content-y = -(hl_general.y + general_card.focus-offset-y) + 24px;
+                            }
+                            root.kb-field-focused(id);
+                        }
                     }
                 }
 
-                HorizontalLayout {
+                hl_cameras := HorizontalLayout {
                     alignment: center;
                     CamerasCard {
-                        width: min(640px, root.width - 48px);
+                        width: min(760px, root.width - 48px);
                         cameras: root.cameras;
                         delete-camera(id) => { root.delete-camera(id); }
                         // 搜索添加: 开对话框 + 立即触发一次扫描
@@ -127,12 +136,12 @@ export component SettingsPage inherits Rectangle {
                 }
 
                 // ICE 通话卡 (卡片本体 Task 7): 设置/呼叫/状态行
-                HorizontalLayout {
+                hl_ice := HorizontalLayout {
                     alignment: center;
-                    IceSettingsCard {
+                    ice_card := IceSettingsCard {
                         // 宽度基准用页面宽度, 不能用父布局 (ScrollView 内容宽度
                         // 反过来依赖子元素, 构成绑定环)
-                        width: min(640px, root.width - 48px);
+                        width: min(760px, root.width - 48px);
                         sigserver <=> root.ice-sigserver;
                         room <=> root.ice-room;
                         stun <=> root.ice-stun;
@@ -143,17 +152,23 @@ export component SettingsPage inherits Rectangle {
                         set-sigserver(v) => { root.set-ice-sigserver(v); }
                         set-room(v) => { root.set-ice-room(v); }
                         set-stun(v) => { root.set-ice-stun(v); }
-                        kb-field-focused(id) => { root.kb-field-focused(id); }
+                        // 聚焦时把输入框滚到页顶下方约 24px, 同 general 卡
+                        kb-field-focused(id) => {
+                            if id >= 0 {
+                                sv.content-y = -(hl_ice.y + ice_card.focus-offset-y) + 24px;
+                            }
+                            root.kb-field-focused(id);
+                        }
                     }
                 }
 
                 // SIP 通话卡: 服务器/账号/媒体源设置, 写 kv 下次呼叫生效
-                HorizontalLayout {
+                hl_sip := HorizontalLayout {
                     alignment: center;
-                    SipSettingsCard {
+                    sip_card := SipSettingsCard {
                         // 宽度基准用页面宽度, 不能用父布局 (ScrollView 内容宽度
                         // 反过来依赖子元素, 构成绑定环)
-                        width: min(640px, root.width - 48px);
+                        width: min(760px, root.width - 48px);
                         server <=> root.sip-server;
                         username <=> root.sip-username;
                         password <=> root.sip-password;
@@ -178,7 +193,13 @@ export component SettingsPage inherits Rectangle {
                         set-rtp-audio(v) => { root.set-sip-rtp-audio(v); }
                         set-rtp-video(v) => { root.set-sip-rtp-video(v); }
                         set-ice(v) => { root.set-sip-ice(v); }
-                        kb-field-focused(id) => { root.kb-field-focused(id); }
+                        // 聚焦时把输入框滚到页顶下方约 24px, 同 general 卡
+                        kb-field-focused(id) => {
+                            if id >= 0 {
+                                sv.content-y = -(hl_sip.y + sip_card.focus-offset-y) + 24px;
+                            }
+                            root.kb-field-focused(id);
+                        }
                     }
                 }
             }

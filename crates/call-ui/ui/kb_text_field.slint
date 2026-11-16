@@ -10,12 +10,14 @@ import { TextField } from "../material-1.1.0/material.slint";
 
 // 屏幕键盘全局上下文: 根部 kb-* 属性经此 global 下发到任意层级的
 // KbTextField 实例, 免去逐层透传 (main.slint 根部 changed 处理器镜像).
-// visible 方向相反: 实例聚焦/失焦时直写, 键盘浮层读它显隐; "完成"键由
-// Rust 写 root.kb-visible, 根部 changed 处理器同步进这里.
+// focused-id 为当前聚焦输入框的 field-id, -1 = 无聚焦 (键盘隐藏);
+// 实例聚焦/失焦时直写, 键盘浮层读它显隐; "完成"键由 Rust 写
+// root.kb-visible=false, 根部 changed 处理器只把隐藏方向同步进这里
+// (弹出永远由聚焦事件驱动, kb-visible 的 true 不携带 field-id 信息).
 // 注: slint 元素体内不能绑定 global 属性 (双向/单向绑定仅限本元素属性),
 // 故同步只能走 changed 处理器, global 内也不放回调 (无法在外部接实现)
 export global KeyboardCtx {
-    in-out property <bool> visible: false;
+    in-out property <int> focused-id: -1;
     in-out property <int> commit-seq: 0;
     in-out property <string> commit-text: "";
     in-out property <bool> delete-field: false;
