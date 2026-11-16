@@ -1,6 +1,6 @@
 //! 共享类型与常量: session 模块内跨 worker/incoming/outgoing 共用.
 
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -139,6 +139,37 @@ impl Default for GuiSipConfig {
 /// 当前通话的控制通道发送端 (存入槽位, UI 发 Hangup 时取出发送).
 /// Some = 通话中/响铃中, None = 空闲. WorkerCmd::Hangup → call_ctl_tx.try_send()
 pub type CallCtlTx = Arc<Mutex<Option<mpsc::Sender<WorkerCmd>>>>;
+
+/// CLI 覆盖项: GUI 入口的每个参数都是可选覆盖, 缺省由 sip_settings::resolve
+/// 按 "kv > 内置默认" 补全为 GuiSipConfig. 媒体源/端口/ICE 保持 CLI 原始
+/// 字符串与语义, 合成时才经 parse_track_source 解析 (与原 main.rs 一致).
+#[derive(Debug, Default, Clone)]
+pub struct GuiSipOverrides {
+    /// SIP 服务器地址覆盖 (注册与呼叫都走它)
+    pub server: Option<SocketAddr>,
+    /// SIP 账号覆盖 (同时作为注册用户名)
+    pub username: Option<String>,
+    /// 账号密码覆盖 (digest 鉴权)
+    pub password: Option<String>,
+    /// 注册有效期覆盖 (秒)
+    pub expires: Option<u32>,
+    /// 强制绑定的本机网卡覆盖; 仅支持 IPv4, 给 IPv6 直接报错 (与原 CLI 一致)
+    pub local_ip: Option<IpAddr>,
+    /// 视频源覆盖, CLI 原始串: "camera[:设备]" / "file:路径" / "rtsp://..."
+    pub video_src: Option<String>,
+    /// 音频源覆盖, CLI 原始串: "mic" / "file:路径"
+    pub audio_src: Option<String>,
+    /// 视频限宽覆盖 (对端解码能力); 0 = 不限
+    pub max_width: Option<u32>,
+    /// SIP ICE 开关覆盖
+    pub ice: Option<bool>,
+    /// STUN URI 覆盖 (空串 = 仅 host 候选)
+    pub stun: Option<String>,
+    /// 被叫侧视频 RTP 首选端口覆盖
+    pub video_rtp_port: Option<u16>,
+    /// 被叫侧音频 RTP 首选端口覆盖
+    pub audio_rtp_port: Option<u16>,
+}
 
 /// Dial 预检查返回: (被叫 URI, 控制通道接收端) 给 handle_outgoing 用.
 /// 被叫 URI 来自 prepare_dial 的 callee_uri() 转换.

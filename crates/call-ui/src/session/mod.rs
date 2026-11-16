@@ -24,6 +24,6 @@ pub use dispatch::{handle_cmd, make_incoming_handler};
 pub use ipcam_sip::forward_update;
 pub use types::{
     CallCtlTx, CallRoutes, DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, DialPrep, GuiSipConfig,
-    RtpPorts, SipIceConfig, UpdateMsg,
+    GuiSipOverrides, RtpPorts, SipIceConfig, UpdateMsg,
 };
 pub use worker::spawn;

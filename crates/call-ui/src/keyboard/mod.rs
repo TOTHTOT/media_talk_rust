@@ -36,6 +36,17 @@ pub(crate) const FIELD_CAM_PASS: FieldId = 8;
 pub(crate) const FIELD_ICE_SIGSERVER: FieldId = 9;
 pub(crate) const FIELD_ICE_ROOM: FieldId = 10;
 pub(crate) const FIELD_ICE_STUN: FieldId = 11;
+pub(crate) const FIELD_SIP_SERVER: FieldId = 12;
+pub(crate) const FIELD_SIP_USERNAME: FieldId = 13;
+pub(crate) const FIELD_SIP_PASSWORD: FieldId = 14;
+pub(crate) const FIELD_SIP_EXPIRES: FieldId = 15;
+pub(crate) const FIELD_SIP_STUN: FieldId = 16;
+pub(crate) const FIELD_SIP_LOCAL_IP: FieldId = 17;
+pub(crate) const FIELD_SIP_VIDEO_SRC: FieldId = 18;
+pub(crate) const FIELD_SIP_AUDIO_SRC: FieldId = 19;
+pub(crate) const FIELD_SIP_MAX_WIDTH: FieldId = 20;
+pub(crate) const FIELD_SIP_RTP_AUDIO: FieldId = 21;
+pub(crate) const FIELD_SIP_RTP_VIDEO: FieldId = 22;
 
 /// field-id 的标识名, 仅聚焦登记日志用 (见 wiring.rs).
 pub(crate) fn field_name(id: FieldId) -> &'static str {
@@ -51,6 +62,17 @@ pub(crate) fn field_name(id: FieldId) -> &'static str {
         FIELD_ICE_SIGSERVER => "ice-sigserver",
         FIELD_ICE_ROOM => "ice-room",
         FIELD_ICE_STUN => "ice-stun",
+        FIELD_SIP_SERVER => "sip-server",
+        FIELD_SIP_USERNAME => "sip-username",
+        FIELD_SIP_PASSWORD => "sip-password",
+        FIELD_SIP_EXPIRES => "sip-expires",
+        FIELD_SIP_STUN => "sip-stun",
+        FIELD_SIP_LOCAL_IP => "sip-local-ip",
+        FIELD_SIP_VIDEO_SRC => "sip-video-src",
+        FIELD_SIP_AUDIO_SRC => "sip-audio-src",
+        FIELD_SIP_MAX_WIDTH => "sip-max-width",
+        FIELD_SIP_RTP_AUDIO => "sip-rtp-audio",
+        FIELD_SIP_RTP_VIDEO => "sip-rtp-video",
         _ => "unknown",
     }
 }

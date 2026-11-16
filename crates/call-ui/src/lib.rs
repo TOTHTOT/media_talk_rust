@@ -15,13 +15,14 @@ mod persist;
 mod props;
 mod screen;
 pub mod session;
+pub mod sip_settings;
 pub mod store;
 pub mod video;
 mod weather;
 mod wiring;
 use anyhow::Context as _;
 pub use app::Phase;
-pub use session::GuiSipConfig;
+pub use session::{GuiSipConfig, GuiSipOverrides};
 use tracing::info;
 
 /// 启动通话 GUI: 主线程跑 slint 事件循环, SIP worker 在后台线程.
@@ -29,7 +30,7 @@ use tracing::info;
 ///
 /// # Arguments
 ///
-/// * `cfg`: SIP 服务器账号与本机媒体源配置
+/// * `over`: CLI 覆盖项; 缺省字段由 "kv > 内置默认" 补全 (sip_settings::resolve)
 ///
 /// returns: anyhow::Result<()>
 ///
@@ -38,21 +39,23 @@ use tracing::info;
 /// ```
 ///
 /// ```
-pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
-    info!(gui_cfg = ?cfg,"start gui");
+pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
+    info!(gui_overrides = ?over, "start gui");
 
     let ui = MainWindow::new()?;
-    // 状态栏账号信息, cfg 随后 move 进 worker
-    ui.set_account(format!("{}@{}", cfg.username, cfg.server.ip()).into());
     let _clock_timer = props::start_clock_timer(&ui); // 保活到 ui.run() 返回
 
     let app: bridge::SharedApp =
         std::sync::Arc::new(parking_lot::Mutex::new(app::AppState::default()));
 
-    // SQLite 持久化 (通讯录 + 通话记录)
+    // SQLite 持久化 (通讯录 + 通话记录 + kv 设置)
     let store = persist::open_store()?;
     persist::backfill_call_log(&app, &store);
     let _persist_timer = persist::start_persist_timer(&app, &store); // 保活
+    // SIP 设置合成: CLI 覆盖 > kv > 内置默认 (kv 缺失播种默认), 状态栏账号
+    // 信息取自合成结果, cfg 随后 move 进 SIP worker
+    let cfg = sip_settings::resolve(&store, &over)?;
+    ui.set_account(format!("{}@{}", cfg.username, cfg.server.ip()).into());
 
     let handle = bridge::UiHandle::new(ui.as_weak(), app.clone());
     // 天气 worker: 启动即拉, 30min 周期; 城市变更经 wake channel 唤醒
@@ -106,6 +109,21 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     if let Ok(v) = store.kv_get(ice::KV_STUN) {
         ui.set_ice_stun(v.unwrap_or_else(|| ice::DEFAULT_STUN.into()).into());
     }
+    // SIP 设置卡初始值: resolve 合成结果的回显字符串 (设置页 SIP 卡片,
+    // 本体在 settings/sip_card.slint)
+    let sip_ui = sip_settings::ui_strings(&cfg);
+    ui.set_sip_server(sip_ui.server.as_str().into());
+    ui.set_sip_username(sip_ui.username.as_str().into());
+    ui.set_sip_password(sip_ui.password.as_str().into());
+    ui.set_sip_expires(sip_ui.expires.as_str().into());
+    ui.set_sip_stun(sip_ui.stun.as_str().into());
+    ui.set_sip_local_ip(sip_ui.local_ip.as_str().into());
+    ui.set_sip_video_src(sip_ui.video_src.as_str().into());
+    ui.set_sip_audio_src(sip_ui.audio_src.as_str().into());
+    ui.set_sip_width_limit(sip_ui.max_width.as_str().into());
+    ui.set_sip_rtp_audio(sip_ui.rtp_audio.as_str().into());
+    ui.set_sip_rtp_video(sip_ui.rtp_video.as_str().into());
+    ui.set_sip_ice_enabled(cfg.ice.enabled);
     let worker = session::spawn(cfg, cmd_rx, handle.clone(), tap.clone())?;
 
     // UI 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性
@@ -113,6 +131,7 @@ pub fn run(cfg: GuiSipConfig) -> anyhow::Result<()> {
     wiring::wire_callbacks(&ui, &app, &cmd_tx, &monitor);
     wiring::wire_weather_settings(&ui, &store, weather_wake_tx);
     ice::wire_ice(&ui, &store, &ice_ctl);
+    sip_settings::wire_sip_settings(&ui, &store);
     wiring::wire_keyboard(&ui, &kb);
     // 熄屏 + 亮度: RK3566 走背光/DPMS, 其他平台只由状态栏按钮弹 toast
     let screen = std::rc::Rc::new(std::cell::RefCell::new(screen::ScreenController::new()));

@@ -1,4 +1,3 @@
-use call_ui::session::{DEFAULT_AUDIO_RTP_PORT, DEFAULT_VIDEO_RTP_PORT, RtpPorts};
 use clap::{Parser, Subcommand};
 use std::net::{IpAddr, SocketAddr};
 use tracing_subscriber::{EnvFilter, fmt};
@@ -55,45 +54,46 @@ enum Commands {
         #[command(subcommand)]
         action: V4l2Action,
     },
-    /// SIP GUI (Slint): register + dial + answer
+    /// SIP GUI (Slint): register + dial + answer. 所有参数都是可选覆盖,
+    /// 缺省由设置页 kv / 内置默认补全
     Gui {
         /// SIP server address
-        #[arg(long, default_value = "192.168.11.17:5062")]
-        server: SocketAddr,
+        #[arg(long)]
+        server: Option<SocketAddr>,
         /// SIP account (also used as username)
-        #[arg(short, long, default_value = "9999")]
-        username: String,
+        #[arg(short, long)]
+        username: Option<String>,
         /// Password
-        #[arg(short, long, default_value = "changeme")]
-        password: String,
+        #[arg(short, long)]
+        password: Option<String>,
         /// Registration expiry (seconds)
-        #[arg(short, long, default_value_t = 60)]
-        expires: u32,
+        #[arg(short, long)]
+        expires: Option<u32>,
         /// Video source: file:<path> | rtsp://<uri> | camera[:<device>]
-        #[arg(long, default_value = "camera")]
-        video_src: String,
+        #[arg(long)]
+        video_src: Option<String>,
         /// Audio source: file:<path> | mic
-        #[arg(long, default_value = "mic")]
-        audio_src: String,
+        #[arg(long)]
+        audio_src: Option<String>,
         /// Max video width (peer decode capability); 0 = unlimited
-        #[arg(long, default_value_t = 1920)]
-        max_width: u32,
+        #[arg(long)]
+        max_width: Option<u32>,
         /// Bind to a specific local IPv4 interface (multi-NIC / VPN scenarios)
         #[arg(long)]
         local_ip: Option<IpAddr>,
         /// Video RTP port
-        #[arg(long, short, default_value_t = DEFAULT_VIDEO_RTP_PORT)]
-        video_rtp_port: u16,
+        #[arg(long, short)]
+        video_rtp_port: Option<u16>,
         /// Audio RTP port
-        #[arg(long, short, default_value_t = DEFAULT_AUDIO_RTP_PORT)]
-        audio_rtp_port: u16,
+        #[arg(long, short)]
+        audio_rtp_port: Option<u16>,
         /// Enable ICE for SIP calls (standard SDP a=ice-*; falls back to
         /// plain RTP when the peer does not answer with ICE)
-        #[arg(long, default_value_t = false)]
-        ice: bool,
+        #[arg(long)]
+        ice: Option<bool>,
         /// STUN server URI used when --ice is enabled (empty = host only)
-        #[arg(long, default_value = "stun://stun.miwifi.com:3478")]
-        stun: String,
+        #[arg(long)]
+        stun: Option<String>,
     },
 }
 
@@ -167,30 +167,20 @@ async fn main() -> anyhow::Result<()> {
             ice,
             stun,
         } => {
-            let local_ip = match local_ip {
-                Some(IpAddr::V4(v4)) => Some(v4),
-                Some(_) => anyhow::bail!("only support IPv4 for now!"),
-                None => None,
-            };
-            let cfg = call_ui::GuiSipConfig {
+            call_ui::run(call_ui::GuiSipOverrides {
                 server,
                 username,
                 password,
                 expires,
                 local_ip,
-                audio_src: ipcam_gst::parse_track_source(&audio_src).map_err(anyhow::Error::msg)?,
-                video_src: ipcam_gst::parse_track_source(&video_src).map_err(anyhow::Error::msg)?,
+                video_src,
+                audio_src,
                 max_width,
-                rtp_ports: RtpPorts {
-                    audio: audio_rtp_port,
-                    video: video_rtp_port,
-                },
-                ice: call_ui::session::SipIceConfig {
-                    enabled: ice,
-                    stun: (!stun.is_empty()).then_some(stun),
-                },
-            };
-            call_ui::run(cfg)?;
+                ice,
+                stun,
+                video_rtp_port,
+                audio_rtp_port,
+            })?;
         }
     }
     Ok(())

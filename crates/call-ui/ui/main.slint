@@ -65,6 +65,20 @@ export component MainWindow inherits MaterialWindow {
     in-out property <string> ice-sigserver: "";
     in-out property <string> ice-room: "";
     in-out property <string> ice-stun: "";
+    // SIP 通话 (设置页 SIP 卡片属性/回调穿透, 卡片本体在 settings/sip_card.slint):
+    // 初值由 Rust 启动时从 resolve 合成结果刷入
+    in-out property <string> sip-server: "";
+    in-out property <string> sip-username: "";
+    in-out property <string> sip-password: "";
+    in-out property <string> sip-expires: "";
+    in-out property <string> sip-stun: "";
+    in-out property <string> sip-local-ip: "";
+    in-out property <string> sip-video-src: "";
+    in-out property <string> sip-audio-src: "";
+    in-out property <string> sip-width-limit: "";
+    in-out property <string> sip-rtp-audio: "";
+    in-out property <string> sip-rtp-video: "";
+    in-out property <bool> sip-ice-enabled: false;
     in property <[CallLogEntry]> call-log: [];
     in property <[ContactEntry]> contacts: [];
     in property <[CameraEntry]> cameras: [];
@@ -94,6 +108,19 @@ export component MainWindow inherits MaterialWindow {
     callback set-ice-sigserver(string);
     callback set-ice-room(string);
     callback set-ice-stun(string);
+    // SIP 通话 (设置页 SIP 卡片, 本体在 settings/sip_card.slint)
+    callback set-sip-server(string);
+    callback set-sip-username(string);
+    callback set-sip-password(string);
+    callback set-sip-expires(string);
+    callback set-sip-stun(string);
+    callback set-sip-local-ip(string);
+    callback set-sip-video-src(string);
+    callback set-sip-audio-src(string);
+    callback set-sip-max-width(string);
+    callback set-sip-rtp-audio(string);
+    callback set-sip-rtp-video(string);
+    callback set-sip-ice(bool);
     // 通讯录 CRUD (SQLite 持久化在 Rust store.rs)
     callback add-contact(string, string);
     callback update-contact(int, string, string);
@@ -299,6 +326,31 @@ export component MainWindow inherits MaterialWindow {
                 set-ice-sigserver(v) => { root.set-ice-sigserver(v); }
                 set-ice-room(v) => { root.set-ice-room(v); }
                 set-ice-stun(v) => { root.set-ice-stun(v); }
+                // SIP 卡片穿透 (本体在 settings/sip_card.slint, 这里打通属性/回调)
+                sip-server <=> root.sip-server;
+                sip-username <=> root.sip-username;
+                sip-password <=> root.sip-password;
+                sip-expires <=> root.sip-expires;
+                sip-stun <=> root.sip-stun;
+                sip-local-ip <=> root.sip-local-ip;
+                sip-video-src <=> root.sip-video-src;
+                sip-audio-src <=> root.sip-audio-src;
+                sip-width-limit <=> root.sip-width-limit;
+                sip-rtp-audio <=> root.sip-rtp-audio;
+                sip-rtp-video <=> root.sip-rtp-video;
+                sip-ice-enabled <=> root.sip-ice-enabled;
+                set-sip-server(v) => { root.set-sip-server(v); }
+                set-sip-username(v) => { root.set-sip-username(v); }
+                set-sip-password(v) => { root.set-sip-password(v); }
+                set-sip-expires(v) => { root.set-sip-expires(v); }
+                set-sip-stun(v) => { root.set-sip-stun(v); }
+                set-sip-local-ip(v) => { root.set-sip-local-ip(v); }
+                set-sip-video-src(v) => { root.set-sip-video-src(v); }
+                set-sip-audio-src(v) => { root.set-sip-audio-src(v); }
+                set-sip-max-width(v) => { root.set-sip-max-width(v); }
+                set-sip-rtp-audio(v) => { root.set-sip-rtp-audio(v); }
+                set-sip-rtp-video(v) => { root.set-sip-rtp-video(v); }
+                set-sip-ice(v) => { root.set-sip-ice(v); }
                 back => { root.page = 0; }
                 set-language(lang) => { root.set-language(lang); }
                 set-city(city) => { root.set-city(city); }
