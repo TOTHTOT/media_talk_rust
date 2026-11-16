@@ -11,11 +11,11 @@ import { TextField } from "../material-1.1.0/material.slint";
 // 屏幕键盘全局上下文: 根部 kb-* 属性经此 global 下发到任意层级的
 // KbTextField 实例, 免去逐层透传 (main.slint 根部 changed 处理器镜像).
 // focused-id 为当前聚焦输入框的 field-id (-1 = 无聚焦, 键盘隐藏).
-// 唯一写入策略: 聚焦/失焦由 KbTextField 的 changed 处理器持有 — 聚焦无条件
-// 写入 (新主人上任), 失焦仅在自己仍是当前主人时清除 (守卫, 免疫跨框迁移
-// 的事件顺序); "完成"键与点空白由 main.slint 直写 -1 并另经隐藏 FocusScope
-// 夺走输入框焦点. 卡片/对话框处理器只冒泡 kb-field-focused (Rust 路由) 与
-// 滚动定位, 不再直写本状态.
+// 唯一写入策略: 获得所有权只有一条路 — KbTextField 最上层 TouchArea 的
+// 点击 (显式用户动作, 不依赖焦点迁移事件); 失去所有权只有两条路 —
+// "完成"键/点空白 (main.slint 直写 -1 并经隐藏 FocusScope 抢焦点) 与
+// KbTextField 的失焦兜底 (守卫式, 仅清理真实失焦如物理键盘 Tab).
+// 卡片/对话框处理器只消费 focus-changed (Rust 路由/滚动定位), 不写本状态.
 // 注: slint 元素体内不能绑定 global 属性 (双向/单向绑定仅限本元素属性),
 // 故同步只能走 changed 处理器, global 内也不放回调 (无法在外部接实现)
 export global KeyboardCtx {
@@ -42,28 +42,45 @@ export component KbTextField inherits Rectangle {
     // 聚焦发 field-id, 全失焦发 -1 (Rust 侧 KeyboardController::set_focus)
     callback focus-changed(int);
 
-    // 内部焦点镜像 (内层 TextField 的 out has-focus 单向绑定进来)
-    property <bool> priv-focused: field.has-focus;
+    // 内部焦点镜像: 点击时经 fs.focus() 给予自家隐藏 FocusScope (兄弟节点,
+    // 不承担布局), 仅用于失焦兜底清理; 所有权主路径不依赖它
+    fs := FocusScope {
+        width: 1px;
+        height: 1px;
+    }
+    property <bool> priv-focused: fs.has-focus;
     // 退格快照栈: text 每次变更前的值; 以及栈底之前的当前值镜像
     property <[string]> text-history: [];
     property <string> text-shadow: "";
     // 退格恢复期间置位, 禁止 changed text 把恢复动作本身再记入历史
     property <bool> restoring: false;
 
-    changed priv-focused => {
-        if root.priv-focused {
-            // 聚焦: 无条件写入 — 新主人上任, 任何时候都以后到者为准
+    // 所有权主路径: 点击即宣告"键盘属于我" — 显式用户动作, 不依赖焦点
+    // 迁移事件的触发顺序/可靠性 (changed 派生所有权曾三连踩坑: 跨框迁移
+    // 的乱序写覆盖、完成/点空白后同框无跳变). TouchArea 在最上层, 内层
+    // TextField 不再收指针 (本组件上屏语义本就是追加式, 不做光标定位);
+    // 输入全靠屏幕键盘经 commit 拍振. 副作用 (Rust 路由 / 滚动定位) 全部
+    // 挂在 focus-changed 上, 同事件派发, 无双写竞争.
+    TouchArea {
+        width: 100%;
+        height: 100%;
+
+        clicked => {
+            if !root.priv-focused {
+                fs.focus();
+            }
             KeyboardCtx.focused-id = root.field-id;
             root.focus-changed(root.field-id);
-        } else if KeyboardCtx.focused-id == root.field-id {
-            // 失焦: 只有自己仍是当前主人才清 — 跨框迁移时 slint 可能先触发
-            // 新框的 focus-in 再触发本框的 focus-out, 迟发的 -1 不得覆盖
-            // 新主人 (否则键盘隐藏而新框已聚焦, 再点它无跳变, 永远唤不出).
-            // 守卫使最终状态与事件顺序无关.
+        }
+    }
+
+    // 失焦兜底: 物理键盘 Tab 走焦等真实失焦场景, 自己仍是当前主人才清 —
+    // 不承担主路径正确性, 仅防残留所有权卡住显隐
+    changed priv-focused => {
+        if !root.priv-focused && KeyboardCtx.focused-id == root.field-id {
             KeyboardCtx.focused-id = -1;
             root.focus-changed(-1);
         }
-        // 非主人失焦: 无声离开 — 不写全局, 也不冒泡 (Rust 侧注册同理不被冲掉)
     }
 
     changed text => {
