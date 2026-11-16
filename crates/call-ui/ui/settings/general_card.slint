@@ -123,7 +123,6 @@ export component GeneralSettingsCard inherits FilledCard {
             edited(city) => { root.set-city(city); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f1.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -142,7 +141,6 @@ export component GeneralSettingsCard inherits FilledCard {
             edited(key) => { root.set-weather-key(key); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f2.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }

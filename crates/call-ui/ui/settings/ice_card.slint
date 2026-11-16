@@ -60,7 +60,6 @@ export component IceSettingsCard inherits FilledCard {
             edited(text) => { root.set-sigserver(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f1.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -78,7 +77,6 @@ export component IceSettingsCard inherits FilledCard {
             edited(text) => { root.set-room(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f2.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -96,7 +94,6 @@ export component IceSettingsCard inherits FilledCard {
             edited(text) => { root.set-stun(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f3.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }

@@ -10,10 +10,12 @@ import { TextField } from "../material-1.1.0/material.slint";
 
 // 屏幕键盘全局上下文: 根部 kb-* 属性经此 global 下发到任意层级的
 // KbTextField 实例, 免去逐层透传 (main.slint 根部 changed 处理器镜像).
-// focused-id 为当前聚焦输入框的 field-id, -1 = 无聚焦 (键盘隐藏);
-// 实例聚焦/失焦时直写, 键盘浮层读它显隐; "完成"键由 Rust 写
-// root.kb-visible=false, 根部 changed 处理器只把隐藏方向同步进这里
-// (弹出永远由聚焦事件驱动, kb-visible 的 true 不携带 field-id 信息).
+// focused-id 为当前聚焦输入框的 field-id (-1 = 无聚焦, 键盘隐藏).
+// 唯一写入策略: 聚焦/失焦由 KbTextField 的 changed 处理器持有 — 聚焦无条件
+// 写入 (新主人上任), 失焦仅在自己仍是当前主人时清除 (守卫, 免疫跨框迁移
+// 的事件顺序); "完成"键与点空白由 main.slint 直写 -1 并另经隐藏 FocusScope
+// 夺走输入框焦点. 卡片/对话框处理器只冒泡 kb-field-focused (Rust 路由) 与
+// 滚动定位, 不再直写本状态.
 // 注: slint 元素体内不能绑定 global 属性 (双向/单向绑定仅限本元素属性),
 // 故同步只能走 changed 处理器, global 内也不放回调 (无法在外部接实现)
 export global KeyboardCtx {
@@ -49,7 +51,19 @@ export component KbTextField inherits Rectangle {
     property <bool> restoring: false;
 
     changed priv-focused => {
-        root.focus-changed(root.priv-focused ? root.field-id : -1);
+        if root.priv-focused {
+            // 聚焦: 无条件写入 — 新主人上任, 任何时候都以后到者为准
+            KeyboardCtx.focused-id = root.field-id;
+            root.focus-changed(root.field-id);
+        } else if KeyboardCtx.focused-id == root.field-id {
+            // 失焦: 只有自己仍是当前主人才清 — 跨框迁移时 slint 可能先触发
+            // 新框的 focus-in 再触发本框的 focus-out, 迟发的 -1 不得覆盖
+            // 新主人 (否则键盘隐藏而新框已聚焦, 再点它无跳变, 永远唤不出).
+            // 守卫使最终状态与事件顺序无关.
+            KeyboardCtx.focused-id = -1;
+            root.focus-changed(-1);
+        }
+        // 非主人失焦: 无声离开 — 不写全局, 也不冒泡 (Rust 侧注册同理不被冲掉)
     }
 
     changed text => {

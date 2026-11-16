@@ -69,7 +69,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-server(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f1.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -86,7 +85,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-username(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f2.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -105,7 +103,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-password(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f3.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -123,7 +120,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-expires(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f4.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -141,7 +137,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-stun(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f5.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -159,7 +154,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-local-ip(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f6.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -177,7 +171,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-video-src(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f7.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -195,7 +188,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-audio-src(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f8.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -213,7 +205,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-max-width(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f9.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -236,7 +227,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-rtp-audio(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f10.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
@@ -252,7 +242,6 @@ export component SipSettingsCard inherits FilledCard {
             edited(text) => { root.set-rtp-video(text); }
             focus-changed(id) => {
                 if id >= 0 { root.focus-offset-y = f11.y; }
-                KeyboardCtx.focused-id = id;
                 root.kb-field-focused(id);
             }
         }
