@@ -1,7 +1,7 @@
+
+
 msgid ""
 msgstr ""
-"Content-Type: text/plain; charset=UTF-8\n"
-"Content-Transfer-Encoding: 8bit\n"
 
 msgid "SIP 已注册 · {}"
 msgstr ""
@@ -281,3 +281,112 @@ msgstr ""
 
 msgid "当前平台不支持亮度调节"
 msgstr ""
+
+msgid "0 = 不限"
+msgstr ""
+
+msgid "ICE 通话"
+msgstr ""
+
+msgid "SIP 通话"
+msgstr ""
+
+msgid "camera[:设备] / file:路径 / rtsp://"
+msgstr ""
+
+msgid "ip:port"
+msgstr ""
+
+msgid "mic / file:路径"
+msgstr ""
+
+msgid "ws://Mac的局域网IP:9000"
+msgstr ""
+
+msgid "{}  {} {}/{}"
+msgstr ""
+
+msgid "{}月{}日 {}"
+msgstr ""
+
+msgid "两人填同一个房间名"
+msgstr ""
+
+msgid "信令服务器"
+msgstr ""
+
+msgid "启用 ICE"
+msgstr ""
+
+msgid "周一"
+msgstr ""
+
+msgid "周三"
+msgstr ""
+
+msgid "周二"
+msgstr ""
+
+msgid "周五"
+msgstr ""
+
+msgid "周六"
+msgstr ""
+
+msgid "周四"
+msgstr ""
+
+msgid "周日"
+msgstr ""
+
+msgid "呼叫"
+msgstr ""
+
+msgid "布防"
+msgstr ""
+
+msgid "房间名"
+msgstr ""
+
+msgid "服务器"
+msgstr ""
+
+msgid "本机IP"
+msgstr ""
+
+msgid "注册有效期秒"
+msgstr ""
+
+msgid "留空仅 host 候选"
+msgstr ""
+
+msgid "留空自动选择网卡"
+msgstr ""
+
+msgid "秒"
+msgstr ""
+
+msgid "网络状态"
+msgstr ""
+
+msgid "视频RTP端口"
+msgstr ""
+
+msgid "视频源"
+msgstr ""
+
+msgid "账号"
+msgstr ""
+
+msgid "限宽"
+msgstr ""
+
+msgid "音频RTP端口"
+msgstr ""
+
+msgid "音频源"
+msgstr ""
+
+msgid "高级"
+msgstr ""
+

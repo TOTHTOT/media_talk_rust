@@ -1,7 +1,7 @@
+
+
 msgid ""
 msgstr ""
-"Content-Type: text/plain; charset=UTF-8\n"
-"Content-Transfer-Encoding: 8bit\n"
 
 msgid "SIP 已注册 · {}"
 msgstr "SIP Registered · {}"
@@ -308,3 +308,85 @@ msgstr "Screen brightness"
 
 msgid "当前平台不支持亮度调节"
 msgstr "Brightness adjustment is not supported on this platform"
+
+msgid "0 = 不限"
+msgstr "0 = unlimited"
+
+msgid "ICE 通话"
+msgstr "ICE Call"
+
+msgid "SIP 通话"
+msgstr "SIP Call"
+
+msgid "camera[:设备] / file:路径 / rtsp://"
+msgstr "camera[:device] / file:path / rtsp://"
+
+msgid "ip:port"
+msgstr "ip:port"
+
+msgid "mic / file:路径"
+msgstr "mic / file:path"
+
+msgid "ws://Mac的局域网IP:9000"
+msgstr "ws://Mac LAN IP:9000"
+
+msgid "两人填同一个房间名"
+msgstr "Both parties enter the same room"
+
+msgid "信令服务器"
+msgstr "Signaling Server"
+
+msgid "启用 ICE"
+msgstr "Enable ICE"
+
+msgid "呼叫"
+msgstr "Call"
+
+msgid "布防"
+msgstr "Arm"
+
+msgid "房间名"
+msgstr "Room Name"
+
+msgid "服务器"
+msgstr "Server"
+
+msgid "本机IP"
+msgstr "Local IP"
+
+msgid "注册有效期秒"
+msgstr "Expiry (s)"
+
+msgid "留空仅 host 候选"
+msgstr "Blank = host candidates only"
+
+msgid "留空自动选择网卡"
+msgstr "Blank = auto select interface"
+
+msgid "秒"
+msgstr "seconds"
+
+msgid "网络状态"
+msgstr "Network"
+
+msgid "视频RTP端口"
+msgstr "Video RTP Port"
+
+msgid "视频源"
+msgstr "Video Source"
+
+msgid "账号"
+msgstr "Account"
+
+msgid "限宽"
+msgstr "Width Limit"
+
+msgid "音频RTP端口"
+msgstr "Audio RTP Port"
+
+msgid "音频源"
+msgstr "Audio Source"
+
+msgid "高级"
+msgstr "Advanced"
+
