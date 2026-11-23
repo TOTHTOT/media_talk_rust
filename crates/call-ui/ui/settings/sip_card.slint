@@ -25,9 +25,9 @@ export component SipSettingsCard inherits FilledCard {
     callback set-rtp-audio(string);
     callback set-rtp-video(string);
     callback set-ice(bool);
-    // 屏幕键盘聚焦登记: 由 KbTextField focus-changed 转发, 逐层透传根部
-    // root.kb-field-focused (Rust KeyboardController::set_focus)
-    callback kb-field-focused(int);
+    // 聚焦通知透传: KbTextField focus-changed 转发, 供设置页滚动定位
+    // (Rust 提交门控走官方 text-input-focused 镜像, 不经此链 — 方案 D)
+    callback kb-field-focused(bool);
     // 输入框 in-out: 初始值由 Rust 启动时从 resolve 合成结果刷入
     in-out property <string> server: "";
     in-out property <string> username: "";
@@ -58,8 +58,6 @@ export component SipSettingsCard inherits FilledCard {
 
         // 服务器地址: ip:port
         f1 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_SERVER
-            field-id: 12;
             label: @tr("服务器");
             supporting-text: @tr("ip:port");
             text <=> root.server;
@@ -67,32 +65,28 @@ export component SipSettingsCard inherits FilledCard {
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-server(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f1.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f1.y; }
+                root.kb-field-focused(focused);
             }
         }
 
         // SIP 账号
         f2 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_USERNAME
-            field-id: 13;
             label: @tr("账号");
             text <=> root.username;
             commit-seq: KeyboardCtx.commit-seq;
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-username(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f2.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f2.y; }
+                root.kb-field-focused(focused);
             }
         }
 
         // 账号密码: 密码样式遮蔽
         f3 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_PASSWORD
-            field-id: 14;
             label: @tr("密码");
             // 与根部属性同名, 枚举字面量需带 InputType 限定
             input-type: InputType.password;
@@ -101,16 +95,14 @@ export component SipSettingsCard inherits FilledCard {
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-password(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f3.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f3.y; }
+                root.kb-field-focused(focused);
             }
         }
 
         // 注册有效期 (秒)
         f4 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_EXPIRES
-            field-id: 15;
             label: @tr("注册有效期秒");
             supporting-text: @tr("秒");
             text <=> root.expires;
@@ -118,16 +110,14 @@ export component SipSettingsCard inherits FilledCard {
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-expires(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f4.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f4.y; }
+                root.kb-field-focused(focused);
             }
         }
 
         // STUN URI: 显式留空 = 仅 host 候选 (ICE 开启时生效)
         f5 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_STUN
-            field-id: 16;
             label: "STUN";
             supporting-text: @tr("留空仅 host 候选");
             text <=> root.stun;
@@ -135,16 +125,14 @@ export component SipSettingsCard inherits FilledCard {
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-stun(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f5.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f5.y; }
+                root.kb-field-focused(focused);
             }
         }
 
         // 本机 IP: 留空自动选择网卡 (多网卡/VPN 场景手动指定)
         f6 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_LOCAL_IP
-            field-id: 17;
             label: @tr("本机IP");
             supporting-text: @tr("留空自动选择网卡");
             text <=> root.local-ip;
@@ -152,16 +140,14 @@ export component SipSettingsCard inherits FilledCard {
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-local-ip(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f6.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f6.y; }
+                root.kb-field-focused(focused);
             }
         }
 
         // 视频源: 相机 / 文件 / RTSP 网络相机
         f7 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_VIDEO_SRC
-            field-id: 18;
             label: @tr("视频源");
             supporting-text: @tr("camera[:设备] / file:路径 / rtsp://");
             text <=> root.video-src;
@@ -169,16 +155,14 @@ export component SipSettingsCard inherits FilledCard {
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-video-src(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f7.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f7.y; }
+                root.kb-field-focused(focused);
             }
         }
 
         // 音频源: 麦克风 / 文件
         f8 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_AUDIO_SRC
-            field-id: 19;
             label: @tr("音频源");
             supporting-text: @tr("mic / file:路径");
             text <=> root.audio-src;
@@ -186,16 +170,14 @@ export component SipSettingsCard inherits FilledCard {
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-audio-src(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f8.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f8.y; }
+                root.kb-field-focused(focused);
             }
         }
 
         // 视频限宽: 对端解码能力, 超宽源降采样; 0 = 不限
         f9 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_MAX_WIDTH
-            field-id: 20;
             label: @tr("限宽");
             supporting-text: @tr("0 = 不限");
             text <=> root.width-limit;
@@ -203,9 +185,9 @@ export component SipSettingsCard inherits FilledCard {
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-max-width(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f9.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f9.y; }
+                root.kb-field-focused(focused);
             }
         }
 
@@ -217,32 +199,28 @@ export component SipSettingsCard inherits FilledCard {
         }
 
         f10 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_RTP_AUDIO
-            field-id: 21;
             label: @tr("音频RTP端口");
             text <=> root.rtp-audio;
             commit-seq: KeyboardCtx.commit-seq;
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-rtp-audio(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f10.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f10.y; }
+                root.kb-field-focused(focused);
             }
         }
 
         f11 := KbTextField {
-            // field-id 对应 Rust 侧 keyboard::FIELD_SIP_RTP_VIDEO
-            field-id: 22;
             label: @tr("视频RTP端口");
             text <=> root.rtp-video;
             commit-seq: KeyboardCtx.commit-seq;
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-rtp-video(text); }
-            focus-changed(id) => {
-                if id >= 0 { root.focus-offset-y = f11.y; }
-                root.kb-field-focused(id);
+            focus-changed(focused) => {
+                if focused { root.focus-offset-y = f11.y; }
+                root.kb-field-focused(focused);
             }
         }
 

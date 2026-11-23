@@ -147,17 +147,17 @@ pub(crate) fn wire_weather_settings(
     });
 }
 
-/// 屏幕键盘焦点登记: KbTextField 聚焦/全失焦 → 控制器 set_focus.
-/// 无聚焦输入框时控制器吞掉上屏与删框指令 (见 keyboard/mod.rs)
+/// 屏幕键盘焦点门控: slint 官方 TextInputInterface.text-input-focused 镜像
+/// → 控制器 set_focus (布尔, 方案 D 后无逐字段身份). 无聚焦输入框时控制器
+/// 吞掉上屏与删框指令 (见 keyboard/mod.rs)
 pub(crate) fn wire_keyboard(
     ui: &MainWindow,
     kb: &Rc<std::cell::RefCell<crate::keyboard::KeyboardController>>,
 ) {
     let kb = kb.clone();
-    ui.on_kb_field_focused(move |id| {
-        let field = if id >= 0 { Some(id as u32) } else { None };
-        tracing::debug!(field = ?field.map(crate::keyboard::field_name), "kb field focus changed");
-        kb.borrow_mut().set_focus(field);
+    ui.on_kb_any_field_focused(move |focused| {
+        tracing::debug!(focused, "kb any-field focus changed");
+        kb.borrow_mut().set_focus(focused);
     });
 }
 

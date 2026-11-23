@@ -10,16 +10,13 @@ import { TextField } from "../material-1.1.0/material.slint";
 
 // 屏幕键盘全局上下文: 根部 kb-* 属性经此 global 下发到任意层级的
 // KbTextField 实例, 免去逐层透传 (main.slint 根部 changed 处理器镜像).
-// focused-id 为当前聚焦输入框的 field-id (-1 = 无聚焦, 键盘隐藏).
-// 唯一写入策略: 获得所有权只有一条路 — KbTextField 最上层 TouchArea 的
-// 点击 (显式用户动作, 不依赖焦点迁移事件); 失去所有权只有两条路 —
-// "完成"键/点空白 (main.slint 直写 -1 并经隐藏 FocusScope 抢焦点) 与
-// KbTextField 的失焦兜底 (守卫式, 仅清理真实失焦如物理键盘 Tab).
-// 卡片/对话框处理器只消费 focus-changed (Rust 路由/滚动定位), 不写本状态.
+// collapsed 为收起闩: "收起/完成"键与点空白置位, 全失焦时复位 — 键盘显隐
+// = slint 官方 TextInputInterface.text-input-focused && !collapsed (方案 D,
+// 见 main.slint). 逐字段 focused-id 登记已随路由布尔化整体移除.
 // 注: slint 元素体内不能绑定 global 属性 (双向/单向绑定仅限本元素属性),
 // 故同步只能走 changed 处理器, global 内也不放回调 (无法在外部接实现)
 export global KeyboardCtx {
-    in-out property <int> focused-id: -1;
+    in-out property <bool> collapsed: false;
     in-out property <int> commit-seq: 0;
     in-out property <string> commit-text: "";
     in-out property <bool> delete-field: false;
@@ -30,8 +27,6 @@ export component KbTextField inherits Rectangle {
     in property <string> label: "";
     in property <string> supporting-text: "";
     in property <InputType> input-type;
-    // 输入框标识: 聚焦时经 focus-changed 登记到键盘控制器 (Task 3 分配)
-    in property <int> field-id: -1;
     // 上屏拍振: seq 每次上屏 +1 (Rust 侧装配, 见 main.slint 根部属性表)
     in property <int> commit-seq: 0;
     in property <string> commit-text: "";
@@ -39,48 +34,23 @@ export component KbTextField inherits Rectangle {
 
     callback edited(string);
     callback accepted(string);
-    // 聚焦发 field-id, 全失焦发 -1 (Rust 侧 KeyboardController::set_focus)
-    callback focus-changed(int);
+    // 聚焦/失焦通知 (仅父级滚动定位等 UI 副作用消费; Rust 提交门控走
+    // slint 官方 text-input-focused 镜像, 不经此回调 — 方案 D 无字段身份)
+    callback focus-changed(bool);
 
-    // 内部焦点镜像: 点击时经 fs.focus() 给予自家隐藏 FocusScope (兄弟节点,
-    // 不承担布局), 仅用于失焦兜底清理; 所有权主路径不依赖它
-    fs := FocusScope {
-        width: 1px;
-        height: 1px;
-    }
-    property <bool> priv-focused: fs.has-focus;
+    // 内部焦点镜像 (内层 TextField 真实焦点). 方案 D: 键盘显隐由 slint 官方
+    // TextInputInterface.text-input-focused 决定, 此回调只服务 UI 副作用
+    property <bool> priv-focused: field.has-focus;
     // 退格快照栈: text 每次变更前的值; 以及栈底之前的当前值镜像
     property <[string]> text-history: [];
     property <string> text-shadow: "";
     // 退格恢复期间置位, 禁止 changed text 把恢复动作本身再记入历史
     property <bool> restoring: false;
 
-    // 所有权主路径: 点击即宣告"键盘属于我" — 显式用户动作, 不依赖焦点
-    // 迁移事件的触发顺序/可靠性 (changed 派生所有权曾三连踩坑: 跨框迁移
-    // 的乱序写覆盖、完成/点空白后同框无跳变). TouchArea 在最上层, 内层
-    // TextField 不再收指针 (本组件上屏语义本就是追加式, 不做光标定位);
-    // 输入全靠屏幕键盘经 commit 拍振. 副作用 (Rust 路由 / 滚动定位) 全部
-    // 挂在 focus-changed 上, 同事件派发, 无双写竞争.
-    TouchArea {
-        width: 100%;
-        height: 100%;
-
-        clicked => {
-            if !root.priv-focused {
-                fs.focus();
-            }
-            KeyboardCtx.focused-id = root.field-id;
-            root.focus-changed(root.field-id);
-        }
-    }
-
-    // 失焦兜底: 物理键盘 Tab 走焦等真实失焦场景, 自己仍是当前主人才清 —
-    // 不承担主路径正确性, 仅防残留所有权卡住显隐
+    // 聚焦/失焦原样冒泡 (守卫已随字段身份一并移除 — Rust 门控读官方
+    // text-input-focused 镜像, 不存在乱序消费问题)
     changed priv-focused => {
-        if !root.priv-focused && KeyboardCtx.focused-id == root.field-id {
-            KeyboardCtx.focused-id = -1;
-            root.focus-changed(-1);
-        }
+        root.focus-changed(root.priv-focused);
     }
 
     changed text => {

@@ -147,7 +147,7 @@ mod tests {
     /// 注入 MockEngine 的控制器 (默认已聚焦输入框), 全部用例的起点.
     fn controller() -> KeyboardController {
         let mut c = KeyboardController::with_engine(Box::new(MockEngine::new()));
-        c.set_focus(Some(1));
+        c.set_focus(true);
         c
     }
 
@@ -213,7 +213,7 @@ mod tests {
     fn no_focus_swallows_commits_and_field_delete() {
         let mut c = controller();
         c.mode_tapped(1); // 英文直出才有 commits 可吞
-        c.set_focus(None);
+        c.set_focus(false);
         c.key_tapped("a");
         let out = c.take_output().unwrap_or_default();
         assert!(out.commits.is_empty());
@@ -221,7 +221,7 @@ mod tests {
         let out = c.take_output().unwrap_or_default();
         assert!(!out.delete_field);
         // 聚焦后同样按键正常派发
-        c.set_focus(Some(7));
+        c.set_focus(true);
         c.key_tapped("b");
         let out = c.take_output().unwrap_or_default();
         assert_eq!(out.commits, vec!["b"]);

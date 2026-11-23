@@ -1,8 +1,12 @@
-//! 屏幕键盘控制器: 按键路由 + 焦点注册 + 提交派发.
+//! 屏幕键盘控制器: 按键路由 + 焦点门控 + 提交派发.
 //!
 //! slint 回调 (*_tapped) 驱动引擎并把输出缓存为 pending; wiring 经
-//! take_output 取走后回写 slint 属性 (见计划 Task 2 属性表). 控制器不碰
-//! 输入框本体, 上屏由 KbTextField 监听属性拍振完成.
+//! take_output 取走后回写 slint 属性. 控制器不碰输入框本体, 上屏由
+//! KbTextField 监听属性拍振完成.
+//!
+//! 方案 D 后焦点语义只剩布尔: slint 官方 TextInputInterface.text-input-focused
+//! 镜像 (wiring::wire_keyboard) 驱动 "有无聚焦框" — 逐字段 ID 登记随显隐/路由
+//! 简化整体移除 (身份曾服务路由守卫, 现路由只问有无).
 //!
 //! 无聚焦输入框时丢弃上屏/删框指令 (没有输入框不该上屏), 但保留预编辑与
 //! 候选, 保证键盘 UI 状态一致.
@@ -20,67 +24,10 @@ use rime::create_engine;
 #[cfg(not(target_os = "linux"))]
 use stub::create_engine;
 
-/// 输入框标识: 聚焦时由 wiring 注册, 控制器只关心有无焦点.
-pub(crate) type FieldId = u32;
-
-/// 已接入屏幕键盘的输入框标识 (Task 3), 与 slint 侧 KbTextField field-id
-/// 字面量一一对应; 控制器不区分子段, 这里只为日志可读性维护命名表.
-pub(crate) const FIELD_CITY: FieldId = 1;
-pub(crate) const FIELD_WEATHER_KEY: FieldId = 2;
-pub(crate) const FIELD_CONTACT_NAME: FieldId = 3;
-pub(crate) const FIELD_CONTACT_NUMBER: FieldId = 4;
-pub(crate) const FIELD_CAM_NAME: FieldId = 5;
-pub(crate) const FIELD_CAM_URI: FieldId = 6;
-pub(crate) const FIELD_CAM_USER: FieldId = 7;
-pub(crate) const FIELD_CAM_PASS: FieldId = 8;
-pub(crate) const FIELD_ICE_SIGSERVER: FieldId = 9;
-pub(crate) const FIELD_ICE_ROOM: FieldId = 10;
-pub(crate) const FIELD_ICE_STUN: FieldId = 11;
-pub(crate) const FIELD_SIP_SERVER: FieldId = 12;
-pub(crate) const FIELD_SIP_USERNAME: FieldId = 13;
-pub(crate) const FIELD_SIP_PASSWORD: FieldId = 14;
-pub(crate) const FIELD_SIP_EXPIRES: FieldId = 15;
-pub(crate) const FIELD_SIP_STUN: FieldId = 16;
-pub(crate) const FIELD_SIP_LOCAL_IP: FieldId = 17;
-pub(crate) const FIELD_SIP_VIDEO_SRC: FieldId = 18;
-pub(crate) const FIELD_SIP_AUDIO_SRC: FieldId = 19;
-pub(crate) const FIELD_SIP_MAX_WIDTH: FieldId = 20;
-pub(crate) const FIELD_SIP_RTP_AUDIO: FieldId = 21;
-pub(crate) const FIELD_SIP_RTP_VIDEO: FieldId = 22;
-
-/// field-id 的标识名, 仅聚焦登记日志用 (见 wiring.rs).
-pub(crate) fn field_name(id: FieldId) -> &'static str {
-    match id {
-        FIELD_CITY => "city",
-        FIELD_WEATHER_KEY => "weather-key",
-        FIELD_CONTACT_NAME => "contact-name",
-        FIELD_CONTACT_NUMBER => "contact-number",
-        FIELD_CAM_NAME => "cam-name",
-        FIELD_CAM_URI => "cam-uri",
-        FIELD_CAM_USER => "cam-user",
-        FIELD_CAM_PASS => "cam-pass",
-        FIELD_ICE_SIGSERVER => "ice-sigserver",
-        FIELD_ICE_ROOM => "ice-room",
-        FIELD_ICE_STUN => "ice-stun",
-        FIELD_SIP_SERVER => "sip-server",
-        FIELD_SIP_USERNAME => "sip-username",
-        FIELD_SIP_PASSWORD => "sip-password",
-        FIELD_SIP_EXPIRES => "sip-expires",
-        FIELD_SIP_STUN => "sip-stun",
-        FIELD_SIP_LOCAL_IP => "sip-local-ip",
-        FIELD_SIP_VIDEO_SRC => "sip-video-src",
-        FIELD_SIP_AUDIO_SRC => "sip-audio-src",
-        FIELD_SIP_MAX_WIDTH => "sip-max-width",
-        FIELD_SIP_RTP_AUDIO => "sip-rtp-audio",
-        FIELD_SIP_RTP_VIDEO => "sip-rtp-video",
-        _ => "unknown",
-    }
-}
-
 /// 键盘控制器: slint 回调 → 引擎 → 缓存输出, 供 wiring 拍振取走.
 pub(crate) struct KeyboardController {
     engine: Box<dyn Engine>,
-    focus: Option<FieldId>,
+    focused: bool,
     pending: Option<EngineOutput>,
 }
 
@@ -96,7 +43,7 @@ impl KeyboardController {
     pub fn new() -> Self {
         Self {
             engine: create_engine(),
-            focus: None,
+            focused: false,
             pending: None,
         }
     }
@@ -106,7 +53,7 @@ impl KeyboardController {
     fn with_engine(engine: Box<dyn Engine>) -> Self {
         Self {
             engine,
-            focus: None,
+            focused: false,
             pending: None,
         }
     }
@@ -159,9 +106,10 @@ impl KeyboardController {
         self.pending = Some(EngineOutput::default());
     }
 
-    /// 注册当前聚焦输入框; None 表示无输入框聚焦 (键盘不收提交).
-    pub fn set_focus(&mut self, field: Option<FieldId>) {
-        self.focus = field;
+    /// 注册 "有无聚焦输入框" (slint 官方 text-input-focused 镜像); false 时
+    /// 控制器吞掉上屏与删框指令.
+    pub fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
     }
 
     /// 取走自上次调用后的最新输出; 取走即清空, 无新输出时返回 None.
@@ -184,7 +132,7 @@ impl KeyboardController {
 
     /// 缓存引擎输出; 无聚焦输入框时吞掉上屏与删框指令, 保留键盘自身状态.
     fn dispatch(&mut self, mut out: EngineOutput) {
-        if self.focus.is_none() {
+        if !self.focused {
             out.commits.clear();
             out.delete_field = false;
         }

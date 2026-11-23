@@ -259,6 +259,14 @@ export component Keyboard inherits Rectangle {
             }
 
             KbKey {
+                label: @tr("收起");
+                horizontal-stretch: 1.2;
+                tapped => {
+                    root.dismiss();
+                }
+            }
+
+            KbKey {
                 label: @tr("完成");
                 horizontal-stretch: 1.5;
                 tapped => {

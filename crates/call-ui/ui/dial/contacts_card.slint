@@ -21,9 +21,6 @@ export component ContactsCard inherits FilledCard {
     callback delete-contact(int); // id
     callback pick-number(string); // 点列表行, 把号码交给拨号盘
     callback dial(string); // 行内电话图标快捷拨打
-    // 屏幕键盘聚焦登记: 由 KbTextField focus-changed 转发, 逐层透传根部
-    // root.kb-field-focused (Rust KeyboardController::set_focus)
-    callback kb-field-focused(int);
 
     // 编辑态: -1=新增, 否则为正在编辑的联系人 id
     property <int> editing-id: -1;
@@ -47,28 +44,20 @@ export component ContactsCard inherits FilledCard {
         // 添加/编辑表单 (编辑时点列表行的铅笔载入). KbTextField 聚焦弹屏幕键盘
         name-input := KbTextField {
             vertical-stretch: 0;
-            // field-id 对应 Rust 侧 keyboard::FIELD_CONTACT_NAME
-            field-id: 3;
             label: @tr("姓名");
             commit-seq: KeyboardCtx.commit-seq;
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
-            focus-changed(id) => {
-                root.kb-field-focused(id);
-            }
+
         }
 
         number-input := KbTextField {
             vertical-stretch: 0;
-            // field-id 对应 Rust 侧 keyboard::FIELD_CONTACT_NUMBER
-            field-id: 4;
             label: @tr("号码");
             commit-seq: KeyboardCtx.commit-seq;
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
-            focus-changed(id) => {
-                root.kb-field-focused(id);
-            }
+
         }
 
         HorizontalLayout {

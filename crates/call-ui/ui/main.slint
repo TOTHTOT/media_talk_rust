@@ -163,18 +163,22 @@ export component MainWindow inherits MaterialWindow {
     callback kb-set-mode(int);
     callback kb-dismiss();
     // 输入框聚焦登记: field-id 聚焦 / -1 全失焦 (wiring.rs → controller.set_focus)
-    callback kb-field-focused(int);
+    callback kb-any-field-focused(bool);
 
-    // 屏幕键盘全局上下文镜像 (Task 3): slint 元素体内不能绑定 global 属性
-    // (绑定语法仅限本元素属性), 根部用 changed 处理器把 kb-* 属性镜像进
-    // KeyboardCtx, 任意深度的 KbTextField 实例直读. focused-id 方向相反:
-    // 实例聚焦/失焦直写 KeyboardCtx.focused-id, 键盘浮层读它显隐; "完成"键
-    // 由 Rust 写 root.kb-visible=false, 这里只在转 false 时同步进 global
-    // 并调用 fs.focus() 真正移走输入框焦点 (否则再点同一输入框不产生
-    // 聚焦迁移, 键盘弹不回来)
+    // 方案 D (键盘显隐交给 slint 官方状态): 显隐 =
+    // TextInputInterface.text-input-focused && !KeyboardCtx.collapsed.
+    // collapsed 闩由 "收起/完成"键与点空白置位, 全失焦复位 (本处理器);
+    // 收起同时经 fs.focus() 释放输入框焦点, 使再点同一输入框产生新的
+    // focus-in 重新唤出. 逐字段 focused-id 登记已整体移除 — Rust 提交
+    // 门控只问 "有无聚焦框" (本镜像经 kb-any-field-focused 喂给控制器).
+    property <bool> any-field-focused: TextInputInterface.text-input-focused;
+    changed any-field-focused => {
+        KeyboardCtx.collapsed = false; // 闩随真实失焦复位 (gain 时本就未收)
+        root.kb-any-field-focused(root.any-field-focused);
+    }
     changed kb-visible => {
         if !root.kb-visible {
-            KeyboardCtx.focused-id = -1;
+            KeyboardCtx.collapsed = true;
             fs.focus();
         }
     }
@@ -268,17 +272,16 @@ export component MainWindow inherits MaterialWindow {
 
     // ===== 屏幕键盘兜底 (z 序最低, 先于页面内容声明): 全窗背景点击区 +
     // 隐藏焦点汇. 背景 TouchArea 压在页面内容之下, 点按钮/输入框仍由上层
-    // 元素消费, 只有点空白处才落到这里收起键盘; fs 收键盘时抢焦点, 让
-    // 输入框真正失焦 =====
+    // 元素消费, 只有点空白处才落到这里 — 方案 D 语义: 置收起闩并抢焦点,
+    // 不直接写显隐 (显隐 = text-input-focused && !collapsed) =====
     TouchArea {
         width: 100%;
         height: 100%;
 
         clicked => {
-            if KeyboardCtx.focused-id >= 0 {
-                KeyboardCtx.focused-id = -1;
+            if TextInputInterface.text-input-focused && !KeyboardCtx.collapsed {
+                KeyboardCtx.collapsed = true;
                 fs.focus();
-                root.kb-field-focused(-1);
             }
         }
     }
@@ -331,7 +334,7 @@ export component MainWindow inherits MaterialWindow {
                 add-contact(name, num) => { root.add-contact(name, num); }
                 update-contact(id, name, num) => { root.update-contact(id, name, num); }
                 delete-contact(id) => { root.delete-contact(id); }
-                kb-field-focused(id) => { root.kb-field-focused(id); }
+                
             }
 
             // 设置页
@@ -391,7 +394,7 @@ export component MainWindow inherits MaterialWindow {
                 fetch-camera-profiles(x, user, p) => { root.fetch-camera-profiles(x, user, p); }
                 save-discovered-camera(x, n, user, p, t) => { root.save-discovered-camera(x, n, user, p, t); }
                 show-toast(t) => { root.show-toast(t); }
-                kb-field-focused(id) => { root.kb-field-focused(id); }
+                
             }
 
             // 监控页
@@ -447,10 +450,11 @@ export component MainWindow inherits MaterialWindow {
         shown: root.toast != "";
     }
 
-    // ===== 屏幕键盘: 底部滑出浮层, 不参与主布局 (z 序最高的同级层) =====
-    // 显隐读 KeyboardCtx.focused-id: 聚焦实例直写弹键盘, "完成"键经 Rust 写
-    // root.kb-visible=false → 根部 changed 处理器同步进 global
-    if KeyboardCtx.focused-id >= 0: Keyboard {
+    // ===== 屏幕键盘: 底部滑出浮层, 不参与主布局 (z 序最高的同级层).
+    // 方案 D: 显隐 = slint 官方 TextInputInterface.text-input-focused &&
+    // !KeyboardCtx.collapsed — 焦点驱动显隐, 收起键/完成键/点空白只操作
+    // collapsed 闩 (复位在根部 any-field-focus changed 处理器) =====
+    if TextInputInterface.text-input-focused && !KeyboardCtx.collapsed: Keyboard {
         width: 100%;
         y: parent.height - self.height;
         height: 45%;
@@ -473,7 +477,11 @@ export component MainWindow inherits MaterialWindow {
         mode(m) => {
             root.kb-set-mode(m);
         }
+        // 收起/完成同效: 置闩 + 释放输入框焦点 (收起键/完成键/点空白
+        // 三条路径同一语义); Rust 侧 kb-dismiss 回调保留 (引擎清理)
         dismiss => {
+            KeyboardCtx.collapsed = true;
+            fs.focus();
             root.kb-dismiss();
         }
     }

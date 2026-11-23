@@ -69,7 +69,6 @@ export component SettingsPage inherits Rectangle {
     callback save-discovered-camera(string, string, string, string, string);
     callback show-toast(string);
     // 屏幕键盘聚焦登记透传 (KbTextField → 根部 → Rust)
-    callback kb-field-focused(int);
 
     background: MaterialPalette.background;
 
@@ -111,11 +110,10 @@ export component SettingsPage inherits Rectangle {
                         // 已先写好 focus-offset-y, 这里直接读). content-y 负值
                         // 向下滚 (露出下方内容); 只在聚焦回调里赋值一次, 不做
                         // 常驻绑定, 不跟用户滚动抢 viewport
-                        kb-field-focused(id) => {
-                            if id >= 0 {
+                        kb-field-focused(focused) => {
+                            if focused {
                                 sv.content-y = -(hl_general.y + general_card.focus-offset-y) + 24px;
                             }
-                            root.kb-field-focused(id);
                         }
                     }
                 }
@@ -153,11 +151,10 @@ export component SettingsPage inherits Rectangle {
                         set-room(v) => { root.set-ice-room(v); }
                         set-stun(v) => { root.set-ice-stun(v); }
                         // 聚焦时把输入框滚到页顶下方约 24px, 同 general 卡
-                        kb-field-focused(id) => {
-                            if id >= 0 {
+                        kb-field-focused(focused) => {
+                            if focused {
                                 sv.content-y = -(hl_ice.y + ice_card.focus-offset-y) + 24px;
                             }
-                            root.kb-field-focused(id);
                         }
                     }
                 }
@@ -194,11 +191,10 @@ export component SettingsPage inherits Rectangle {
                         set-rtp-video(v) => { root.set-sip-rtp-video(v); }
                         set-ice(v) => { root.set-sip-ice(v); }
                         // 聚焦时把输入框滚到页顶下方约 24px, 同 general 卡
-                        kb-field-focused(id) => {
-                            if id >= 0 {
+                        kb-field-focused(focused) => {
+                            if focused {
                                 sv.content-y = -(hl_sip.y + sip_card.focus-offset-y) + 24px;
                             }
-                            root.kb-field-focused(id);
                         }
                     }
                 }
@@ -219,6 +215,6 @@ export component SettingsPage inherits Rectangle {
             root.save-discovered-camera(xaddr, name, user, pass, token);
         }
         add-camera(name, uri, user, pass) => { root.add-camera(name, uri, user, pass); }
-        kb-field-focused(id) => { root.kb-field-focused(id); }
+        
     }
 }
