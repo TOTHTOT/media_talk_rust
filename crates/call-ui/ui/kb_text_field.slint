@@ -84,6 +84,9 @@ export component KbTextField inherits Rectangle {
         } else if root.commit-text != "" {
             root.text = root.text + root.commit-text;
         }
+        // 程序化改 text 后光标停在原处 (可见性 bug), 显式移到末尾 —
+        // 上屏/退格语义本就操作串尾.
+        field.set-cursor-to-end();
         root.edited(root.text);
     }
 
