@@ -52,10 +52,10 @@ component KbKey inherits Rectangle {
         }
     }
 
-    // 小标长按输入: 按住 500ms 发 sub-label (数字/符号), 快按仍是主键值.
+    // 小标长按输入: 按住 300ms 发 sub-label (数字/符号), 快按仍是主键值.
     // 上滑输入已废弃 — 拖拽手势在 PC 鼠标与触屏间可靠性差, 长按更稳.
     sub-delay := Timer {
-        interval: 500ms;
+        interval: 300ms;
         running: false;
         triggered => {
             self.running = false;
@@ -109,13 +109,14 @@ component KbKey inherits Rectangle {
         }
     }
 
+    // 内容区整体垂直居中: 有/无小标都居中, 不再顶部 padding 堆叠
     VerticalLayout {
         width: 100%;
         height: 100%;
-        padding-top: root.sub-label != "" ? 2px : 0px;
+        alignment: center;
 
         if root.sub-label != "": MaterialText {
-            height: 14px;
+            height: 15px;
             text: root.sub-label;
             style: MaterialTypography.body_small;
             color: root.accent ? #ffffffb3 : #8a8f99;
@@ -124,7 +125,6 @@ component KbKey inherits Rectangle {
         }
 
         if root.label != "": MaterialText {
-            height: parent.height - (root.sub-label != "" ? 16px : 0px);
             text: root.label;
             style: MaterialTypography.body_large;
             color: root.accent ? #ffffff : #1c1c1e;
