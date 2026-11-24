@@ -9,6 +9,9 @@ pub(crate) use settings::wire_settings;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use ipcam_gst::VideoFrameSink;
 use slint::ComponentHandle;
@@ -17,6 +20,10 @@ use tracing::{info, warn};
 use crate::MainWindow;
 use crate::app::{NoticeKind, NoticeLevel};
 use crate::store::Store;
+
+/// 监控首帧看门狗: 管线 Playing 但一直没有解码帧, 就停流并提示.
+/// RTSP 地址错/无视频轨/缺 SPS-PPS 时 GStreamer 往往不会报错.
+const MONITOR_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 监控查看控制器: 任一时刻最多一路 ingest 在跑 (单路全屏形态).
 /// 与对讲共用同一个 tap/video-frame 属性 — 靠"phase==0 才能进监控页
@@ -95,12 +102,46 @@ impl MonitorController {
             ))),
             ..Default::default()
         };
+        // 包一层 tap 统计"真正到达解码输出的帧": link 成功/编码帧计数
+        // 都不能代表 UI 能显示, 只有 appsink 回调才算数.
+        let frames = Arc::new(AtomicU64::new(0));
+        let frames_for_tap = frames.clone();
+        let inner_tap = tap.clone();
+        let counting_tap: VideoFrameSink = Arc::new(parking_lot::Mutex::new(
+            move |f: ipcam_gst::RawVideoFrame<'_>| {
+                frames_for_tap.fetch_add(1, Ordering::Relaxed);
+                (inner_tap.lock())(f);
+            },
+        ));
         let taps = ipcam_gst::RawTaps {
-            video: Some(tap.clone()),
+            video: Some(counting_tap),
             audio: None,
         };
-        let handle = ipcam_gst::start_with_taps(cfg, taps)?;
-        self.current = Some(handle);
+        let stream = ipcam_gst::start_with_taps(cfg, taps)?;
+
+        // GStreamer 对"Playing 但没帧"不会报错: 地址错、无视频轨、
+        // SDP 缺 SPS/PPS 都可能一直黑屏. 超时后主动停流并走失败提示.
+        let watch = stream.clone();
+        let watch_frames = frames.clone();
+        let watch_ui = handle.clone();
+        let id = cam.id as i32;
+        std::thread::spawn(move || {
+            std::thread::sleep(MONITOR_FIRST_FRAME_TIMEOUT);
+            if watch.state() != ipcam_gst::StreamState::Playing {
+                return;
+            }
+            if watch_frames.load(Ordering::Relaxed) > 0 {
+                return;
+            }
+            warn!(id, "monitor stream has no video frames after timeout");
+            watch.stop();
+            watch_ui.post(crate::app::UiEvent::MonitorFailed {
+                id,
+                error: Some("10 秒内未收到视频帧".into()),
+            });
+        });
+
+        self.current = Some(stream);
         self.selected = Some(cam.id);
         Ok(())
     }
