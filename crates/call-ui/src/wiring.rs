@@ -65,6 +65,8 @@ pub(crate) fn wire_callbacks(
         if let Some(ui) = weak.upgrade() {
             sync_props(&ui, &app.lock());
         }
+        // 本地挂断/拒接等动作也可能产生通话记录, 立即落盘
+        crate::persist::flush_async(app);
     }
 
     {

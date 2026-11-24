@@ -168,7 +168,7 @@ pub struct AppState {
     pub today_visitors: u32,
     /// 最近通话记录, 新的在前, 上限 20 条 (主页只显示前 2)
     pub call_log: Vec<CallRecord>,
-    /// 已记账但还没落盘的记录 (1s 定时器批量写 SQLite, 见 lib.rs)
+    /// 已记账但还没落盘的记录; persist::flush_async 在状态变更后立即取走
     unsaved: Vec<CallRecord>,
     /// 当前/进行通话的方向, 记 call_log 用
     call_dir: Option<CallDir>,
@@ -214,7 +214,7 @@ impl AppState {
             },
         );
         self.call_log.truncate(20);
-        // 待落盘副本 (持久化不阻塞状态机, 由外部定时器取走写库)
+        // 待落盘副本 (状态机不碰库, 由 persist::flush_async 取走写库)
         self.unsaved.push(self.call_log[0].clone());
     }
 

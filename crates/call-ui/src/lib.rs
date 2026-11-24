@@ -51,7 +51,6 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
     // SQLite 持久化 (通讯录 + 通话记录 + kv 设置)
     let store = persist::open_store()?;
     persist::backfill_call_log(&app, &store);
-    let _persist_timer = persist::start_persist_timer(&app, &store); // 保活
     // SIP 设置合成: CLI 覆盖 > kv > 内置默认 (kv 缺失播种默认), 状态栏账号
     // 信息取自合成结果, cfg 随后 move 进 SIP worker
     let cfg = sip_settings::resolve(&store, &over)?;

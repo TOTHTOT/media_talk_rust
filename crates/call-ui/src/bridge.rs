@@ -80,6 +80,8 @@ impl UiHandle {
                 crate::video::clear_frame(&ui);
             }
             let notice = app.lock().on_event(ev);
+            // 通话结束/失败事件可能产生待落盘记录, 立即写库
+            crate::persist::flush_async(&app);
             if let Some(ui) = weak.upgrade() {
                 if let Some(n) = notice {
                     ui.invoke_notify(

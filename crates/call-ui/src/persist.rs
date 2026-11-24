@@ -1,5 +1,5 @@
-//! SQLite 持久化的装配: 打开库 / 启动回填 / 定时落盘 / 通讯录 CRUD 回调.
-//! 数据量小, 全部同步读写, 直接在 UI 线程跑.
+//! SQLite 持久化的装配: 打开库 / 启动回填 / 通话结束落盘 / 通讯录 CRUD 回调.
+//! 数据量小, 默认在 UI 线程同步读写; 通话记录在事件处理后立即交给一次性线程写库.
 
 use std::rc::Rc;
 
@@ -34,27 +34,30 @@ pub(crate) fn backfill_call_log(app: &bridge::SharedApp, store: &Store) {
     }
 }
 
-/// 通话记账落盘: 状态机只往 unsaved 队列塞, 这里 1s 批量写库.
-/// 返回的 Timer 需调用方保活
-pub(crate) fn start_persist_timer(app: &bridge::SharedApp, store: &Rc<Store>) -> slint::Timer {
-    let (app, store) = (app.clone(), store.clone());
-    let timer = slint::Timer::default();
-    timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_secs(1),
-        move || {
-            let records = app.lock().take_unsaved_records();
-            for r in &records {
-                if let Err(e) = store.add_call_record(&props::record_to_row(r)) {
-                    error!(err = %e, "persist call record failed");
-                }
+/// 通话记账立即落盘: 取走状态机的 unsaved 记录, 交给一次性线程写库.
+/// 状态机所在线程 (UI / 事件闭包) 调用, 不阻塞界面.
+pub(crate) fn flush_async(app: &bridge::SharedApp) {
+    let records = app.lock().take_unsaved_records();
+    if records.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let store = match Store::open() {
+            Ok(store) => store,
+            Err(e) => {
+                error!(err = %e, "open store for call records failed");
+                return;
             }
-        },
-    );
-    timer
+        };
+        for r in &records {
+            if let Err(e) = store.add_call_record(&props::record_to_row(r)) {
+                error!(err = %e, "persist call record failed");
+            }
+        }
+    });
 }
 
-/// 窗口关闭后最后一次落盘 (通话可能刚结束, 1s 定时器还没来得及写)
+/// 窗口关闭后最后一次落盘 (覆盖来不及 flush 的残留记录)
 pub(crate) fn drain_unsaved(app: &bridge::SharedApp, store: &Store) {
     for r in &app.lock().take_unsaved_records() {
         if let Err(e) = store.add_call_record(&props::record_to_row(r)) {
