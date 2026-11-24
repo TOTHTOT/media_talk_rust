@@ -226,7 +226,7 @@ async fn resolve_v4(host: &str, port: u16) -> Result<std::net::SocketAddr> {
     addrs
         .into_iter()
         .find(|a| a.is_ipv4())
-        .with_context(|| format!("{host} 无 IPv4 地址 (判定 socket 为 IPv4)"))
+        .with_context(|| format!("{host} has no IPv4 address (IPv4 socket)"))
 }
 
 /// NAT 类型判定主流程.

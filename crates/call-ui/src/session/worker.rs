@@ -62,7 +62,7 @@ pub fn spawn(
     let handle = std::thread::Builder::new()
         .name("sip-worker".into())
         .spawn(worker)
-        .map_err(|e| anyhow::anyhow!("SIP worker 线程创建失败: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to spawn SIP worker thread: {e}"))?;
     Ok(handle)
 }
 

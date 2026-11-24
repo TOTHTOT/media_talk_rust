@@ -50,7 +50,7 @@ pub async fn run(
     // 不要等到浏览器连上、起流时才在深层挂掉
     anyhow::ensure!(
         ipcam_gst::element_available("webrtcsink"),
-        "缺少 webrtcsink 元件 (gst-plugins-rs), serve 不可用"
+        "webrtcsink element missing (gst-plugins-rs); serve unavailable"
     );
     info!(bind = %format_args!("http://{}", bind), local_ip = %format_args!("http://{}:8080", local_ip()), discovery_timeout_secs, ?username, manual = rtsp_urls.len(), audio_out = ?audio_out, "starting media server");
     let timeout = std::time::Duration::from_secs(discovery_timeout_secs);

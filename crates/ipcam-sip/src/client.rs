@@ -323,7 +323,7 @@ impl SipClient {
 /// 本机 LAN IPv4：Contact/SDP 都要写对端可达的地址，不能是 127.0.0.1
 pub fn local_ipv4() -> Result<Ipv4Addr> {
     let IpAddr::V4(ip) = local_ip_address::local_ip()? else {
-        anyhow::bail!("仅支持 IPv4");
+        anyhow::bail!("IPv4 only");
     };
     Ok(ip)
 }

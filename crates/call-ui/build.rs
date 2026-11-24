@@ -9,7 +9,7 @@ fn download(url: &str, dest: &Path, hint: &str) {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    assert!(ok, "下载失败: {url} ({hint})");
+    assert!(ok, "download failed: {url} ({hint})");
 }
 
 /// 按 ui/icons.txt 清单把 lucide 图标下载到 ui/icons/ (已存在则跳过).
@@ -25,7 +25,7 @@ fn fetch_icons() {
         .filter(|l| !l.is_empty() && !l.starts_with('#'));
     let version = lines
         .next()
-        .expect("icons.txt 第一行须为 lucide-static 版本号");
+        .expect("first line of icons.txt must be the lucide-static version");
     let dir = Path::new("ui/icons");
     std::fs::create_dir_all(dir).expect("create ui/icons failed");
     for name in lines {
@@ -34,7 +34,11 @@ fn fetch_icons() {
             continue;
         }
         let url = format!("https://cdn.jsdelivr.net/npm/lucide-static@{version}/icons/{name}.svg");
-        download(&url, &file, "离线构建请先手动放图标到 ui/icons/");
+        download(
+            &url,
+            &file,
+            "offline build: place icons in ui/icons/ manually",
+        );
         println!("cargo:warning=fetched icon {name}.svg @ lucide-static {version}");
     }
 }
@@ -50,14 +54,14 @@ fn fetch_material() {
             download(
                 &format!("https://material.slint.dev/zip/material-{VERSION}.zip"),
                 &zip_path,
-                "离线构建请先手动解压 material 组件集到 crate 根目录",
+                "offline build: extract the material components into the crate root manually",
             );
         }
         let file = std::fs::File::open(&zip_path).expect("open material zip failed");
         zip::ZipArchive::new(file)
-            .expect("material zip 损坏")
+            .expect("corrupt material zip")
             .extract(".")
-            .expect("解压 material 组件集失败");
+            .expect("failed to extract material components");
         println!("cargo:warning=fetched material components {VERSION}");
     }
     patch_material_text_field(Path::new(&format!(
@@ -74,7 +78,7 @@ fn fetch_material() {
 fn patch_material_text_field(path: &Path) {
     println!("cargo:rerun-if-changed={}", path.display());
     let Ok(src) = std::fs::read_to_string(path) else {
-        println!("cargo:warning=material text_field.slint 不存在, 跳过光标补丁");
+        println!("cargo:warning=material text_field.slint not found, skip cursor patch");
         return;
     };
     if src.contains("set-cursor-to-end") {
@@ -82,7 +86,9 @@ fn patch_material_text_field(path: &Path) {
     }
     let anchor = "    callback key_released(event: KeyEvent) -> EventResult;";
     let Some(_idx) = src.find(anchor) else {
-        println!("cargo:warning=material TextField 锚点失效 (版本漂移?), 光标补丁未注入");
+        println!(
+            "cargo:warning=material TextField anchor missing (version drift?), cursor patch not applied"
+        );
         return;
     };
     let patch = format!(
@@ -90,7 +96,7 @@ fn patch_material_text_field(path: &Path) {
     );
     let patched = src.replacen(anchor, &patch, 1);
     if std::fs::write(path, patched).is_err() {
-        println!("cargo:warning=光标补丁写入失败");
+        println!("cargo:warning=failed to write cursor patch");
     }
 }
 
