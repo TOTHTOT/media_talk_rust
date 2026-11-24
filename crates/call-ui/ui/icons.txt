@@ -40,3 +40,6 @@ wind
 cloud-off
 power
 power-off
+# 密码可见性切换 (设置页 SIP 密码框)
+eye
+eye-off

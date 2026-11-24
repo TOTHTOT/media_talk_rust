@@ -88,6 +88,10 @@ pub(crate) fn wire_settings(ui: &MainWindow, store: &Rc<Store>) {
         ui.on_search_cameras(move || {
             let Some(ui) = weak.upgrade() else { return };
             ui.set_camera_busy(true);
+            // 清空上次搜索结果, 重进搜索框/重新扫描时不残留旧设备
+            // (与 fetch_camera_profiles 的"清空上次结果"同惯例)
+            let empty: Vec<crate::DiscoveredEntry> = Vec::new();
+            ui.set_discovered_devices(slint::ModelRc::new(slint::VecModel::from(empty)));
             let weak = weak.clone();
             std::thread::spawn(move || {
                 let devices = tokio::runtime::Builder::new_current_thread()

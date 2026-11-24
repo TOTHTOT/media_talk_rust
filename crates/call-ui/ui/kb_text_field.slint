@@ -30,6 +30,9 @@ export component KbTextField inherits Rectangle {
     in property <string> label: "";
     in property <string> supporting-text: "";
     in property <InputType> input-type;
+    // 尾部图标 (如密码可见性眼睛), 透传 material TextField 内建支持
+    in property <image> trailing-icon;
+    callback trailing-icon-clicked();
     // 上屏拍振: seq 每次上屏 +1 (Rust 侧装配, 见 main.slint 根部属性表)
     in property <int> commit-seq: 0;
     in property <string> commit-text: "";
@@ -98,6 +101,10 @@ export component KbTextField inherits Rectangle {
         label: root.label;
         supporting-text: root.supporting-text;
         input-type: root.input-type;
+        trailing_icon: root.trailing-icon;
+        trailing_icon_clicked => {
+            root.trailing-icon-clicked();
+        }
         text <=> root.text;
         edited(t) => {
             root.edited(t);

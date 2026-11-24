@@ -346,6 +346,72 @@ file dist/media_talk_rust   # ARM aarch64
 10. e7f87f98b5b5cc5037fec7c23b4474619fc8d8fc 深入分析这个修改
 11. ui框架和gui的启动命令参数需要整合，有参数传入优先参数否则使用配置
 12. **通话接收端音画同步** — `rtp_recv` 的视频/音频两路完全独立，各自从 udpsrc 经 depay/decode 到 autovideosink/autoaudiosdk，无 jitter buffer / PTS 对齐机制；网络抖动时可能出现音画错位。发送侧 `udpsink sync=true` 按 PTS 限速，录像（mpegtsmux）可保证 TS 流内 PTS 正确。接收侧如需顽健同步，应引入 `rtpbin` 替代裸 udpsrc（额外引入 ~150-200ms 延迟，换来 jitter buffer + RTCP Remb）。
+
+## 代码索引 (repowise)
+
+本仓库用 [repowise](https://github.com/repowise-dev/repowise) 建代码索引:
+代码图谱 + git 信号 + **模型写的文档页**,并通过 MCP 暴露给 AI agent
+(`search_codebase` / `get_context` / `get_answer` / `get_why` / `get_risk`)。
+
+### 日常使用
+
+```shell
+repowise status                 # 索引状态 / 页数 / 覆盖率
+repowise update                 # 增量更新 (post-commit hook 也会自动跑)
+repowise update --full          # 索引 + 文档全量重建 (首次)
+repowise search "关键词"          # 混合检索 (全文 + 向量 + 符号)
+repowise doctor                 # 健康检查
+```
+
+`/.repowise/` 是 gitignore 的本地状态目录,不入库。
+
+### LLM 接入
+
+文档页由模型写。默认走 `opencode` provider(复用本机 opencode 的登录态,
+无需另配 key):
+
+```shell
+repowise update --full --provider opencode --model minimax-m3/MiniMax-M3.1-Flash --yes
+```
+
+`--model` 需指定:opencode provider 的默认模型在本机可能余额不足或受
+地域限制,报错形如 `Insufficient balance` / `not available in your country`。
+
+### 嵌入器 (语义搜索)
+
+向量索引决定 `search_codebase` 的语义腿能否命中。本机用的是 **MiniMax
+`embo-01`** (1536 维)——它的 `/v1/embeddings` **不是 OpenAI 形状**(要
+`texts` 而非 `input`,返回 `vectors` 而非 `data[].embedding`),所以 repowise
+内置的 `openai` / `openrouter` embedder 都接不上。
+
+因此装了一个原生插件(`repowise.plugins` entry point,装上即自动发现):
+
+```shell
+pip install -e ~/.repowise/plugins/minimax-repowise-embedder
+```
+
+仓库 `.repowise/.env` 里选它(该文件 gitignore):
+
+```text
+REPOWISE_EMBEDDER=minimax
+MINIMAX_API_KEY=sk-cp-...
+```
+
+插件自己也会从 `~/.config/opencode/opencode.jsonc` 里找 `sk-cp-` 开头的
+key,所以 `MINIMAX_API_KEY` 通常可省。
+
+> **注意**:仓库 `.repowise/config.yaml` 的 `embedder:` 是"谁写的向量表"
+> 的 pin —— 读的时候也按它解析,改 pin 而不重嵌,查询向量维度对不上,语义
+> 搜索会静默返回空。换了 embedder 就要 `repowise reindex`。
+>
+> 插件的 entry point 只在**进程启动时**扫一次。装了插件之后,已在运行的
+> MCP server 不认识新 embedder,需要重启才生效。
+>
+> 自定义 embedder 必须实现完整协议:`embed(texts, *, kind="document")`
+> (缺 `kind` 会 TypeError,**向量腿静默失效**,只表现为 MCP 返回
+> `degraded: ["retrieval:vector"]`),且向量要 L2 归一化(点积才等于余弦
+> 相似度)。
+
 ## License
 
 仓库内尚未声明 license。所有权保留,在补 `LICENSE` 文件前请勿重新分发。

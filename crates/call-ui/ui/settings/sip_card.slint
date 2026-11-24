@@ -39,6 +39,8 @@ export component SipSettingsCard inherits FilledCard {
     in-out property <string> rtp-audio: "";
     in-out property <string> rtp-video: "";
     in-out property <bool> ice-enabled: false;
+    // 密码明文开关 (眼睛图标), 仅 UI 态不落库
+    in-out property <bool> show-password: false;
     // 聚焦字段在卡片内的 y 偏移 (相对卡片根), 设置页抬升门控用;
     // 由 KbTextField focus-changed 在聚焦时写入
     in-out property <length> focus-offset-y: 0px;
@@ -88,8 +90,13 @@ export component SipSettingsCard inherits FilledCard {
         // 账号密码: 密码样式遮蔽
         f3 := KbTextField {
             label: @tr("密码");
-            // 与根部属性同名, 枚举字面量需带 InputType 限定
-            input-type: InputType.password;
+            // 与根部属性同名, 枚举字面量需带 InputType 限定.
+            // 尾部眼睛图标切换明文/掩码 (material TextField 内建 trailing 支持)
+            input-type: root.show-password ? InputType.text : InputType.password;
+            trailing-icon: root.show-password ? @image-url("../icons/eye-off.svg") : @image-url("../icons/eye.svg");
+            trailing-icon-clicked => {
+                root.show-password = !root.show-password;
+            }
             text <=> root.password;
             commit-seq: KeyboardCtx.commit-seq;
             commit-text: KeyboardCtx.commit-text;
