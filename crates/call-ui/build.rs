@@ -60,6 +60,38 @@ fn fetch_material() {
             .expect("解压 material 组件集失败");
         println!("cargo:warning=fetched material components {VERSION}");
     }
+    patch_material_text_field(Path::new(&format!(
+        "material-{VERSION}/ui/components/text_field.slint"
+    )));
+}
+
+/// 给 vendored material 的 TextField 注入 set-cursor-to-end 透传函数.
+/// 背景: KbTextField 上屏是程序化写 text, slint 的 TextInput 不会自动
+/// 移动光标, 需在写后显式归位; 但 material 的 TextField 不透出内层
+/// TextInput 的 set-selection-offsets. material 目录不入库 (构建时解压),
+/// 手改本地副本会在干净机器上丢失 → 这里在解压后打补丁, 幂等 (已注入
+/// 则跳过), 锚点是 key_released 回调声明 (material 1.1.0 实测).
+fn patch_material_text_field(path: &Path) {
+    println!("cargo:rerun-if-changed={}", path.display());
+    let Ok(src) = std::fs::read_to_string(path) else {
+        println!("cargo:warning=material text_field.slint 不存在, 跳过光标补丁");
+        return;
+    };
+    if src.contains("set-cursor-to-end") {
+        return; // 已注入 (幂等)
+    }
+    let anchor = "    callback key_released(event: KeyEvent) -> EventResult;";
+    let Some(_idx) = src.find(anchor) else {
+        println!("cargo:warning=material TextField 锚点失效 (版本漂移?), 光标补丁未注入");
+        return;
+    };
+    let patch = format!(
+        "{anchor}\n\n    // 屏幕键盘 (KbTextField) 追加式上屏后调用: 程序化写 text 不移动光标,\n    // 需显式移到末尾. 透传内层 TextInput 的 set-selection-offsets (字节\n    // 偏移; slint 字符串无 length 内建, 用 character-count*4+4 作上界 —\n    // UTF-8 每字符至多 4 字节 — 实现内 safe_byte_offset 会钳到串尾).\n    public function set-cursor-to-end() {{\n        input.set-selection-offsets(root.text.character-count * 4 + 4, root.text.character-count * 4 + 4);\n    }}"
+    );
+    let patched = src.replacen(anchor, &patch, 1);
+    if std::fs::write(path, patched).is_err() {
+        println!("cargo:warning=光标补丁写入失败");
+    }
 }
 
 fn main() {
