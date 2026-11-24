@@ -1,4 +1,4 @@
-//! cameras 表 CRUD 与同 IP 合并策略 (rtsp_host / kind_rank 也服务 migrate)
+//! cameras 表 CRUD 与同 IP 合并策略
 
 use anyhow::Result;
 use rusqlite::params;

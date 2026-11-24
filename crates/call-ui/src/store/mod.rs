@@ -4,17 +4,74 @@
 //! `%APPDATA%/media_talk/media_talk.db`, Linux 为 `~/.local/share/media_talk/`.
 //! 数据量小 (几十条联系人), 全部同步操作, 直接在 UI 线程跑.
 //!
-//! 子模块划分: cameras=监控摄像头表 CRUD 与同 IP 合并策略,
-//! migrate=建表与老库结构迁移; 本文件留 Store 句柄 / 通讯录 / 通话记录.
+//! 子模块 cameras=监控摄像头表 CRUD 与同 IP 合并策略; 本文件留 Store 句柄 /
+//! 建表 / 通讯录 / 通话记录. 未发布正式版, 不写字段迁移: cameras 旧结构
+//! (没有 kind 列) 直接把旧表改名备份, 新建空表.
 
 mod cameras;
-mod migrate;
 
 pub use cameras::{CameraRow, CameraSaveOutcome};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 use tracing::info;
+
+/// 当前四张表的建表语句; IF NOT EXISTS, 新库和已建库都可重复执行
+const SCHEMA_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS contacts (
+        id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        name   TEXT NOT NULL,
+        number TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS call_records (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        outgoing      INTEGER NOT NULL,
+        missed        INTEGER NOT NULL,
+        connected     INTEGER NOT NULL,
+        peer          TEXT NOT NULL,
+        time          TEXT NOT NULL,
+        duration_secs INTEGER NOT NULL,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+    );
+    CREATE TABLE IF NOT EXISTS cameras (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL,
+        uri        TEXT NOT NULL,
+        username   TEXT NOT NULL DEFAULT '',
+        password   TEXT NOT NULL DEFAULT '',
+        kind       TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+    );
+    CREATE TABLE IF NOT EXISTS kv (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+";
+
+/// 建表; 老 cameras 表没有 kind 列时, 改名备份后由 SCHEMA_SQL 建新表
+fn ensure_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(SCHEMA_SQL).context("create tables")?;
+
+    let has_kind = conn
+        .prepare("PRAGMA table_info(cameras)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .any(|c| c.is_ok_and(|name| name == "kind"));
+    if has_kind {
+        return Ok(());
+    }
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("read system time")?
+        .as_millis();
+    let legacy = format!("cameras_legacy_{stamp}");
+    conn.execute(&format!("ALTER TABLE cameras RENAME TO {legacy}"), [])
+        .with_context(|| format!("rename old cameras table to {legacy}"))?;
+    conn.execute_batch(SCHEMA_SQL)
+        .context("recreate cameras table")?;
+    info!(legacy, "old cameras table renamed, new empty table created");
+    Ok(())
+}
 
 /// 一条通讯录记录
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,10 +112,10 @@ impl Store {
     /// ```
     pub fn open() -> Result<Self> {
         let dir = directories::ProjectDirs::from("", "", "media_talk")
-            .context("无法确定数据目录")?
+            .context("resolve data directory")?
             .data_dir()
             .to_path_buf();
-        std::fs::create_dir_all(&dir).context("创建数据目录失败")?;
+        std::fs::create_dir_all(&dir).context("create data directory")?;
         let path = dir.join("media_talk.db");
         info!(path = %path.display(), "open store");
         Self::open_at(&path)
@@ -80,11 +137,9 @@ impl Store {
     ///
     /// ```
     pub fn open_at(path: &std::path::Path) -> Result<Self> {
-        let conn = Connection::open(path).context("打开 SQLite 失败")?;
-        migrate::create_tables(&conn)?;
-        let store = Self { conn };
-        store.migrate_cameras()?;
-        Ok(store)
+        let conn = Connection::open(path).context("open SQLite database")?;
+        ensure_schema(&conn)?;
+        Ok(Self { conn })
     }
 
     /// 全部联系人, 按姓名排序
@@ -158,7 +213,7 @@ impl Store {
             "UPDATE contacts SET name = ?2, number = ?3 WHERE id = ?1",
             params![id, name, number],
         )?;
-        anyhow::ensure!(n == 1, "联系人不存在: {id}");
+        anyhow::ensure!(n == 1, "contact not found: {id}");
         Ok(())
     }
 
@@ -309,6 +364,66 @@ mod tests {
 
     fn mem_store() -> Store {
         Store::open_at(std::path::Path::new(":memory:")).unwrap()
+    }
+
+    #[test]
+    fn old_cameras_table_is_renamed_and_rebuilt() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("store-cam-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.db");
+        {
+            // 旧结构: cameras 没有 kind; kv 里的设置应保留
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE cameras (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL, uri TEXT NOT NULL,
+                    username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO cameras (name, uri) VALUES ('old', 'rtsp://192.168.1.10/ch01');
+                CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO kv VALUES ('weather_city', 'Xiamen');",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open_at(&path).unwrap();
+        assert!(s.cameras().unwrap().is_empty());
+        assert_eq!(s.kv_get("weather_city").unwrap().as_deref(), Some("Xiamen"));
+        let legacy: String = s
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'table' AND name LIKE 'cameras_legacy_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let old_count: i64 = s
+            .conn
+            .query_row(&format!("SELECT COUNT(*) FROM {legacy}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(old_count, 1);
+        drop(s);
+
+        // 再开一次: schema 已就绪, 不重复改名
+        let s = Store::open_at(&path).unwrap();
+        let legacy_count: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name LIKE 'cameras_legacy_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_count, 1);
+        drop(s);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
