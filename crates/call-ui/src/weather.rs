@@ -486,8 +486,8 @@ async fn resolve_geo(client: &reqwest::Client, store: &SharedStore) -> Result<(f
 }
 
 /// 地理编码: Open-Meteo 优先, 无结果回退 Nominatim (OSM).
-/// Open-Meteo 的中文名索引不全 (厦门查不到, 深圳/香港可以),
-/// OSM 对中文地名覆盖更好; 两家都免 key
+/// Open-Meteo 的中文名索引不全: "厦门" 查不到, "厦门市" 可以;
+/// 这里先按中文城市名做 去市/补市 两种变体重试, 再走 OSM 兜底.
 async fn geocode(client: &reqwest::Client, name: &str) -> Result<(f64, f64, String)> {
     match openmeteo_geocode(client, name).await {
         Ok(hit) => Ok(hit),
@@ -497,8 +497,45 @@ async fn geocode(client: &reqwest::Client, name: &str) -> Result<(f64, f64, Stri
     }
 }
 
-/// Open-Meteo geocoding, 取第一条结果
+/// Open-Meteo 对中文城市名的索引不稳定: "厦门" 无结果、"厦门市" 有;
+/// "上海市" 会命中美国同名小镇, 而 "上海" 才是正确的。按原名和
+/// 去/补 "市" 的变体依次查询, 命中即返回。
 async fn openmeteo_geocode(client: &reqwest::Client, name: &str) -> Result<(f64, f64, String)> {
+    let candidates = geocode_candidates(name);
+    let mut errors = Vec::new();
+    for candidate in candidates {
+        match openmeteo_geocode_once(client, &candidate).await {
+            Ok(hit) => return Ok(hit),
+            Err(e) => errors.push(format!("{candidate:?}: {e:#}")),
+        }
+    }
+    bail!(
+        "open-meteo geocoding failed for {name:?}: {}",
+        errors.join("; ")
+    )
+}
+
+fn geocode_candidates(name: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(2);
+    if let Some(stripped) = name.strip_suffix('市').filter(|s| !s.is_empty()) {
+        // 先查去 "市" 的原名, 再查带 "市" 的写法 ("上海市"→"上海")
+        out.push(stripped.to_string());
+        out.push(name.to_string());
+    } else {
+        out.push(name.to_string());
+        // 中文名再补一个 "市" 的变体 ("厦门"→"厦门市")
+        if name.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+            out.push(format!("{name}市"));
+        }
+    }
+    out
+}
+
+/// Open-Meteo geocoding 单次查询, 取第一条结果
+async fn openmeteo_geocode_once(
+    client: &reqwest::Client,
+    name: &str,
+) -> Result<(f64, f64, String)> {
     let url = format!(
         "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=zh&timezone=Asia%2FShanghai",
         pct_encode(name)
@@ -686,6 +723,14 @@ mod tests {
         assert_eq!(wmo_icon(99, true), ICON_CLOUD_HAIL);
         // 未列出的 code 落回多云
         assert_eq!(wmo_icon(4, true), ICON_CLOUD);
+    }
+
+    #[test]
+    fn geocode_candidates_retries_with_and_without_shi() {
+        assert_eq!(geocode_candidates("厦门"), vec!["厦门", "厦门市"]);
+        assert_eq!(geocode_candidates("厦门市"), vec!["厦门", "厦门市"]);
+        assert_eq!(geocode_candidates("上海市"), vec!["上海", "上海市"]);
+        assert_eq!(geocode_candidates("Xiamen"), vec!["Xiamen"]);
     }
 
     #[test]
