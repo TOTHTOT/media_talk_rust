@@ -24,8 +24,9 @@ component KbKey inherits Rectangle {
 
     callback tapped(string);
 
-    // 长按已发小标, 松手时抑制 click (避免长按后松手又补一个字母)
-    property <bool> sub-fired: false;
+    // 抑制本次 click: 长按小标/连发键在触发源即置位 (松手时的 clicked
+    // 可能先于 pointer-event(up) 派发, 届时再置已晚). 每次按下清零,
+    // 防上次残留的抑制吃掉下一次点击.
     property <bool> suppress-click: false;
 
     repeat-delay := Timer {
@@ -52,15 +53,15 @@ component KbKey inherits Rectangle {
         }
     }
 
-    // 小标长按输入: 按住 300ms 发 sub-label (数字/符号), 快按仍是主键值.
-    // 上滑输入已废弃 — 拖拽手势在 PC 鼠标与触屏间可靠性差, 长按更稳.
+    // 小标长按输入: 按住即发 sub-label (数字/符号), 快按仍是主键值.
+    // 触发即置抑制, 松手的 clicked 不再补发主键值.
     sub-delay := Timer {
         interval: 300ms;
         running: false;
         triggered => {
             self.running = false;
             if touch.pressed && root.enabled && root.sub-label != "" {
-                root.sub-fired = true;
+                root.suppress-click = true;
                 root.tapped(root.sub-label);
             }
         }
@@ -79,6 +80,7 @@ component KbKey inherits Rectangle {
     touch := TouchArea {
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
+                root.suppress-click = false; // 新一次按下, 清掉上次残留抑制
                 if root.auto-repeat && root.enabled {
                     // 连发键按下即上屏一次 (不等 click), 并启动长按连发
                     root.tapped(root.label);
@@ -91,10 +93,6 @@ component KbKey inherits Rectangle {
                 repeat-delay.running = false;
                 repeat-timer.running = false;
                 sub-delay.running = false;
-                if root.sub-fired {
-                    root.sub-fired = false;
-                    root.suppress-click = true; // 长按已发小标, 不再发主键值
-                }
             }
         }
 
@@ -187,20 +185,20 @@ export component Keyboard inherits Rectangle {
         padding-bottom: 10px;
         spacing: 8px;
 
-        // ===== 顶部工具栏 (常驻): 左候选区 (仅中文有内容时占位的预编辑/
-        // 候选) + 右侧 ▼ 收起. 参考 iOS 键盘顶栏 =====
-        HorizontalLayout {
+        // ===== 顶部候选栏: 仅中文模式且有预编辑/候选时显示 (方案 D 下键盘
+        // 随失焦自动关闭, 不再放显式收起键; "完成"键与点空白仍可收起) =====
+        if root.kb-mode == 0 && (root.kb-preedit != "" || root.kb-candidates.length > 0): HorizontalLayout {
             spacing: 8px;
             height: 40px;
 
-            if root.kb-mode == 0 && (root.kb-preedit != "" || root.kb-candidates.length > 0): Rectangle {
+            // 预编辑拼音串底衬: 白底圆角, 点击退一步 (发 backspace)
+            Rectangle {
                 horizontal-stretch: 0;
                 min-width: 72px;
                 height: 40px;
                 background: #ffffff;
                 border-radius: 8px;
 
-                // 预编辑拼音串: 点击退一步 (发 backspace)
                 preedit-touch := TouchArea {
                     clicked => {
                         root.backspace();
@@ -220,7 +218,7 @@ export component Keyboard inherits Rectangle {
             }
 
             // 候选词横向排布, 触摸滑动, 点击上屏 candidate(index)
-            if root.kb-mode == 0 && root.kb-candidates.length > 0: ScrollView {
+            ScrollView {
                 horizontal-stretch: 1;
                 min-width: 0px;
                 min-height: 0px;
@@ -239,22 +237,6 @@ export component Keyboard inherits Rectangle {
                             root.candidate(i);
                         }
                     }
-                }
-            }
-
-            // 候选区缺席时占位, 把 ▼ 顶到最右
-            if root.kb-mode != 0 || (root.kb-preedit == "" && root.kb-candidates.length == 0): Rectangle {
-                horizontal-stretch: 1;
-            }
-
-            // ▼ 收起 (参考 iOS 顶栏右侧)
-            KbKey {
-                label: "▼";
-                gray: true;
-                horizontal-stretch: 0;
-                min-width: 52px;
-                tapped => {
-                    root.dismiss();
                 }
             }
         }
