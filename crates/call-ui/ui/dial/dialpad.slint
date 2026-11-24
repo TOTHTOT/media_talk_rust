@@ -1,7 +1,8 @@
-// 拨号盘: 号码输入 + 3x4 键盘 + 清除/拨打
+// 拨号盘: 号码展示 + 3x4 键盘 + 清除/拨打
 // 按钮不写死尺寸, 用 stretch 随可用空间放大 (触屏好按)
 import {
-    TextField,
+    MaterialText,
+    MaterialTypography,
     TonalButton,
     OutlineButton,
     FilledButton,
@@ -9,14 +10,38 @@ import {
 
 export component Dialpad inherits Rectangle {
     // 号码双向透出: 通讯录点行填号走这里
-    in-out property <string> number-text <=> number.text;
+    in-out property <string> number-text: "";
+
     callback dial(string);
 
     VerticalLayout {
         spacing: 16px;
-        number := TextField {
+
+        // 号码展示 (非输入框): 拨号盘自带数字键盘, 做成可聚焦输入框反而会
+        // 唤起屏幕键盘遮挡拨号盘 (方案 D 下任何 TextInput 聚焦都弹键盘).
+        // 视觉上照旧: 下划线 + 占位提示, 内容由下方按键写入.
+        Rectangle {
             vertical-stretch: 0;
-            placeholder-text: @tr("输入号码");
+            height: 56px;
+
+            MaterialText {
+                x: 12px;
+                width: parent.width - 24px;
+                height: parent.height - 1px;
+                text: root.number-text != "" ? root.number-text : @tr("输入号码");
+                style: MaterialTypography.body_large;
+                color: root.number-text != "" ? #1c1c1e : #8a8f99;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            // 下划线 (仿 TextField 底边)
+            Rectangle {
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: #7a7f89;
+            }
         }
 
         HorizontalLayout {
@@ -24,19 +49,19 @@ export component Dialpad inherits Rectangle {
             TonalButton {
                 horizontal-stretch: 1;
                 text: "1";
-                clicked => { number.text += "1"; }
+                clicked => { root.number-text += "1"; }
             }
 
             TonalButton {
                 horizontal-stretch: 1;
                 text: "2";
-                clicked => { number.text += "2"; }
+                clicked => { root.number-text += "2"; }
             }
 
             TonalButton {
                 horizontal-stretch: 1;
                 text: "3";
-                clicked => { number.text += "3"; }
+                clicked => { root.number-text += "3"; }
             }
         }
 
@@ -45,19 +70,19 @@ export component Dialpad inherits Rectangle {
             TonalButton {
                 horizontal-stretch: 1;
                 text: "4";
-                clicked => { number.text += "4"; }
+                clicked => { root.number-text += "4"; }
             }
 
             TonalButton {
                 horizontal-stretch: 1;
                 text: "5";
-                clicked => { number.text += "5"; }
+                clicked => { root.number-text += "5"; }
             }
 
             TonalButton {
                 horizontal-stretch: 1;
                 text: "6";
-                clicked => { number.text += "6"; }
+                clicked => { root.number-text += "6"; }
             }
         }
 
@@ -66,19 +91,19 @@ export component Dialpad inherits Rectangle {
             TonalButton {
                 horizontal-stretch: 1;
                 text: "7";
-                clicked => { number.text += "7"; }
+                clicked => { root.number-text += "7"; }
             }
 
             TonalButton {
                 horizontal-stretch: 1;
                 text: "8";
-                clicked => { number.text += "8"; }
+                clicked => { root.number-text += "8"; }
             }
 
             TonalButton {
                 horizontal-stretch: 1;
                 text: "9";
-                clicked => { number.text += "9"; }
+                clicked => { root.number-text += "9"; }
             }
         }
 
@@ -87,19 +112,19 @@ export component Dialpad inherits Rectangle {
             TonalButton {
                 horizontal-stretch: 1;
                 text: "*";
-                clicked => { number.text += "*"; }
+                clicked => { root.number-text += "*"; }
             }
 
             TonalButton {
                 horizontal-stretch: 1;
                 text: "0";
-                clicked => { number.text += "0"; }
+                clicked => { root.number-text += "0"; }
             }
 
             TonalButton {
                 horizontal-stretch: 1;
                 text: "#";
-                clicked => { number.text += "#"; }
+                clicked => { root.number-text += "#"; }
             }
         }
 
@@ -108,14 +133,14 @@ export component Dialpad inherits Rectangle {
             OutlineButton {
                 horizontal-stretch: 1;
                 text: @tr("清除");
-                clicked => { number.text = ""; }
+                clicked => { root.number-text = ""; }
             }
 
             FilledButton {
                 horizontal-stretch: 1;
                 text: @tr("拨打");
-                enabled: number.text != "";
-                clicked => { root.dial(number.text); }
+                enabled: root.number-text != "";
+                clicked => { root.dial(root.number-text); }
             }
         }
     }
