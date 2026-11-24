@@ -1,12 +1,15 @@
 //! 天气: Open-Meteo (免 key) 拉当前天气, 结果经 UiEvent::Weather 进
 //! 事件漏斗上状态栏. 手动城市 (kv) 优先, 留空用 IP 定位, 定位结果
-//! 缓存避免重启重定位. 全程失败静默: 从未成功则天气块隐藏.
+//! 缓存避免重启重定位. 失败不影响 UI, 但会带完整错误链打日志, 便于
+//! 现场判断是网络/定位/解析还是配置问题.
 
-use std::sync::mpsc::Receiver;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
@@ -31,9 +34,40 @@ pub(crate) const ICON_WIND: i32 = 13;
 pub(crate) const KV_CITY: &str = "weather_city";
 /// kv 键: Open-Meteo 定位缓存 "lat,lon,name", 城市/key 变更时由设置回调清空
 pub(crate) const KV_GEO: &str = "weather_geo";
-const REFRESH: Duration = Duration::from_secs(30 * 60);
+/// UI Timer 的周期; lib.rs 启动时先拉一次, 之后按这个间隔重复
+pub(crate) const REFRESH: Duration = Duration::from_secs(30 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const BACKOFF_MAX: Duration = Duration::from_secs(240);
+
+/// rusqlite Connection 是 Send 但不是 Sync; 包一层 Mutex 让 async future
+/// 可以 Send, 锁只在 kv 读写前后短暂持有, 不跨 await.
+type SharedStore = Arc<parking_lot::Mutex<crate::store::Store>>;
+
+fn open_shared_store() -> Result<SharedStore> {
+    let store = crate::store::Store::open().context("open store for weather")?;
+    Ok(Arc::new(parking_lot::Mutex::new(store)))
+}
+
+/// 天气异步任务执行器: 一个 worker 线程的多线程 runtime, 首次刷新时懒建.
+/// 不用 current-thread runtime: 任务从 UI 线程 spawn, 需要自己的 driver.
+fn runtime() -> Option<&'static tokio::runtime::Runtime> {
+    static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .thread_name("weather-rt")
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => Some(rt),
+                Err(e) => {
+                    warn!(err = %e, "build weather runtime failed");
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
 
 /// WMO weathercode → lucide 图标索引, is_day 区分昼夜图标.
 /// Open-Meteo 的 code 比和风的粗 (毛毛雨/中雨/大雨不分), 细分图标主要
@@ -84,6 +118,8 @@ struct GeoHit {
 struct IpResp {
     success: bool,
     city: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -158,140 +194,210 @@ fn qweather_icon(code: i32) -> i32 {
     }
 }
 
-/// 天气 worker: 启动即拉, 成功后每 30 分钟重拉; 失败 1/2/4 分钟退避;
-/// wake 收到信号 (设置页改了城市/key) 立即重拉. 成功一次投递一次
-/// UiEvent::Weather, 失败只 warn 不动状态机
-pub(crate) fn spawn(handle: UiHandle, wake: Receiver<()>) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let mut backoff = Duration::from_secs(60);
-        loop {
-            match refresh_once() {
-                Some((icon, temp_c, city)) => {
-                    info!(icon, temp_c, %city, "weather refreshed");
-                    handle.post(UiEvent::Weather {
-                        icon,
-                        temp_c: temp_c.round() as i32,
-                        city,
-                    });
-                    backoff = Duration::from_secs(60);
-                    // 成功: 等 30 分钟或城市变更唤醒
-                    let _ = wake.recv_timeout(REFRESH);
-                }
-                None => {
-                    warn!(delay = ?backoff, "weather refresh failed, backing off");
-                    let _ = wake.recv_timeout(backoff);
-                    backoff = (backoff * 2).min(BACKOFF_MAX);
-                }
+/// 同一时刻只允许一个刷新任务; 防止连续改城市/定时器重叠打出多份请求.
+static REFRESHING: AtomicBool = AtomicBool::new(false);
+/// 刷新期间又收到请求: 当前任务结束后补跑一次, 不丢最后一次设置变更.
+static REFRESH_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// 刷新任务结束 (含 panic) 时释放重入锁; 有 pending 则补跑一次.
+struct RefreshGuard {
+    handle: UiHandle,
+}
+
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        REFRESHING.store(false, Ordering::Release);
+        if REFRESH_PENDING.swap(false, Ordering::AcqRel) {
+            debug!("weather refresh pending, rerun");
+            refresh_async(self.handle.clone());
+        }
+    }
+}
+
+/// 异步刷新一次天气: 一次性任务, 拉完即退出.
+/// UI Timer 每 `REFRESH` 调一次; 设置页改城市/key 时直接调用.
+/// 刷新期间的新请求只置 pending, 当前任务结束后补跑一次.
+pub(crate) fn refresh_async(handle: UiHandle) {
+    if REFRESHING.swap(true, Ordering::AcqRel) {
+        REFRESH_PENDING.store(true, Ordering::Release);
+        warn!("weather refresh already running, queued");
+        return;
+    }
+
+    let Some(rt) = runtime() else {
+        REFRESHING.store(false, Ordering::Release);
+        return;
+    };
+    // guard 在 spawn 前创建: 任务被丢弃/取消时也能释放锁, drop RefreshGuard 时会有收尾动作
+    let guard: RefreshGuard = RefreshGuard {
+        handle: handle.clone(),
+    };
+    drop(rt.spawn(async move {
+        let _guard = guard;
+        match refresh_once().await {
+            Ok((icon, temp_c, city)) => {
+                info!(icon, temp_c, %city, "weather refreshed");
+                handle.post(UiEvent::Weather {
+                    icon,
+                    temp_c: temp_c.round() as i32,
+                    city,
+                });
+            }
+            Err(err) => {
+                warn!(
+                    error = %format!("{err:#}"),
+                    "weather refresh failed"
+                );
             }
         }
-    })
+    }));
 }
 
 /// 单次刷新: 配置了和风 key 走 QWeather, 否则走 Open-Meteo.
-/// 返回 (lucide 图标索引, 摄氏温度, 城市名), 任何一步失败返回 None
-fn refresh_once() -> Option<(i32, f64, String)> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
+/// 返回 (lucide 图标索引, 摄氏温度, 城市名), 失败带上下文返回错误
+async fn refresh_once() -> Result<(i32, f64, String)> {
+    let client = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
         .build()
-        .ok()?;
-    rt.block_on(async {
-        let client = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .ok()?;
-        let store = crate::store::Store::open().ok()?;
-        let key = store
-            .kv_get(KV_KEY)
-            .ok()
-            .flatten()
-            .map(|k| k.trim().to_string())
-            .filter(|k| !k.is_empty());
-        match key {
-            Some(key) => qweather_refresh(&client, &store, &key).await,
-            None => openmeteo_refresh(&client, &store).await,
-        }
-    })
+        .context("build weather http client")?;
+    let store = open_shared_store()?;
+    let key = {
+        let store = store.lock();
+        store.kv_get(KV_KEY).context("read weather_key from kv")?
+    }
+    .map(|k| k.trim().to_string())
+    .filter(|k| !k.is_empty());
+    match key {
+        Some(key) => qweather_refresh(&client, &store, &key)
+            .await
+            .context("qweather refresh"),
+        None => openmeteo_refresh(&client, &store)
+            .await
+            .context("open-meteo refresh"),
+    }
 }
 
 /// Open-Meteo 路径: 定位 (缓存优先) + 拉当前天气
 async fn openmeteo_refresh(
     client: &reqwest::Client,
-    store: &crate::store::Store,
-) -> Option<(i32, f64, String)> {
-    let geo = match cached_geo(store) {
+    store: &SharedStore,
+) -> Result<(i32, f64, String)> {
+    let geo = match cached_geo(store)? {
         Some(g) => g,
         None => {
-            let g = resolve_geo(client, store).await?;
+            let g = resolve_geo(client, store)
+                .await
+                .context("resolve location for open-meteo")?;
             let (la, lo, name) = &g;
             info!(lat = la, lon = lo, city = %name, "location resolved");
-            if let Err(e) = store.kv_set(KV_GEO, &format!("{la},{lo},{name}")) {
+            if let Err(e) = store.lock().kv_set(KV_GEO, &format!("{la},{lo},{name}")) {
                 warn!(err = %e, "cache geo failed");
             }
             g
         }
     };
-    let (wmo, temp, is_day) = fetch_current(client, geo.0, geo.1).await?;
-    Some((wmo_icon(wmo, is_day), temp, geo.2))
+    let (wmo, temp, is_day) = fetch_current(client, geo.0, geo.1)
+        .await
+        .context("fetch open-meteo current weather")?;
+    Ok((wmo_icon(wmo, is_day), temp, geo.2))
 }
 
 /// 和风路径: 城市 → locationID (缓存优先) → 实时天气
 async fn qweather_refresh(
     client: &reqwest::Client,
-    store: &crate::store::Store,
+    store: &SharedStore,
     key: &str,
-) -> Option<(i32, f64, String)> {
-    let (loc_id, name) = match cached_loc(store) {
+) -> Result<(i32, f64, String)> {
+    let (loc_id, name) = match cached_loc(store)? {
         Some(l) => l,
         None => {
-            let l = qweather_locate(client, store, key).await?;
+            let l = qweather_locate(client, store, key)
+                .await
+                .context("locate city via qweather")?;
             info!(id = %l.0, city = %l.1, "qweather location resolved");
-            if let Err(e) = store.kv_set(KV_LOC, &format!("{},{}", l.0, l.1)) {
+            if let Err(e) = store.lock().kv_set(KV_LOC, &format!("{},{}", l.0, l.1)) {
                 warn!(err = %e, "cache qweather location failed");
             }
             l
         }
     };
-    let (icon, temp) = qweather_now(client, key, &loc_id, &name).await?;
-    Some((icon, temp, name))
+    let (icon, temp) = qweather_now(client, key, &loc_id, &name)
+        .await
+        .context("fetch qweather current weather")?;
+    Ok((icon, temp, name))
 }
 
 /// 和风 locationID 缓存 "id,name"; 空串 (缓存已清空) 视为无缓存
-fn cached_loc(store: &crate::store::Store) -> Option<(String, String)> {
-    let raw = store.kv_get(KV_LOC).ok().flatten()?;
+fn cached_loc(store: &SharedStore) -> Result<Option<(String, String)>> {
+    let raw = {
+        let store = store.lock();
+        store.kv_get(KV_LOC).context("read weather_loc from kv")?
+    };
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
     if raw.is_empty() {
-        return None;
+        return Ok(None);
     }
+    let parsed = parse_loc(&raw);
+    if parsed.is_none() {
+        warn!(%raw, "invalid weather_loc cache, ignoring");
+    }
+    Ok(parsed)
+}
+
+fn parse_loc(raw: &str) -> Option<(String, String)> {
     let mut parts = raw.splitn(2, ',');
-    let id = parts.next()?.to_string();
-    let name = parts.next()?.to_string();
-    Some((id, name))
+    Some((parts.next()?.to_string(), parts.next()?.to_string()))
 }
 
 /// 和风城市查询: 手动城市 (kv) 优先, 留空则 IP 自动定位
 async fn qweather_locate(
     client: &reqwest::Client,
-    store: &crate::store::Store,
+    store: &SharedStore,
     key: &str,
-) -> Option<(String, String)> {
-    let manual = store.kv_get(KV_CITY).ok().flatten();
+) -> Result<(String, String)> {
+    let manual = {
+        let store = store.lock();
+        store.kv_get(KV_CITY).context("read weather_city from kv")?
+    };
     let city = match manual.as_deref().map(str::trim) {
         Some(c) if !c.is_empty() => c.to_string(),
-        _ => ip_city(client).await?,
+        _ => ip_city(client)
+            .await
+            .context("no manual city and IP geolocation failed")?,
     };
     let url = format!(
         "https://geoapi.qweather.com/v2/city/lookup?location={}&key={}",
         pct_encode(&city),
         pct_encode(key)
     );
-    let text = client.get(&url).send().await.ok()?.text().await.ok()?;
-    let resp: QGeoResp = serde_json::from_str(&text).ok()?;
+    // reqwest 的 Display 带 URL (含 key), without_url 后再进错误链
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("qweather geo request failed: {}", e.without_url()))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| anyhow!("read qweather geo response failed: {}", e.without_url()))?;
+    if !status.is_success() {
+        bail!("qweather geo HTTP {status}");
+    }
+    let resp: QGeoResp = serde_json::from_str(&text).context("parse qweather geo response")?;
     if resp.code != "200" {
         // 401 类鉴权错只打业务码, 绝不打 key
-        warn!(code = %resp.code, "qweather geo error (401/402 检查和风 key)");
-        return None;
+        bail!("qweather geo error code {} (401/402 check key)", resp.code);
     }
-    let hit = resp.location?.into_iter().next()?;
-    Some((hit.id, hit.name))
+    let hit = resp
+        .location
+        .into_iter()
+        .flatten()
+        .next()
+        .with_context(|| format!("qweather geo returned no location for {city:?}"))?;
+    Ok((hit.id, hit.name))
 }
 
 /// 和风实时天气: 返回 (lucide 图标索引, 摄氏温度)
@@ -300,27 +406,61 @@ async fn qweather_now(
     key: &str,
     loc_id: &str,
     city: &str,
-) -> Option<(i32, f64)> {
+) -> Result<(i32, f64)> {
     let url = format!(
         "https://devapi.qweather.com/v7/weather/now?location={}&key={}",
         pct_encode(loc_id),
         pct_encode(key)
     );
-    info!(?url, "requst weather info");
-    let text = client.get(&url).send().await.ok()?.text().await.ok()?;
-    let resp: QNowResp = serde_json::from_str(&text).ok()?;
-    if resp.code != "200" {
-        warn!(code = %resp.code, %city, "qweather now error");
-        return None;
+    info!(city, loc_id, "requesting qweather current weather");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("qweather now request failed: {}", e.without_url()))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| anyhow!("read qweather now response failed: {}", e.without_url()))?;
+    if !status.is_success() {
+        bail!("qweather now HTTP {status}");
     }
-    let now = resp.now?;
-    let icon: i32 = now.icon.parse().ok()?;
-    let temp: f64 = now.temp.parse().ok()?;
-    Some((qweather_icon(icon), temp))
+    let resp: QNowResp = serde_json::from_str(&text).context("parse qweather now response")?;
+    if resp.code != "200" {
+        bail!("qweather now error code {} (city {city})", resp.code);
+    }
+    let now = resp.now.context("qweather now response missing 'now'")?;
+    let icon: i32 = now
+        .icon
+        .parse()
+        .with_context(|| format!("parse qweather icon {:?}", now.icon))?;
+    let temp: f64 = now
+        .temp
+        .parse()
+        .with_context(|| format!("parse qweather temp {:?}", now.temp))?;
+    Ok((qweather_icon(icon), temp))
 }
 
-fn cached_geo(store: &crate::store::Store) -> Option<(f64, f64, String)> {
-    let raw = store.kv_get(KV_GEO).ok().flatten()?;
+fn cached_geo(store: &SharedStore) -> Result<Option<(f64, f64, String)>> {
+    let raw = {
+        let store = store.lock();
+        store.kv_get(KV_GEO).context("read weather_geo from kv")?
+    };
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let parsed = parse_geo(&raw);
+    if parsed.is_none() {
+        warn!(%raw, "invalid weather_geo cache, ignoring");
+    }
+    Ok(parsed)
+}
+
+fn parse_geo(raw: &str) -> Option<(f64, f64, String)> {
     let mut parts = raw.splitn(3, ',');
     let lat: f64 = parts.next()?.parse().ok()?;
     let lon: f64 = parts.next()?.parse().ok()?;
@@ -329,38 +469,62 @@ fn cached_geo(store: &crate::store::Store) -> Option<(f64, f64, String)> {
 }
 
 /// 定位: 手动城市 (kv) 优先, 留空则 IP 自动定位, 统一过 geocoding 拿经纬度
-async fn resolve_geo(
-    client: &reqwest::Client,
-    store: &crate::store::Store,
-) -> Option<(f64, f64, String)> {
-    let manual = store.kv_get(KV_CITY).ok().flatten();
+async fn resolve_geo(client: &reqwest::Client, store: &SharedStore) -> Result<(f64, f64, String)> {
+    let manual = {
+        let store = store.lock();
+        store.kv_get(KV_CITY).context("read weather_city from kv")?
+    };
     let name = match manual.as_deref().map(str::trim) {
         Some(city) if !city.is_empty() => city.to_string(),
-        _ => ip_city(client).await?,
+        _ => ip_city(client)
+            .await
+            .context("no manual city and IP geolocation failed")?,
     };
-    geocode(client, &name).await
+    geocode(client, &name)
+        .await
+        .with_context(|| format!("geocode city {name:?}"))
 }
 
 /// 地理编码: Open-Meteo 优先, 无结果回退 Nominatim (OSM).
 /// Open-Meteo 的中文名索引不全 (厦门查不到, 深圳/香港可以),
 /// OSM 对中文地名覆盖更好; 两家都免 key
-async fn geocode(client: &reqwest::Client, name: &str) -> Option<(f64, f64, String)> {
+async fn geocode(client: &reqwest::Client, name: &str) -> Result<(f64, f64, String)> {
     match openmeteo_geocode(client, name).await {
-        Some(hit) => Some(hit),
-        None => nom_geocode(client, name).await,
+        Ok(hit) => Ok(hit),
+        Err(openmeteo_err) => nom_geocode(client, name)
+            .await
+            .with_context(|| format!("open-meteo geocoding failed: {openmeteo_err:#}")),
     }
 }
 
 /// Open-Meteo geocoding, 取第一条结果
-async fn openmeteo_geocode(client: &reqwest::Client, name: &str) -> Option<(f64, f64, String)> {
+async fn openmeteo_geocode(client: &reqwest::Client, name: &str) -> Result<(f64, f64, String)> {
     let url = format!(
         "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=zh&timezone=Asia%2FShanghai",
         pct_encode(name)
     );
-    let text = client.get(&url).send().await.ok()?.text().await.ok()?;
-    let resp: GeoResp = serde_json::from_str(&text).ok()?;
-    let hit = resp.results?.into_iter().next()?;
-    Some((hit.latitude, hit.longitude, hit.name))
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("open-meteo geocoding request failed")?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .context("read open-meteo geocoding response")?;
+    if !status.is_success() {
+        bail!("open-meteo geocoding HTTP {status}");
+    }
+    let resp: GeoResp =
+        serde_json::from_str(&text).context("parse open-meteo geocoding response")?;
+    let hit = resp
+        .results
+        .into_iter()
+        .flatten()
+        .next()
+        .context("open-meteo geocoding returned no results")?;
+    Ok((hit.latitude, hit.longitude, hit.name))
 }
 
 #[derive(Deserialize)]
@@ -371,12 +535,12 @@ struct NominatimHit {
 }
 
 /// Nominatim (OSM) 地理编码兜底. OSM 使用策略要求带 User-Agent
-async fn nom_geocode(client: &reqwest::Client, name: &str) -> Option<(f64, f64, String)> {
+async fn nom_geocode(client: &reqwest::Client, name: &str) -> Result<(f64, f64, String)> {
     let url = format!(
         "https://nominatim.openstreetmap.org/search?q={}&format=jsonv2&limit=1",
         pct_encode(name)
     );
-    let text = client
+    let resp = client
         .get(&url)
         .header(
             reqwest::header::USER_AGENT,
@@ -384,15 +548,30 @@ async fn nom_geocode(client: &reqwest::Client, name: &str) -> Option<(f64, f64, 
         )
         .send()
         .await
-        .ok()?
+        .context("nominatim geocoding request failed")?;
+    let status = resp.status();
+    let text = resp
         .text()
         .await
-        .ok()?;
-    let mut hits: Vec<NominatimHit> = serde_json::from_str(&text).ok()?;
-    let hit = hits.drain(..).next()?;
-    let lat: f64 = hit.lat.parse().ok()?;
-    let lon: f64 = hit.lon.parse().ok()?;
-    Some((lat, lon, nom_city_name(&hit.display_name)))
+        .context("read nominatim geocoding response")?;
+    if !status.is_success() {
+        bail!("nominatim geocoding HTTP {status}");
+    }
+    let mut hits: Vec<NominatimHit> =
+        serde_json::from_str(&text).context("parse nominatim geocoding response")?;
+    let hit = hits
+        .drain(..)
+        .next()
+        .context("nominatim returned no result")?;
+    let lat: f64 = hit
+        .lat
+        .parse()
+        .with_context(|| format!("parse nominatim lat {:?}", hit.lat))?;
+    let lon: f64 = hit
+        .lon
+        .parse()
+        .with_context(|| format!("parse nominatim lon {:?}", hit.lon))?;
+    Ok((lat, lon, nom_city_name(&hit.display_name)))
 }
 
 /// OSM display_name 是逗号分隔的全路径 ("厦门市, 福建省, 中国"),
@@ -407,32 +586,50 @@ fn nom_city_name(display: &str) -> String {
 }
 
 /// IP 定位 (ipwho.is, 免 key HTTPS), 只用于未配置城市的首次定位
-async fn ip_city(client: &reqwest::Client) -> Option<String> {
-    let text = client
+async fn ip_city(client: &reqwest::Client) -> Result<String> {
+    let resp = client
         .get("https://ipwho.is/")
         .send()
         .await
-        .ok()?
-        .text()
-        .await
-        .ok()?;
-    let resp: IpResp = serde_json::from_str(&text).ok()?;
-    if resp.success {
-        resp.city.filter(|c| !c.is_empty())
-    } else {
-        None
+        .context("ipwho.is request failed")?;
+    let status = resp.status();
+    let text = resp.text().await.context("read ipwho.is response")?;
+    if !status.is_success() {
+        bail!("ipwho.is HTTP {status}");
     }
+    let resp: IpResp = serde_json::from_str(&text).context("parse ipwho.is response")?;
+    if !resp.success {
+        bail!(
+            "ipwho.is lookup failed: {}",
+            resp.message.as_deref().unwrap_or("unknown reason")
+        );
+    }
+    resp.city
+        .filter(|c| !c.is_empty())
+        .context("ipwho.is returned no city")
 }
 
 /// Open-Meteo 当前天气 (免 key, 一次请求只取 current_weather)
-async fn fetch_current(client: &reqwest::Client, lat: f64, lon: f64) -> Option<(u8, f64, bool)> {
+async fn fetch_current(client: &reqwest::Client, lat: f64, lon: f64) -> Result<(u8, f64, bool)> {
     let url = format!(
         "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
     );
-    info!(?url, "requst weather info");
-    let text = client.get(&url).send().await.ok()?.text().await.ok()?;
-    let resp: WeatherResp = serde_json::from_str(&text).ok()?;
-    Some((
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("open-meteo current weather request failed")?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .context("read open-meteo current weather response")?;
+    if !status.is_success() {
+        bail!("open-meteo current weather HTTP {status}");
+    }
+    let resp: WeatherResp =
+        serde_json::from_str(&text).context("parse open-meteo current weather response")?;
+    Ok((
         resp.current_weather.weathercode,
         resp.current_weather.temperature,
         resp.current_weather.is_day != 0,

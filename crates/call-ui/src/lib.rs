@@ -58,9 +58,16 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
     ui.set_account(format!("{}@{}", cfg.username, cfg.server.ip()).into());
 
     let handle = bridge::UiHandle::new(ui.as_weak(), app.clone());
-    // 天气 worker: 启动即拉, 30min 周期; 城市变更经 wake channel 唤醒
-    let (weather_wake_tx, weather_wake_rx) = std::sync::mpsc::channel();
-    let _weather_worker = weather::spawn(handle.clone(), weather_wake_rx);
+    // 天气: UI Timer 每 30min 触发一次异步刷新任务; 启动先拉一次.
+    // 设置页改城市/key 时也直接调 weather::refresh_async, 不走 channel.
+    let weather_timer = slint::Timer::default();
+    weather::refresh_async(handle.clone());
+    {
+        let handle = handle.clone();
+        weather_timer.start(slint::TimerMode::Repeated, weather::REFRESH, move || {
+            weather::refresh_async(handle.clone())
+        });
+    }
     // 城市输入框初始值 (kv 读不到就是空串 = IP 自动定位)
     if let Ok(city) = store.kv_get(weather::KV_CITY) {
         ui.set_weather_city(city.unwrap_or_default().into());
@@ -129,7 +136,7 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
     // UI 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性
     let monitor = std::rc::Rc::new(std::cell::RefCell::new(camera::MonitorController::new()));
     wiring::wire_callbacks(&ui, &app, &cmd_tx, &monitor);
-    wiring::wire_weather_settings(&ui, &store, weather_wake_tx);
+    wiring::wire_weather_settings(&ui, &store, handle.clone());
     ice::wire_ice(&ui, &store, &ice_ctl);
     sip_settings::wire_sip_settings(&ui, &store);
     wiring::wire_keyboard(&ui, &kb);
@@ -195,6 +202,8 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
     }
 
     ui.run()?;
+    // 停掉周期天气刷新; 若恰有一次刷新在途, 异步任务拉完自己结束
+    drop(weather_timer);
     persist::drain_unsaved(&app, &store);
     // 窗口已关: 显式 drop 本作用域持有的命令发送端 (回调里的克隆随窗口
     // 销毁), 通道关闭 worker 才退出; 再 join 等它补 BYE + 注销

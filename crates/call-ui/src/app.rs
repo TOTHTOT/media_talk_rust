@@ -68,7 +68,7 @@ pub enum UiEvent {
         id: i32,
         error: Option<String>,
     },
-    /// 天气刷新结果 (weather worker → 状态栏): 只覆盖天气字段,
+    /// 天气刷新结果 (weather 刷新任务 → 状态栏): 只覆盖天气字段,
     /// 不动通话状态; temp_c 为摄氏度, 文本在这里格式化; city 为定位
     /// 解析出的城市名 (设置页"当前城市"提示用)
     Weather {

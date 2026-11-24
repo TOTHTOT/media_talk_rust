@@ -10,10 +10,9 @@
 //! UiEvent::IceStatus 上报设置页状态行, 状态文案后端直出 (与 Weather
 //! 不同, 这里本来就是工程验证文案, 不进 @tr).
 //!
-//! 线程模型照 weather::spawn: 独立 worker 线程 (ice-ctl) 持自建
-//! current-thread tokio runtime; UI → worker 走 tokio unbounded 命令通道;
-//! 状态/统计经 UiHandle::post 回投. 所有异步段直接 await, 仅线程入口
-//! 一次 block_on.
+//! 线程模型: 独立长驻 worker 线程 (ice-ctl) 持自建 current-thread tokio
+//! runtime; UI → worker 走 tokio unbounded 命令通道; 状态/统计经
+//! UiHandle::post 回投. 所有异步段直接 await, 仅线程入口一次 block_on.
 //!
 //! WS 信令 (sigserver 协议): connect → join → 等 joined 拿槽位
 //! (slot 0 = offerer/controlling) → 按槽位建 agent → offerer 发本地

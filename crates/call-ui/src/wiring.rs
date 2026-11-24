@@ -111,16 +111,16 @@ pub(crate) fn wire_callbacks(
     });
 }
 
-/// 天气城市设置: 写 kv (weather worker 自己读库) + 清定位缓存 +
-/// 唤醒 worker 立即重定位. 留空 = IP 自动定位
+/// 天气城市设置: 写 kv (刷新线程自己读库) + 清定位缓存 + 立即触发一次刷新.
+/// 留空 = IP 自动定位
 pub(crate) fn wire_weather_settings(
     ui: &MainWindow,
     store: &Rc<crate::store::Store>,
-    wake: std::sync::mpsc::Sender<()>,
+    handle: crate::bridge::UiHandle,
 ) {
     {
         let store = store.clone();
-        let wake = wake.clone();
+        let handle = handle.clone();
         ui.on_set_city(move |city| {
             let city = city.trim();
             if let Err(e) = store.kv_set("weather_city", city) {
@@ -129,13 +129,12 @@ pub(crate) fn wire_weather_settings(
             }
             // 城市变了, 两家定位缓存都作废
             clear_geo_caches(&store);
-            // 唤醒失败只丢一次立即重拉, 下一轮周期仍会刷, 不算错误
-            let _ = wake.send(());
+            crate::weather::refresh_async(handle.clone());
         });
     }
-    // 和风 key: 写 kv + 清缓存 + 唤醒. key 变更时按新 key 重新定位
+    // 和风 key: 写 kv + 清缓存 + 立即刷新. key 变更时按新 key 重新定位
     let store = store.clone();
-    let wake = wake.clone();
+    let handle = handle.clone();
     ui.on_set_weather_key(move |key| {
         let key = key.trim();
         if let Err(e) = store.kv_set(crate::weather::KV_KEY, key) {
@@ -143,7 +142,7 @@ pub(crate) fn wire_weather_settings(
             return;
         }
         clear_geo_caches(&store);
-        let _ = wake.send(());
+        crate::weather::refresh_async(handle.clone());
     });
 }
 

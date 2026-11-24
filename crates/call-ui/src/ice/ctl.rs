@@ -60,7 +60,7 @@ impl IceController {
     }
 }
 
-/// 起 ICE worker 线程 (ice-ctl) 并返回控制器. 线程模型照 weather::spawn:
+/// 起 ICE worker 线程 (ice-ctl) 并返回控制器:
 /// tokio unbounded 命令通道驱动, worker 自建 current-thread tokio runtime.
 ///
 ///
