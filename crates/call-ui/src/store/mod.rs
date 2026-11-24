@@ -12,6 +12,8 @@ mod cameras;
 
 pub use cameras::{CameraRow, CameraSaveOutcome};
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 use tracing::info;
@@ -138,6 +140,12 @@ impl Store {
     /// ```
     pub fn open_at(path: &std::path::Path) -> Result<Self> {
         let conn = Connection::open(path).context("open SQLite database")?;
+        // 多连接共用同一文件: 写锁冲突时等待, 不立刻 SQLITE_BUSY
+        conn.busy_timeout(Duration::from_secs(2))
+            .context("set SQLite busy timeout")?;
+        // WAL 是持久设置: 读写可并行, 只有写-写之间排队; :memory: 会返回 memory
+        conn.execute_batch("PRAGMA journal_mode=WAL;")
+            .context("enable SQLite WAL")?;
         ensure_schema(&conn)?;
         Ok(Self { conn })
     }
@@ -364,6 +372,30 @@ mod tests {
 
     fn mem_store() -> Store {
         Store::open_at(std::path::Path::new(":memory:")).unwrap()
+    }
+
+    #[test]
+    fn wal_and_busy_timeout_are_enabled() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("store-wal-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wal.db");
+        let s = Store::open_at(&path).unwrap();
+        let mode: String = s
+            .conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode.to_ascii_lowercase(), "wal");
+        let timeout: i64 = s
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(timeout, 2000);
+        drop(s);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
