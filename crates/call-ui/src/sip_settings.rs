@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use anyhow::bail;
 use slint::ComponentHandle as _;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::MainWindow;
 use crate::app::{NoticeKind, NoticeLevel};
@@ -64,29 +64,67 @@ const DEFAULT_STUN: &str = "stun://stun.miwifi.com:3478";
 
 /// 读 kv; 缺失时用默认值播种并返回默认 (设置页总要有值可显示).
 /// 读取出错记日志回退默认 (库刚打开, 出错属异常路径).
+/// 每次读取都打一条 INFO, 便于现场核对空的/异常的 kv 值 (密码与媒体源脱敏).
 fn kv_or_seed(store: &Store, key: &str, default: &str) -> String {
-    match store.kv_get(key) {
-        Ok(Some(v)) => v,
+    let (value, source) = match store.kv_get(key) {
+        Ok(Some(v)) => (v, "kv"),
         Ok(None) => {
             if let Err(e) = store.kv_set(key, default) {
                 error!(err = %e, key, "seed sip setting failed");
             }
-            default.to_string()
+            (default.to_string(), "seed")
         }
         Err(e) => {
             error!(err = %e, key, "read sip setting failed");
-            default.to_string()
+            (default.to_string(), "default")
         }
-    }
+    };
+    info!(key, value = %redact_kv(key, &value), source, "sip setting");
+    value
 }
 
-/// 解析 kv 字符串; 失败回退默认并记警告 — 坏 kv 不该让 GUI 起不来,
-/// 卡片显示生效值 (回退结果), 用户重输即修复.
-fn parse_kv<T: std::str::FromStr>(key: &str, raw: &str, default: T) -> T {
-    match raw.trim().parse::<T>() {
+/// 日志脱敏: 密码不落日志; 媒体源 URL 可能带 user:pass, 去掉 userinfo.
+fn redact_kv(key: &str, value: &str) -> String {
+    if key == KV_SIP_PASSWORD {
+        return "<redacted>".to_string();
+    }
+    if key == KV_SIP_VIDEO_SRC || key == KV_SIP_AUDIO_SRC {
+        return redact_url_credentials(value);
+    }
+    value.to_string()
+}
+
+/// rtsp://user:pass@host/path → rtsp://***@host/path; 无 userinfo 原样返回.
+fn redact_url_credentials(value: &str) -> String {
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return value.to_string();
+    };
+    let Some((_, host)) = rest.split_once('@') else {
+        return value.to_string();
+    };
+    format!("{scheme}://***@{host}")
+}
+
+/// 解析 kv 字符串; 空值视为未配置, 静默回退默认; 非空但非法才记警告 —
+/// 坏 kv 不该让 GUI 起不来, 卡片显示生效值 (回退结果), 用户重输即修复.
+fn parse_kv<T>(key: &str, raw: &str, default: T) -> T
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return default;
+    }
+    match raw.parse::<T>() {
         Ok(v) => v,
-        Err(_) => {
-            warn!(key, raw, "invalid sip setting in kv, fall back to default");
+        Err(e) => {
+            warn!(
+                key,
+                raw,
+                error = %e,
+                "invalid sip setting in kv, fall back to default"
+            );
             default
         }
     }
@@ -453,5 +491,35 @@ pub(crate) fn wire_sip_settings(ui: &MainWindow, store: &Rc<Store>) {
                 toast_saved(&ui);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KV_SIP_PASSWORD, KV_SIP_SERVER, KV_SIP_VIDEO_SRC, parse_kv, redact_kv};
+
+    #[test]
+    fn parse_kv_empty_or_blank_uses_default_without_warning() {
+        assert_eq!(parse_kv("sip_expires", "", 60u32), 60);
+        assert_eq!(parse_kv("sip_expires", "  \t", 60u32), 60);
+    }
+
+    #[test]
+    fn parse_kv_trims_and_falls_back_on_invalid() {
+        assert_eq!(parse_kv("sip_expires", " 120 ", 60u32), 120);
+        assert_eq!(parse_kv("sip_expires", "abc", 60u32), 60);
+    }
+
+    #[test]
+    fn redact_kv_hides_password_and_url_userinfo() {
+        assert_eq!(redact_kv(KV_SIP_PASSWORD, "changeme"), "<redacted>");
+        assert_eq!(
+            redact_kv(KV_SIP_VIDEO_SRC, "rtsp://user:pass@192.168.1.10/stream"),
+            "rtsp://***@192.168.1.10/stream"
+        );
+        assert_eq!(
+            redact_kv(KV_SIP_SERVER, "192.168.11.17:5062"),
+            "192.168.11.17:5062"
+        );
     }
 }
