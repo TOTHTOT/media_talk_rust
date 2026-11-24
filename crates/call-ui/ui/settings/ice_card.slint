@@ -17,9 +17,6 @@ export component IceSettingsCard inherits FilledCard {
     callback set-sigserver(string);
     callback set-room(string);
     callback set-stun(string);
-    // 聚焦通知透传: KbTextField focus-changed 转发, 供设置页滚动定位
-    // (Rust 提交门控走官方 text-input-focused 镜像, 不经此链 — 方案 D)
-    callback kb-field-focused(bool);
     // 输入框 in-out: 初始值由 Rust 启动时从 kv 读入
     in-out property <string> sigserver: "";
     in-out property <string> room: "";
@@ -27,9 +24,12 @@ export component IceSettingsCard inherits FilledCard {
     // 状态行 + 统计行 (ice worker 投递, 文案后端直出不进 @tr)
     in property <string> status-text: "";
     in property <string> stats-text: "";
-    // 聚焦输入框在卡片内的 y 偏移 (相对卡片根), 设置页据此滚动定位;
+    // 聚焦字段在卡片内的 y 偏移 (相对卡片根), 设置页抬升门控用;
     // 由 KbTextField focus-changed 在聚焦时写入
     in-out property <length> focus-offset-y: 0px;
+    // 聚焦通知: true = 某字段获得焦点 (携带卡片内偏移), false = 失焦
+    callback kb-field-focused(bool);
+    // 由 KbTextField focus-changed 在聚焦时写入
 
     // 呼叫进行中: 状态文案是 ice.rs post_status 的直出字面量, 这里按
     // 三个建立中/通话中的状态推导 (错误文案与空闲都回可呼叫)

@@ -17,6 +17,9 @@ import { TextField } from "../material-1.1.0/material.slint";
 // 故同步只能走 changed 处理器, global 内也不放回调 (无法在外部接实现)
 export global KeyboardCtx {
     in-out property <bool> collapsed: false;
+    // 抬升门控: 聚焦字段会被键盘遮盖时由设置页置位, main.slint 据此决定
+    // 是否整体上移界面; 全失焦时复位 (非设置页字段聚焦时恒为 false 不抬升)
+    in-out property <bool> lift-needed: false;
     in-out property <int> commit-seq: 0;
     in-out property <string> commit-text: "";
     in-out property <bool> delete-field: false;

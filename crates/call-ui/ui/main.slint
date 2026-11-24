@@ -174,8 +174,13 @@ export component MainWindow inherits MaterialWindow {
     property <bool> any-field-focused: TextInputInterface.text-input-focused;
     changed any-field-focused => {
         KeyboardCtx.collapsed = false; // 闩随真实失焦复位 (gain 时本就未收)
+        if !root.any-field-focused {
+            KeyboardCtx.lift-needed = false; // 抬升门控随失焦复位
+        }
         root.kb-any-field-focused(root.any-field-focused);
     }
+    // 键盘实际显隐 (显隐条件唯一出处: 浮层显隐 + 内容上抬共用)
+    property <bool> kb-showing: TextInputInterface.text-input-focused && !KeyboardCtx.collapsed;
     changed kb-visible => {
         if !root.kb-visible {
             KeyboardCtx.collapsed = true;
@@ -291,10 +296,14 @@ export component MainWindow inherits MaterialWindow {
         height: 1px;
     }
 
-    // ===== 根布局: 状态栏 + 主页区域, 靠 spacing 控制间距 =====
+    // ===== 根布局: 状态栏 + 主页区域, 靠 spacing 控制间距.
+    // 抬升语义: 键盘弹出时整体 y 上移键盘高度 (45%), 底部输入框随界面上抬
+    // 露出 (顶部内容暂时让位, 收起即回); 不做逐字段滚动 =====
     VerticalLayout {
         spacing: 0;
         padding: 0;
+        y: root.kb-showing && KeyboardCtx.lift-needed ? - root.height * 45% : 0px;
+        animate y { duration: 150ms; easing: ease-out; }
 
         // 状态栏 (通话视频全屏时隐藏)
         if root.phase != 3: StatusBar {
@@ -454,7 +463,7 @@ export component MainWindow inherits MaterialWindow {
     // 方案 D: 显隐 = slint 官方 TextInputInterface.text-input-focused &&
     // !KeyboardCtx.collapsed — 焦点驱动显隐, 收起键/完成键/点空白只操作
     // collapsed 闩 (复位在根部 any-field-focus changed 处理器) =====
-    if TextInputInterface.text-input-focused && !KeyboardCtx.collapsed: Keyboard {
+    if root.kb-showing: Keyboard {
         width: 100%;
         y: parent.height - self.height;
         height: 45%;

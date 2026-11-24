@@ -17,9 +17,6 @@ export component GeneralSettingsCard inherits FilledCard {
     callback set-city(string);
     // 和风 API KEY (可选): 留空走 Open-Meteo. 密码样式遮蔽
     callback set-weather-key(string);
-    // 聚焦通知透传: KbTextField focus-changed 转发, 供设置页滚动定位
-    // (Rust 提交门控走官方 text-input-focused 镜像, 不经此链 — 方案 D)
-    callback kb-field-focused(bool);
     in-out property <string> city: "";
     in-out property <string> weather-key: "";
     // 当前生效城市 (worker 定位结果), 输入框提示用
@@ -27,9 +24,12 @@ export component GeneralSettingsCard inherits FilledCard {
     // 屏幕亮度: 单位百分比. 所有平台都显示滑块, 不支持时由 Rust 侧
     // 在松手回调里弹 toast (滑块本身仍可拖动)
     in-out property <float> brightness: 80;
-    // 聚焦输入框在卡片内的 y 偏移 (相对卡片根), 设置页据此滚动定位;
+    // 聚焦字段在卡片内的 y 偏移 (相对卡片根), 设置页抬升门控用;
     // 由 KbTextField focus-changed 在聚焦时写入
     in-out property <length> focus-offset-y: 0px;
+    // 聚焦通知: true = 某字段获得焦点 (携带卡片内偏移), false = 失焦
+    callback kb-field-focused(bool);
+    // 由 KbTextField focus-changed 在聚焦时写入
     callback set-brightness(float);
 
     VerticalLayout {

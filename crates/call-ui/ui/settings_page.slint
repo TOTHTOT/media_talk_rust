@@ -5,6 +5,7 @@ import {
     MaterialPalette,
 } from "../material-1.1.0/material.slint";
 import { ScrollView } from "std-widgets.slint";
+import { KeyboardCtx } from "kb_text_field.slint";
 import { CameraEntry, DiscoveredEntry, ProfileEntry } from "components.slint";
 import { GeneralSettingsCard } from "settings/general_card.slint";
 import { CamerasCard } from "settings/cameras_card.slint";
@@ -40,6 +41,21 @@ export component SettingsPage inherits Rectangle {
     in-out property <string> sip-rtp-audio: ""; // 音频 RTP 首选端口
     in-out property <string> sip-rtp-video: ""; // 视频 RTP 首选端口
     in-out property <bool> sip-ice-enabled: false; // SIP ICE 开关
+    // 抬升门控: 聚焦字段的页内纵坐标 (内容空间, 由卡片焦点处理器写入);
+    in-out property <length> focused-page-y: 0px;
+    property <length> scroll-y: sv.content-y;
+
+    changed scroll-y => {
+        root.update-lift();
+    }
+
+    // 遮挡判定 (页内坐标系): 键盘占窗口底部 45%, 换算到页内其顶约
+    // 55% 页高 - 状态栏 slack(24px); 字段底部 (y + 56px 键高) 越过该线
+    // 即被遮 —— 需要抬升. 页眉/返回行经 sv.y 计入, 不重不漏.
+    function update-lift() {
+        KeyboardCtx.lift-needed = root.focused-page-y + root.scroll-y + 56px > root.height * 55% - 24px;
+    }
+
     callback back();
     callback set-language(string); // "zh" | "en"
     callback set-city(string); // 留空 = IP 自动定位
@@ -106,13 +122,11 @@ export component SettingsPage inherits Rectangle {
                         set-city(city) => { root.set-city(city); }
                         set-weather-key(key) => { root.set-weather-key(key); }
                         set-brightness(v) => { root.set-screen-brightness(v); }
-                        // 聚焦时把输入框滚到页顶下方约 24px (卡片 focus-changed
-                        // 已先写好 focus-offset-y, 这里直接读). content-y 负值
-                        // 向下滚 (露出下方内容); 只在聚焦回调里赋值一次, 不做
-                        // 常驻绑定, 不跟用户滚动抢 viewport
-                        kb-field-focused(focused) => {
-                            if focused {
-                                sv.content-y = -(hl_general.y + general_card.focus-offset-y) + 24px;
+                    
+                        kb-field-focused(f) => {
+                            if f {
+                                root.focused-page-y = sv.y + hl_general.y + general_card.focus-offset-y;
+                                root.update-lift();
                             }
                         }
                     }
@@ -150,10 +164,11 @@ export component SettingsPage inherits Rectangle {
                         set-sigserver(v) => { root.set-ice-sigserver(v); }
                         set-room(v) => { root.set-ice-room(v); }
                         set-stun(v) => { root.set-ice-stun(v); }
-                        // 聚焦时把输入框滚到页顶下方约 24px, 同 general 卡
-                        kb-field-focused(focused) => {
-                            if focused {
-                                sv.content-y = -(hl_ice.y + ice_card.focus-offset-y) + 24px;
+                    
+                        kb-field-focused(f) => {
+                            if f {
+                                root.focused-page-y = sv.y + hl_ice.y + ice_card.focus-offset-y;
+                                root.update-lift();
                             }
                         }
                     }
@@ -190,10 +205,11 @@ export component SettingsPage inherits Rectangle {
                         set-rtp-audio(v) => { root.set-sip-rtp-audio(v); }
                         set-rtp-video(v) => { root.set-sip-rtp-video(v); }
                         set-ice(v) => { root.set-sip-ice(v); }
-                        // 聚焦时把输入框滚到页顶下方约 24px, 同 general 卡
-                        kb-field-focused(focused) => {
-                            if focused {
-                                sv.content-y = -(hl_sip.y + sip_card.focus-offset-y) + 24px;
+                        
+                        kb-field-focused(f) => {
+                            if f {
+                                root.focused-page-y = sv.y + hl_sip.y + sip_card.focus-offset-y;
+                                root.update-lift();
                             }
                         }
                     }
@@ -217,4 +233,4 @@ export component SettingsPage inherits Rectangle {
         add-camera(name, uri, user, pass) => { root.add-camera(name, uri, user, pass); }
         
     }
-}
+                    }
