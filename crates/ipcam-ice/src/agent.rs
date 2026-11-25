@@ -375,6 +375,16 @@ fn glib_thread_main(
 }
 
 impl IceAgent {
+    /// 单 component (RTP) agent 的常用构造: SIP/ICE 媒体链每路媒体一个.
+    /// 需要 RTCP component 2 时仍用 [`IceAgent::new`] 显式传 components.
+    pub fn new_rtp(stun: Option<String>, controlling: bool) -> Result<Self, IceError> {
+        Self::new(IceConfig {
+            stun,
+            controlling,
+            components: 1,
+        })
+    }
+
     /// 创建 agent: 起独立 glib 线程, 按 `cfg.components` 建流 (component
     /// 编号 1..N; 每路媒体独立 agent 固定传 1, 纯数据场景同样传 1),
     /// 连接状态信号, 阻塞至建流完成 (上限 5s).

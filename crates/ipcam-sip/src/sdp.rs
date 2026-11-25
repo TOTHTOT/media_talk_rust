@@ -151,6 +151,48 @@ pub(crate) fn audio_media_description(port: u16, payload_types: &[u8]) -> MediaD
     }
 }
 
+/// 按协商出的编码构造音频媒体描述 (answer 只保留选中的一个 pt).
+///
+/// 不能按 pt 猜编码: 动态段 (96-127) 的同一个 pt 在不同对端可以是
+/// 不同编码. Linphone 默认用 96 表示 Opus, 而静态表里 96 是未知,
+/// 按 pt 生成会写出 `a=rtpmap:96 unknown/8000`, 对端直接解不了.
+pub(crate) fn audio_media_description_for_codec(
+    port: u16,
+    pt: u8,
+    codec: AudioCodec,
+) -> MediaDescription {
+    let attributes = vec![
+        audio_rtpmap_for_codec(pt, codec),
+        Attribute::Ptime(20.0),
+        Attribute::Sendrecv,
+    ];
+    MediaDescription {
+        media: Media {
+            media: MediaType::Audio,
+            port,
+            num_of_ports: None,
+            proto: ProtoType::RtpAvp,
+            fmt: pt.to_string(),
+        },
+        info: None,
+        connections: vec![],
+        bandwidths: vec![],
+        key: None,
+        attributes,
+    }
+}
+
+/// 按协商编码生成 rtpmap; Opus 固定 48kHz/2ch, G.711 固定 8kHz/mono,
+/// 其余编码回落到静态表 (当前 SIP 音频白名单只有 G.711/Opus).
+fn audio_rtpmap_for_codec(pt: u8, codec: AudioCodec) -> Attribute {
+    match codec {
+        AudioCodec::Opus => rtpmap_attribute(pt, "opus", 48_000, Some(2)),
+        AudioCodec::G711A => rtpmap_attribute(pt, "PCMA", 8_000, None),
+        AudioCodec::G711U => rtpmap_attribute(pt, "PCMU", 8_000, None),
+        _ => audio_rtpmap(pt),
+    }
+}
+
 /// 音频 pt → rtpmap 属性.
 ///
 /// sdp-rs 0.2.1 的 `Rtpmap` Display 把 encoding_params 写成空格

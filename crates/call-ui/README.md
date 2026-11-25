@@ -358,6 +358,26 @@ flowchart LR
 - **发送-视频**：`v4l2src`（摄像头）→ videoscale → x264enc → `rtph264pay` → `udpsink`
 - `MediaHandles` 按指纹（编码/地址/pt）比对决定是否重启管线
 
+### 7.1 ICE 媒体链
+
+SIP ICE 与普通 RTP 媒体链并行，入口在 `session/ice.rs`，收发管线在
+`ipcam-gst/ice_media.rs`：
+
+- `LocalIce` 每路媒体一个独立 agent（audio 必选，video 可选），
+  `nicesink`/`nicesrc` 只用 component 1。
+- payload type 按 SDP 协商动态取（`IceCodecs { audio_pt, video_pt }`），
+  不写死 Opus 111/H264 96；audio-only offer 只建音频 agent。
+- 本端 audio/video 各用独立 5-tuple，answer 不声明
+  `a=group:BUNDLE`，只回 `a=mid`/`a=rtcp-mux`，避免 Linphone 把
+  video 绑到 audio transport。
+- 对端 offer 没有 `a=rtcp-mux` 时会有 component 2；当前实现只支持
+  component 1，需要 Linphone 开 Bundle mode 或后续补 component 2。
+- 非 Linux 音频接收走 `AudioRecv::Auto`（`autoaudiosink`），否则 ICE
+  连通也听不到声音。
+- 音频发送源支持 Mic/File/Rtsp；`LocalCamera` 不是合法音频源。
+- 只有 STUN，没有 TURN；跨 NAT/不同网段直连失败是预期行为，需要
+  TURN 或 PBX 媒体中继。
+
 ---
 
 ## 8. 视频上屏流程

@@ -3,15 +3,16 @@
 //!
 //! 链形 (分支按配置裁剪, 无消费者不建):
 //!   视频发: 源 → [解码] → 源支路(queue → videoconvert → videoscale →
-//!           capsfilter(I420 方像素) → x264enc) → rtph264pay(pt=96)
+//!           capsfilter(I420 方像素) → x264enc) → rtph264pay(pt=协商值)
 //!           → nicesink(1)
 //!   视频收: nicesrc(1) → rtph264depay → h264parse → avdec_h264
 //!           → videoconvert → appsink(RGBA tap)
-//!   音频发: 麦克风 → 源支路(queue → audioconvert → audioresample)
-//!           → capsfilter(48kHz/stereo) → opusenc → rtpopuspay(pt=111)
-//!           → nicesink(1)
+//!   音频发: 音频源(Mic/File/Rtsp) → 源支路(queue → audioconvert →
+//!           audioresample) → capsfilter(48kHz/stereo) → opusenc →
+//!           rtpopuspay(pt=协商值) → nicesink(1)
 //!   音频收: nicesrc(1) → rtpopusdepay → opusdec → audioconvert
-//!           → audioresample → tee → [alsasink] 与/或 [S16LE appsink tap]
+//!           → audioresample → tee → [alsasink/autoaudiosink] 与/或
+//!           [S16LE appsink tap]
 //!
 //! 上下文模型 (Task 3 实测结论): 本版 libnice 的 attach_recv 会把
 //! component 的全部 socket I/O (含 conncheck 回包) 路由到传入的
@@ -39,13 +40,13 @@ use tracing::info;
 
 use crate::rtp_send::{
     TrackKind, TrackSource, audio_source_branch, camera_src_name, file_uri, mic_src_name,
-    plug_device_source, plug_uri_source, video_source_branch,
+    plug_device_source, plug_uri_source, redact_uri_credentials, video_source_branch,
 };
 use crate::{
     AudioChunkSink, GstStreamError, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink,
-    gstutil::{add_and_sync, leaky_queue, link_chain, make, static_pad},
+    gstutil::{add_and_sync, disable_sink_async, leaky_queue, link_chain, make, static_pad},
 };
-use ipcam_ice::IceAgent;
+use ipcam_ice::{IceAgent, sdp::VIDEO_PT};
 
 /// component 号: 每路媒体独立 agent, 单 stream 固定 component 1 (音视频共用).
 const COMP: u32 = 1;
@@ -55,7 +56,21 @@ const COMP: u32 = 1;
 pub enum AudioRecv {
     Disabled,
     Alsa(String),
+    /// 平台默认音频输出 (Windows wasapi / macOS coreaudio / Linux pulse/alsa).
+    Auto,
     TapOnly,
+}
+
+/// ICE 媒体链使用的 RTP payload type (SDP 协商产物).
+///
+/// 动态段 (96-127) 同一个 pt 在不同对端可以是不同编码, 所以不能在
+/// 媒体链里写死 Opus=111 / H264=96. 这是 SIP 协商层到 ICE 媒体层
+/// 的最小桥接类型; 更上层的 `NegotiatePicks`/`MediaPlan` 还带编码/
+/// fmtp/地址, 不适合直接塞进 GStreamer 管线配置.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IceCodecs {
+    pub audio_pt: u8,
+    pub video_pt: Option<u8>,
 }
 
 /// ICE 媒体会话配置.
@@ -66,10 +81,13 @@ pub struct IceMediaConfig<'a> {
     pub audio_agent: Option<&'a IceAgent>,
     /// 发送视频源; None = 只收不放视频 (调试时常见).
     pub video_src: Option<TrackSource>,
-    /// 是否发送音频 (源固定为本机麦克风).
-    pub audio_send: bool,
+    /// 发送音频源; None = 只收不放音频.
+    /// 支持 Mic / File / Rtsp; LocalCamera 不是合法音频源.
+    pub audio_src: Option<TrackSource>,
     /// 音频接收方式.
     pub audio_recv: AudioRecv,
+    /// 发送用的 RTP payload type (按 SDP 协商结果).
+    pub codecs: IceCodecs,
     /// 发送限宽, 0 = 不限 (转 Option 传给源支路, 与 RtpDest 语义一致).
     pub max_width: u32,
     /// 收端帧回调 (video=RGBA 帧, audio=S16LE 块), 与 ingest tap 同语义;
@@ -142,7 +160,7 @@ unsafe impl Sync for AgentPtr {}
 /// ```
 pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstStreamError> {
     crate::ensure_init_internal()?;
-    if cfg.video_src.is_none() && !cfg.audio_send && !audio_recv_wanted(cfg) {
+    if cfg.video_src.is_none() && cfg.audio_src.is_none() && !audio_recv_wanted(cfg) {
         return Err(GstStreamError::InvalidConfig(
             "ice media: nothing to send or receive".into(),
         ));
@@ -153,7 +171,7 @@ pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstSt
     let video = cfg.video_agent.map(|agent| AgentPtr(agent.raw_agent()));
     let audio = cfg.audio_agent.map(|agent| AgentPtr(agent.raw_agent()));
     let video_wanted = cfg.taps.video.is_some() || cfg.video_src.is_some();
-    let audio_wanted = audio_recv_wanted(cfg) || cfg.audio_send;
+    let audio_wanted = audio_recv_wanted(cfg) || cfg.audio_src.is_some();
     if video_wanted && video.is_none() {
         return Err(GstStreamError::InvalidConfig(
             "ice media: video agent missing".into(),
@@ -165,6 +183,8 @@ pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstSt
         ));
     }
     let max_width = cfg.max_width;
+    let video_pt = cfg.codecs.video_pt.unwrap_or(VIDEO_PT);
+    let audio_pt = cfg.codecs.audio_pt;
 
     if let Some(tap) = &cfg.taps.video {
         build_video_recv(
@@ -186,14 +206,14 @@ pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstSt
                 let uri = file_uri(path)?;
                 let bytes = bytes.clone();
                 plug_uri_source(&pipeline, &uri, TrackKind::Video, move |pad| {
-                    link_video_send(&pipeline_cb, &pad, video, max_width, &bytes)
+                    link_video_send(&pipeline_cb, &pad, video, max_width, video_pt, &bytes)
                 })?;
             }
             TrackSource::Rtsp { uri } => {
                 let uri = uri.clone();
                 let bytes = bytes.clone();
                 plug_uri_source(&pipeline, &uri, TrackKind::Video, move |pad| {
-                    link_video_send(&pipeline_cb, &pad, video, max_width, &bytes)
+                    link_video_send(&pipeline_cb, &pad, video, max_width, video_pt, &bytes)
                 })?;
             }
             TrackSource::LocalCamera { device } => {
@@ -202,32 +222,83 @@ pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstSt
                     &pipeline,
                     camera_src_name(),
                     device.as_deref(),
-                    move |pad| link_video_send(&pipeline_cb, &pad, video, max_width, &bytes),
+                    move |pad| {
+                        link_video_send(&pipeline_cb, &pad, video, max_width, video_pt, &bytes)
+                    },
                 )?;
             }
             TrackSource::Mic => {
                 return Err(GstStreamError::InvalidConfig(
-                    "video_src=mic not supported (audio_send uses the mic)".into(),
+                    "video_src=mic not supported (audio_src uses the mic)".into(),
                 ));
             }
         }
     }
-    if cfg.audio_send {
-        info!("ice media: audio send branch (mic)");
+    if let Some(source) = &cfg.audio_src {
+        info!(audio_src = %source.label(), "ice media: audio send branch");
         let pipeline_cb = pipeline.clone();
         let bytes = bytes.clone();
         let audio = audio.expect("audio agent checked");
-        plug_device_source(&pipeline, mic_src_name(), None, move |pad| {
-            link_audio_send(&pipeline_cb, &pad, audio, &bytes)
-        })?;
+        match source {
+            TrackSource::Mic => {
+                plug_device_source(&pipeline, mic_src_name(), None, move |pad| {
+                    link_audio_send(&pipeline_cb, &pad, audio, audio_pt, &bytes)
+                })?;
+            }
+            TrackSource::File(path) => {
+                let uri = file_uri(path)?;
+                plug_uri_source(&pipeline, &uri, TrackKind::Audio, move |pad| {
+                    link_audio_send(&pipeline_cb, &pad, audio, audio_pt, &bytes)
+                })?;
+            }
+            TrackSource::Rtsp { uri } => {
+                let uri = uri.clone();
+                plug_uri_source(&pipeline, &uri, TrackKind::Audio, move |pad| {
+                    link_audio_send(&pipeline_cb, &pad, audio, audio_pt, &bytes)
+                })?;
+            }
+            TrackSource::LocalCamera { .. } => {
+                return Err(GstStreamError::InvalidConfig(
+                    "audio_src=local camera not supported".into(),
+                ));
+            }
+        }
     }
 
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|e| GstStreamError::Stream(format!("ice media play: {e}")))?;
+    if let Err(e) = pipeline.set_state(gst::State::Playing) {
+        // set_state 的 Display 只有 "Element failed to change its state",
+        // 真正原因在 bus 的 Error 消息里 (哪个 source/sink 失败).
+        let detail = pipeline
+            .bus()
+            .and_then(|bus| {
+                bus.timed_pop_filtered(
+                    gst::ClockTime::from_mseconds(100),
+                    &[gst::MessageType::Error],
+                )
+            })
+            .map(|msg| match msg.view() {
+                gst::MessageView::Error(err) => {
+                    let error_text = redact_uri_credentials(&err.error().to_string());
+                    let debug_text = err
+                        .debug()
+                        .map(|d| redact_uri_credentials(&d))
+                        .unwrap_or_default();
+                    format!("{error_text} ({debug_text})")
+                }
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let _ = pipeline.set_state(gst::State::Null);
+        let msg = if detail.is_empty() {
+            format!("ice media play: {e}")
+        } else {
+            format!("ice media play: {e}; bus error: {detail}")
+        };
+        return Err(GstStreamError::Stream(msg));
+    }
     info!(
         video_tx = cfg.video_src.is_some(),
-        audio_tx = cfg.audio_send,
+        audio_tx = cfg.audio_src.is_some(),
         audio_rx = audio_recv_wanted(cfg),
         video_tap = cfg.taps.video.is_some(),
         "ice media started"
@@ -235,11 +306,11 @@ pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstSt
     Ok(IceMediaHandle { pipeline, bytes })
 }
 
-/// 音频收分支路是否有消费者: Alsa 喇叭恒有, TapOnly 依赖 audio tap 存在.
+/// 音频收分支路是否有消费者: Alsa/Auto 喇叭恒有, TapOnly 依赖 audio tap 存在.
 fn audio_recv_wanted(cfg: &IceMediaConfig<'_>) -> bool {
     match cfg.audio_recv {
         AudioRecv::Disabled => false,
-        AudioRecv::Alsa(_) => true,
+        AudioRecv::Alsa(_) | AudioRecv::Auto => true,
         AudioRecv::TapOnly => cfg.taps.audio.is_some(),
     }
 }
@@ -314,13 +385,20 @@ fn build_audio_recv(
     let conv = make("audioconvert")?;
     let resample = make("audioresample")?;
     let tee = make("tee")?;
-    // alsasink 支路 (与 ingest/track.rs 的 build_alsa_elements 同形):
-    // queue → alsasink(device), 转码已在 tee 前共用段完成.
-    let alsa = match &cfg.audio_recv {
+    // 播放支路: queue → alsasink(device) 或平台默认 autoaudiosink,
+    // 转码已在 tee 前共用段完成. autoaudiosink 内部真实 sink 在
+    // READY→PAUSED 才创建, async 必须用 element-added 逮住再关.
+    let playback = match &cfg.audio_recv {
         AudioRecv::Alsa(device) => {
             let queue = make("queue")?;
             let sink = make("alsasink")?;
             sink.set_property("device", device);
+            Some(vec![queue, sink])
+        }
+        AudioRecv::Auto => {
+            let queue = make("queue")?;
+            let sink = make("autoaudiosink")?;
+            disable_sink_async(&sink);
             Some(vec![queue, sink])
         }
         _ => None,
@@ -332,8 +410,8 @@ fn build_audio_recv(
     };
 
     let mut refs = vec![&src, &depay, &dec, &conv, &resample, &tee];
-    if let Some(alsa) = &alsa {
-        refs.extend(alsa.iter());
+    if let Some(playback) = &playback {
+        refs.extend(playback.iter());
     }
     if let Some(tap) = &tap {
         refs.extend(tap.iter());
@@ -343,10 +421,10 @@ fn build_audio_recv(
         &[&src, &depay, &dec, &conv, &resample, &tee],
         "ice audio receive",
     )?;
-    if let Some(alsa) = &alsa {
-        let alsa_refs: Vec<&gst::Element> = alsa.iter().collect();
-        link_chain(&alsa_refs, "ice audio alsa branch")?;
-        link_tee_branch(&tee, &alsa[0])?;
+    if let Some(playback) = &playback {
+        let playback_refs: Vec<&gst::Element> = playback.iter().collect();
+        link_chain(&playback_refs, "ice audio playback branch")?;
+        link_tee_branch(&tee, &playback[0])?;
     }
     if let Some(tap) = &tap {
         let tap_refs: Vec<&gst::Element> = tap.iter().collect();
@@ -358,7 +436,7 @@ fn build_audio_recv(
 }
 
 /// 视频发: 源支路 (rtp_send 复用, x264enc 基础五属性) →
-/// rtph264pay(pt=96, config-interval=1) → nicesink(1).
+/// rtph264pay(pt=协商值, config-interval=1) → nicesink(1).
 /// 尾属性与 rtp_send/chain.rs 逐一对齐: config-interval=1 参数集周期重发;
 /// nicesink sync/async 对齐 udpsink 语义 (sync=true 按码流时间戳限速,
 /// async=false 不卡 preroll). doorphone 专用 slice-max-size 不加 (ICE
@@ -370,6 +448,7 @@ fn build_audio_recv(
 /// * `raw_pad`: 源解码出的裸流 pad
 /// * `agent`: 共享 NiceAgent 指针
 /// * `max_width`: 发送限宽, 0 = 不限
+/// * `pt`: 协商出的 H264 payload type
 /// * `bytes`: 字节计数器 (probe 挂 nicesink sink pad, 记 tx)
 ///
 /// returns: Result<(), GstStreamError>
@@ -384,12 +463,13 @@ fn link_video_send(
     raw_pad: &gst::Pad,
     agent: AgentPtr,
     max_width: u32,
+    pt: u8,
     bytes: &Arc<AtomicBytes>,
 ) -> Result<(), GstStreamError> {
     let cap = (max_width > 0).then_some(max_width);
     let mut chain = video_source_branch(cap)?;
     let pay = make("rtph264pay")?;
-    pay.set_property("pt", 96u32);
+    pay.set_property("pt", pt as u32);
     pay.set_property("config-interval", 1i32);
     let sink = make_nice_sink(agent, COMP)?;
     install_byte_probe(&static_pad(&sink, "sink")?, bytes, true);
@@ -398,13 +478,14 @@ fn link_video_send(
 }
 
 /// 音频发: 源支路 (queue → audioconvert → audioresample) →
-/// capsfilter(48kHz/stereo) → opusenc → rtpopuspay(pt=111) → nicesink(2).
+/// capsfilter(48kHz/stereo) → opusenc → rtpopuspay(pt=协商值) → nicesink(1).
 ///
 /// # Arguments
 ///
 /// * `pipeline`: 目标管线
-/// * `raw_pad`: 麦克风采出的裸流 pad
+/// * `raw_pad`: 音频源解码出的裸流 pad
 /// * `agent`: 共享 NiceAgent 指针
+/// * `pt`: 协商出的 Opus payload type
 /// * `bytes`: 字节计数器 (probe 挂 nicesink sink pad, 记 tx)
 ///
 /// returns: Result<(), GstStreamError>
@@ -418,6 +499,7 @@ fn link_audio_send(
     pipeline: &gst::Pipeline,
     raw_pad: &gst::Pad,
     agent: AgentPtr,
+    pt: u8,
     bytes: &Arc<AtomicBytes>,
 ) -> Result<(), GstStreamError> {
     let mut chain = audio_source_branch()?;
@@ -433,7 +515,7 @@ fn link_audio_send(
     );
     let enc = make("opusenc")?;
     let pay = make("rtpopuspay")?;
-    pay.set_property("pt", 111u32);
+    pay.set_property("pt", pt as u32);
     let sink = make_nice_sink(agent, COMP)?;
     install_byte_probe(&static_pad(&sink, "sink")?, bytes, true);
     chain.extend([caps, enc, pay, sink]);
@@ -720,6 +802,70 @@ mod tests {
         assert_eq!(got, b"pong");
         println!("ice_media loopback: appsrc -> nicesink delivered {got:?}");
 
+        pipeline.set_state(gst::State::Null).unwrap();
+    }
+
+    /// 接收-only 形态: A 侧只有 nicesrc(1) → appsink (对应 SIP ICE
+    /// `audio_src=None` 的生产管线), B 侧 attach_recv + send.
+    /// 验证只有 nicesrc 时 libnice 仍能推进 conncheck 并收到数据.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nice_src_only_receive_connects() {
+        crate::ensure_init_internal().unwrap();
+        if gst::ElementFactory::find("nicesrc").is_none() {
+            tracing::warn!("nicesrc not available (gst-plugins-bad missing), skipping test");
+            return;
+        }
+        let Ok(a) = IceAgent::new(IceConfig {
+            stun: None,
+            controlling: true,
+            components: 1,
+        }) else {
+            return; // libnice 不可用
+        };
+        let Ok(b) = IceAgent::new(IceConfig {
+            stun: None,
+            controlling: false,
+            components: 1,
+        }) else {
+            return;
+        };
+
+        let pipeline = gst::Pipeline::new();
+        let nicesrc = make_nice_element("nicesrc", AgentPtr(a.raw_agent()), COMP).unwrap();
+        let asink = gst_app::AppSink::builder().sync(false).build();
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+        asink.set_callbacks(
+            gst_app::AppSinkCallbacks::builder()
+                .new_sample(move |sink_el| {
+                    let sample = sink_el.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                    let buf = sample.buffer().ok_or(gst::FlowError::Error)?;
+                    let map = buf.map_readable().map_err(|_| gst::FlowError::Error)?;
+                    let _ = tx.try_send(map.as_slice().to_vec());
+                    Ok(gst::FlowSuccess::Ok)
+                })
+                .build(),
+        );
+        let asink_el = asink.upcast();
+        pipeline.add_many([&nicesrc, &asink_el]).unwrap();
+        gst::Element::link_many([&nicesrc, &asink_el]).unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+
+        b.attach_recv(|_| {}).await.unwrap();
+        let (a_blob, b_blob) = tokio::join!(a.local_blob(), b.local_blob());
+        let (a_blob, b_blob) = (a_blob.unwrap(), b_blob.unwrap());
+        let (ra, rb) = tokio::join!(a.add_remote(&b_blob), b.add_remote(&a_blob));
+        ra.unwrap();
+        rb.unwrap();
+        wait_connected(&a).await;
+        wait_connected(&b).await;
+        println!("ice_media receive-only: both agents Connected");
+
+        b.send(b"ping").await.unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("nicesrc receive timeout")
+            .expect("channel closed");
+        assert_eq!(got, b"ping");
         pipeline.set_state(gst::State::Null).unwrap();
     }
 }

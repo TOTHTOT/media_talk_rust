@@ -27,7 +27,8 @@ use tracing::{info, warn};
 
 use crate::session::types::{GuiSipConfig, RecvSockets, RtpPorts};
 
-pub(crate) use ice::IceCallMedia;
+pub(crate) use ice::{IceCallMedia, ice_audio_recv};
+pub(crate) use ipcam_gst::IceCodecs;
 use plan::{MediaPlan, VideoDest, peer_audio_send_params, peer_video_send_params, plan_from_offer};
 pub(crate) use plan::{audio_pred, video_pred};
 

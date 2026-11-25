@@ -30,7 +30,7 @@ mod ctl;
 mod ui;
 
 use ipcam_gst::{GstStreamError, TrackSource};
-use ipcam_ice::{IceAgent, IceConfig, IceError};
+use ipcam_ice::{IceAgent, IceError};
 
 pub(crate) use ctl::{IceController, spawn};
 pub(crate) use ui::wire_ice;
@@ -43,16 +43,8 @@ pub(crate) fn agent_pair(
     stun: Option<String>,
     controlling: bool,
 ) -> Result<(IceAgent, IceAgent), IceError> {
-    let video = IceAgent::new(IceConfig {
-        stun: stun.clone(),
-        controlling,
-        components: 1,
-    })?;
-    let audio = IceAgent::new(IceConfig {
-        stun,
-        controlling,
-        components: 1,
-    })?;
+    let video = IceAgent::new_rtp(stun.clone(), controlling)?;
+    let audio = IceAgent::new_rtp(stun, controlling)?;
     Ok((video, audio))
 }
 
@@ -110,8 +102,8 @@ enum IceCmd {
 pub(crate) struct IceSources {
     /// 发送视频源; Mic 不是合法视频源 → None (只收不放).
     pub video_src: Option<TrackSource>,
-    /// 是否发送音频: 仅当 audio_src=Mic 时 true (ICE 音频发送链固定采麦克风).
-    pub audio_send: bool,
+    /// 发送音频源; None = 不发送音频 (LocalCamera 不是合法音频源).
+    pub audio_src: Option<TrackSource>,
     /// 发送限宽 (0 = 不限).
     pub max_width: u32,
 }

@@ -95,12 +95,8 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
     // ICE 通话 worker: 命令通道驱动 (设置页 ICE 卡片, 本体在 settings/ice_card.slint).
     // 媒体源从 GuiSipConfig 摘录 (cfg 随后 move 进 SIP worker).
     let ice_sources = ice::IceSources {
-        // Mic 不是合法视频源 (ice 发送链只有 video 用 video_src)
-        video_src: match &cfg.video_src {
-            ipcam_gst::TrackSource::Mic => None,
-            src => Some(src.clone()),
-        },
-        audio_send: matches!(cfg.audio_src, ipcam_gst::TrackSource::Mic),
+        video_src: cfg.video_src.as_video_source(),
+        audio_src: cfg.audio_src.as_audio_source(),
         max_width: cfg.max_width,
     };
     let (ice_ctl, _ice_worker) =

@@ -166,10 +166,17 @@ SLINT_BACKEND=linuxkms-software ./media_talk_rust gui -u 9999 \
   --server 192.168.11.17:5062 --ice --stun "stun://stun.miwifi.com:3478"
 ```
 
-- 只有协商结果为 Opus(111)+H264(96) 且对端 answer 带回 ICE 才启用
-  ICE 媒体链; 否则自动回退普通 RTP (G.711 优先的 offer 顺序保证兼容)
+- ICE 媒体链按 SDP 协商结果动态取 PT: 音频必须是 Opus (Linphone 常用
+  96, 本端 offer 用 111), 视频可选 H264 (PT 可能是 96/97); 对端
+  audio-only 时只建音频 agent, 不再要求视频
+- 对端没有 ICE / 没有 Opus / 端口不可用会自动回退普通 RTP
 - 目标板需要 GStreamer `nicesink`/`nicesrc` (gst-plugins-bad) 与
   libnice 运行库; 缺库时发起端回退普通 RTP, 被叫端不会回 ICE
+- 当前 ICE agent 只有 component 1; Linphone 默认 offer 没有
+  `a=rtcp-mux` 时会要求 component 2, 需要开 Bundle mode/rtcp-mux,
+  或后续补 component 2
+- 非 Linux 的 ICE 音频接收走 `autoaudiosink` (`AudioRecv::Auto`);
+  音频发送源支持 Mic/File/Rtsp, `LocalCamera` 不是合法音频源
 
 ### 退路: winit + weston
 

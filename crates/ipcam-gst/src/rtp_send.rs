@@ -31,4 +31,5 @@ pub use source::{TrackSource, parse_track_source};
 pub(crate) use chain::{audio_source_branch, video_source_branch};
 pub(crate) use source::{
     TrackKind, camera_src_name, file_uri, mic_src_name, plug_device_source, plug_uri_source,
+    redact_uri_credentials,
 };

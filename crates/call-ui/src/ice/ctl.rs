@@ -6,10 +6,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use ipcam_gst::{
-    AudioRecv, IceMediaConfig, IceMediaHandle, RawTaps, VideoFrameSink, start_ice_media,
+    IceCodecs, IceMediaConfig, IceMediaHandle, RawTaps, VideoFrameSink, start_ice_media,
 };
 use ipcam_ice::signal::{self, WsClient};
-use ipcam_ice::{IceAgent, IceState, sdp};
+use ipcam_ice::{
+    IceAgent, IceState,
+    sdp::{self, AUDIO_PT, VIDEO_PT},
+};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{error, info, warn};
@@ -310,16 +313,17 @@ async fn call_flow(
     // 4. 起媒体: 收端视频走 GUI tap; 音频接收 linux 走 ALSA default
     //    放音 (与 SIP 收端 autoaudiosink 落地等价), 无 ALSA 平台仅
     //    TapOnly (无 audio tap 时即不收音频).
-    #[cfg(target_os = "linux")]
-    let audio_recv = AudioRecv::Alsa("default".into());
-    #[cfg(not(target_os = "linux"))]
-    let audio_recv = AudioRecv::TapOnly;
+    let audio_recv = crate::media::ice_audio_recv();
     let m = start_ice_media(&IceMediaConfig {
         video_agent: Some(video_agent),
         audio_agent: Some(audio_agent),
         video_src: sources.video_src.clone(),
-        audio_send: sources.audio_send,
+        audio_src: sources.audio_src.clone(),
         audio_recv,
+        codecs: IceCodecs {
+            audio_pt: AUDIO_PT,
+            video_pt: Some(VIDEO_PT),
+        },
         max_width: sources.max_width,
         taps: RawTaps {
             video: Some(tap.clone()),

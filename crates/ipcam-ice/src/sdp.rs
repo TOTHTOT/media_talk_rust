@@ -99,16 +99,17 @@ pub fn build_offer_blob(
 pub fn parse_offer(sdp: &str) -> Result<RemoteMedia, SdpError> {
     let (session_attrs, sections) = split_sections(sdp);
 
+    // 没有 ICE 的媒体段 (典型: answer 里被拒的 m=video 0) 直接跳过,
+    // 只要另一路有完整 ICE 就继续. 之前这里对每个存在的段都 ? 传播,
+    // 会把 "audio 有 ICE + video 被拒" 的合法 answer 整份判失败.
     let video = sections
         .iter()
         .find(|section| section.media == "video")
-        .map(|section| extract_ice(&section.attrs, &session_attrs, "video"))
-        .transpose()?;
+        .and_then(|section| extract_ice(&section.attrs, &session_attrs, "video").ok());
     let audio = sections
         .iter()
         .find(|section| section.media == "audio")
-        .map(|section| extract_ice(&section.attrs, &session_attrs, "audio"))
-        .transpose()?;
+        .and_then(|section| extract_ice(&section.attrs, &session_attrs, "audio").ok());
     if video.is_none() && audio.is_none() {
         return Err(SdpError::MissingMedia("audio/video"));
     }
@@ -267,27 +268,11 @@ fn extract_ice(
 ) -> Result<IcePart, SdpError> {
     let mut part = IcePart::default();
     for line in attrs {
-        if let Some(v) = line.strip_prefix("a=ice-ufrag:") {
-            part.ufrag = v.trim().to_string();
-        } else if let Some(v) = line.strip_prefix("a=ice-pwd:") {
-            part.pwd = v.trim().to_string();
-        } else if line.starts_with("a=candidate:")
-            && candidate_component(line).is_none_or(|component| component == 1)
-        {
-            part.candidates.push(line.clone());
-        }
+        apply_ice_line(&mut part, line);
     }
+    // 会话级 ufrag/pwd 只在媒体段没有时兜底; 候选只在媒体段取.
     for line in session_attrs {
-        if part.ufrag.is_empty() {
-            if let Some(v) = line.strip_prefix("a=ice-ufrag:") {
-                part.ufrag = v.trim().to_string();
-            }
-        }
-        if part.pwd.is_empty() {
-            if let Some(v) = line.strip_prefix("a=ice-pwd:") {
-                part.pwd = v.trim().to_string();
-            }
-        }
+        apply_ice_credentials(&mut part, line, true);
     }
     if !part.is_complete() {
         return Err(SdpError::MissingIce(what));
@@ -298,24 +283,57 @@ fn extract_ice(
     Ok(part)
 }
 
+/// 解析一行 ICE 属性; 本地 blob 和远端媒体段共用.
+fn apply_ice_line(part: &mut IcePart, line: &str) {
+    if apply_ice_credentials(part, line, false) {
+        return;
+    }
+    if line.starts_with("a=candidate:")
+        && candidate_component(line).is_none_or(|component| component == 1)
+        && candidate_is_udp(line)
+    {
+        part.candidates.push(line.to_string());
+    }
+}
+
+/// 解析 ufrag/pwd; 返回 false 表示这一行不是凭据.
+fn apply_ice_credentials(part: &mut IcePart, line: &str, only_if_empty: bool) -> bool {
+    if let Some(v) = line.strip_prefix("a=ice-ufrag:") {
+        if !only_if_empty || part.ufrag.is_empty() {
+            part.ufrag = v.trim().to_string();
+        }
+        return true;
+    }
+    if let Some(v) = line.strip_prefix("a=ice-pwd:") {
+        if !only_if_empty || part.pwd.is_empty() {
+            part.pwd = v.trim().to_string();
+        }
+        return true;
+    }
+    false
+}
+
 fn candidate_component(line: &str) -> Option<u32> {
     let rest = line.strip_prefix("a=candidate:")?;
     rest.split_whitespace().nth(1)?.parse().ok()
 }
 
+/// 本端媒体链只跑 UDP; libnice 默认还会收集 ICE-TCP 候选, 把
+/// `tcptype active/passive` 一起写进 SDP 会让对端去试本端并不消费的
+/// TCP component, 增加无谓的失败路径.
+fn candidate_is_udp(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("a=candidate:") else {
+        return false;
+    };
+    rest.split_whitespace()
+        .nth(2)
+        .is_none_or(|transport| transport.eq_ignore_ascii_case("UDP"))
+}
+
 fn parse_ice_blob(blob: &IceBlob) -> Result<IcePart, SdpError> {
     let mut part = IcePart::default();
     for raw in blob.as_str().lines() {
-        let line = raw.trim();
-        if let Some(v) = line.strip_prefix("a=ice-ufrag:") {
-            part.ufrag = v.trim().to_string();
-        } else if let Some(v) = line.strip_prefix("a=ice-pwd:") {
-            part.pwd = v.trim().to_string();
-        } else if line.starts_with("a=candidate:")
-            && candidate_component(line).is_none_or(|component| component == 1)
-        {
-            part.candidates.push(line.to_string());
-        }
+        apply_ice_line(&mut part, raw.trim());
     }
     if !part.is_complete() {
         return Err(SdpError::MissingIce("local"));
@@ -438,6 +456,47 @@ mod tests {
         let audio = remote.audio.expect("audio section");
         assert!(audio.as_str().contains("a=candidate:"));
         assert!(!audio.as_str().contains('\r'));
+    }
+
+    #[test]
+    fn filters_tcp_candidates() {
+        let sdp = "v=0\r\n\
+            o=- 1 1 IN IP4 192.168.2.109\r\n\
+            s=-\r\n\
+            c=IN IP4 192.168.2.109\r\n\
+            t=0 0\r\n\
+            m=audio 65025 RTP/AVP 96\r\n\
+            a=rtpmap:96 opus/48000/2\r\n\
+            a=ice-ufrag:abcd\r\n\
+            a=ice-pwd:efghEFGHefghEFGHefgh\r\n\
+            a=candidate:1 1 UDP 2015363327 192.168.2.109 65025 typ host\r\n\
+            a=candidate:2 1 TCP 1015021823 192.168.2.109 9 typ host tcptype active\r\n\
+            a=end-of-candidates\r\n";
+        let remote = parse_offer(sdp).unwrap();
+        let audio = remote.audio.expect("audio ICE");
+        assert!(audio.as_str().contains("UDP"));
+        assert!(!audio.as_str().contains("TCP"));
+    }
+
+    #[test]
+    fn parses_audio_ice_with_rejected_video() {
+        // answer 里 video 被拒 (port 0) 且没有 ICE 属性; audio 仍有完整
+        // ICE, 这份 SDP 是合法的, 不能因为 video 段没有 ICE 就整份失败.
+        let sdp = "v=0\r\n\
+            o=- 1 1 IN IP4 192.168.2.109\r\n\
+            s=-\r\n\
+            c=IN IP4 192.168.2.109\r\n\
+            t=0 0\r\n\
+            m=audio 65025 RTP/AVP 96\r\n\
+            a=rtpmap:96 opus/48000/2\r\n\
+            a=ice-ufrag:abcd\r\n\
+            a=ice-pwd:efghEFGHefghEFGHefgh\r\n\
+            a=candidate:1 1 UDP 2015363327 192.168.2.109 65025 typ host\r\n\
+            a=end-of-candidates\r\n\
+            m=video 0 RTP/AVP 96\r\n";
+        let remote = parse_offer(sdp).unwrap();
+        assert!(remote.audio.is_some());
+        assert!(remote.video.is_none());
     }
 
     #[test]

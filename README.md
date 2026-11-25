@@ -346,7 +346,7 @@ file dist/media_talk_rust   # ARM aarch64
 10. e7f87f98b5b5cc5037fec7c23b4474619fc8d8fc 深入分析这个修改
 11. ui框架和gui的启动命令参数需要整合，有参数传入优先参数否则使用配置
 12. **通话接收端音画同步** — `rtp_recv` 的视频/音频两路完全独立，各自从 udpsrc 经 depay/decode 到 autovideosink/autoaudiosdk，无 jitter buffer / PTS 对齐机制；网络抖动时可能出现音画错位。发送侧 `udpsink sync=true` 按 PTS 限速，录像（mpegtsmux）可保证 TS 流内 PTS 正确。接收侧如需顽健同步，应引入 `rtpbin` 替代裸 udpsrc（额外引入 ~150-200ms 延迟，换来 jitter buffer + RTCP Remb）。
-
+13. ICE 与 Linphone 互通：PBX 要 SDP 透传必须关 `[recording]`；桌面音频已通，视频（BUNDLE/双 agent）和手机（component 2/NAT）仍待解决，见 `docs/pitfalls.md` 的 “SIP + ICE 互通”。
 ## 代码索引 (repowise)
 
 本仓库用 [repowise](https://github.com/repowise-dev/repowise) 建代码索引:

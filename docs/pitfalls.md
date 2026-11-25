@@ -413,6 +413,147 @@ Windows 把单播包全投给先绑者 — 后绑方收端 stats 永远 0 包, �
 latch 未过期可能仍不通, 稍候重拨自愈; 反复 0 包时先看日志有无 bind
 失败 WARN, 区分"端口冲突"与"中继缓存".
 
+## SIP + ICE 互通 (2026-11)
+
+这一轮从"PBX 锚定媒体、SDP 被改写"一路查到"桌面音频 ICE 连通、
+视频/手机仍失败", 关键结论按层记录.
+
+### rustpbx: `media_proxy = "none"` 不等于 SDP 透传
+
+**现象**: `[proxy] media_proxy = "none"`, 但 PBX 日志仍是
+`has_bridge=true` / `fast-path relay selected` / `strip_a_to_b=true`,
+app 收到的 offer 没有 `a=ice-*`.
+
+**根因**: `check_media_proxy()` 第一条是
+`if context.dialplan.recording.enabled { return true; }`. 只要
+`[recording] enabled = true`, 录音必须抓媒体, PBX 就强制走
+MediaBridge, 无视 `media_proxy = "none"`.
+
+**解法**:
+
+- 要 SDP 原样透传: `[recording] enabled = false` +
+  `[proxy] media_proxy = "none"`, 重启 rustpbx.
+- 要录音: 只能锚定媒体, 不能同时要求 PBX 不碰 SDP; 或只对需要的
+  route 开 `recording_policy.enabled=true`, 其余透传.
+- `audio_codecs` / `video_codecs` 非空时 bypass 也会重写 fmt 列表;
+  透传场景保持注释.
+- RWI `originate` 路径 `let use_media_proxy = true;` 是硬编码, 不受
+  `media_proxy` 控制; 验证 ICE 要用 SIP INVITE 直呼, 不要走 RWI.
+
+### 动态 PT: Linphone 的 Opus 是 96, H264 可能是 97
+
+**现象**: 收到 Linphone offer `a=rtpmap:96 opus/48000 2`, app 日志
+`offer has no Opus/H264 at ICE payload types`, 回退普通 RTP.
+
+**根因**: ICE 门控/媒体链写死 `Opus=111`, `H264=96`, 且要求
+audio+video 两路都在. Linphone Desktop 默认 Opus 96; Android 视频
+可能 H264 97.
+
+**解法**:
+
+- `IceCodecs { audio_pt, video_pt: Option<u8> }`;
+  `offer_supports_ice` / `answer_supports_ice` 返回协商值; 音频必须
+  是 Opus, 视频可选.
+- `IceMediaConfig` 增加 `audio_pt`/`video_pt`,
+  `rtpopuspay`/`rtph264pay` 按协商值设置.
+- `negotiate::build_answer` 必须按 codec 生成 rtpmap; 只按 pt 猜会把
+  PT 96 写成 `a=rtpmap:96 unknown/8000`. 已加
+  `audio_media_description_for_codec`.
+- audio-only offer 只建音频 agent; 不再要求 video.
+
+### BUNDLE: 本端是双 agent, answer 不要只声明部分 BUNDLE
+
+**现象**: answer 带 `a=group:BUNDLE as`, `m=audio` 已 Connected,
+`m=video` 一直 `Connecting`, `video_pair=None`.
+
+**根因**: app 的 audio/video 各自独立 ICE agent/端口, 无法把 video
+塞进 audio 的 BUNDLE transport. 部分 BUNDLE answer 会让 Linphone
+把 video 的 ICE 也往 audio transport 上试, video agent 收不到自己的
+checks.
+
+**解法**: answer 不写 `a=group:BUNDLE`, 只保留每个 m-line 的
+`a=mid` + `a=rtcp-mux` + 自己的 `a=ice-*`/候选, 让两条媒体各走各的
+ICE. 真要 BUNDLE 需要单 agent + 单 component + RTP demux, 当前媒体
+链没做.
+
+### RTCP mux / component 2: 手机默认 offer 接不住
+
+**现象**: 手机 Linphone offer 没有 `a=rtcp-mux`, 而是
+`a=rtcp:53975` + component 2 候选; app 的 ICE agent 只有
+component 1, 手机侧 ICE Failed, app 报
+`ICE connectivity check failed (peer unreachable)`.
+
+**根因**: `IceConfig { components: 1 }`; `ipcam-ice/src/sdp.rs`
+解析/生成只保留 component 1; `nicesink`/`nicesrc` 也只用
+component 1. 手机对 component 2 的 checks 没有对应候选/端口.
+
+**解法**:
+
+- 最快: Linphone 开 `Bundle mode` (自动 rtcp-mux; Android:
+  Settings → Accounts → 账号 → Account settings → Bundle mode), 或
+  provisioning `rtcp_mux=1`; offer 带 `a=rtcp-mux` 后只走
+  component 1.
+- 要兼容默认 offer: ICE agent 改 `components: 2`, 解析/生成
+  component 2 候选, answer 带 `a=rtcp:<port>`, 并为 RTCP
+  component 2 建 nicesink/nicesrc (dummy 也要驱动 I/O). 工作量不小.
+- 临时跨网可用: PBX `media_proxy = "all"` 做媒体中继 (失去 ICE 透传).
+
+### NAT: ICE 不是 TURN
+
+**现象**: 同机/同网段音频 ICE 能 Connected; 手机跨网段
+(`192.168.40.236` ↔ `192.168.11.17`) 报 `ConnectFailed`.
+
+**根因**: 本端只有 STUN, 没有 TURN. ICE 只负责"有路时找路":
+
+- host 候选只适合同 LAN/路由可达;
+- srflx 只在 NAT 允许打洞 (cone) 时可用;
+- 对称 NAT/防火墙/不同私网之间没有 relay 就无路可走.
+
+**解法**: 同 LAN 验证用 host; 跨 NAT 要 TURN (app 目前
+`IceConfig` 只有 stun, 需要加 TURN), 或让 PBX 继续做媒体中继. 不能
+因为"开了 ICE"就假设任何网络都能直连.
+
+### Windows ICE 放音: TapOnly 没声音
+
+**现象**: ICE 状态 Connected、stats 有收包, 但 Windows 上听不到对端.
+
+**根因**: `ice_audio_recv()` 非 Linux 返回 `AudioRecv::TapOnly`, 而
+`IceCallMedia` 的 `taps.audio` 是 None; 没有消费者, 音频接收分支不建.
+
+**解法**: 非 Linux 改用 `AudioRecv::Auto`, `build_audio_recv` 建
+`queue → autoaudiosink` 并 `disable_sink_async`; 与普通 RTP 收端一致.
+
+### ICE 音频源: 不是只有 Mic
+
+**现象**: `--audio-src file:...` 时 `audio_tx=false`, 日志
+`audio source is not the mic, audio send disabled`.
+
+**根因**: `IceCallMedia::start` 用 `matches!(cfg.audio_src, Mic)` 决定
+`audio_send`; 文件/RTSP 源被排除.
+
+**解法**: `IceMediaConfig.audio_src: Option<TrackSource>`, 支持
+Mic/File/Rtsp; `start_ice_media` 按源类型建音频发送支路 (mic 用
+`wasapisrc`/`alsasrc`, 文件/RTSP 用 `uridecodebin3`). `LocalCamera`
+不是合法音频源, 才禁用.
+
+### ICE 管线启动失败要带 bus 详情
+
+`pipeline.set_state(Playing)` 失败只显示
+`Element failed to change its state`; 已在 `ipcam-gst::ice_media` 里
+从 bus 取 `Error` 消息, 输出具体 source/sink 和 debug 文本, 并对 URI
+凭据脱敏. 排查 Windows mic/autoaudiosink 失败时先看这行.
+
+### 调试入口
+
+- `ICE not connected yet` 现在带 audio/video 各自
+  `state`/`selected_pair`.
+- `ICE connectivity check failed (peer unreachable)` = agent 进入
+  Failed (`IceError::ConnectFailed`), 不是单纯超时; 先看 component 2/
+  网络.
+- `cargo test -p call-ui --lib session::ice` 覆盖 audio-only Opus 96、
+  双 agent 连通、BUNDLE/mid 镜像; `ipcam-gst` 的
+  `nice_src_only_receive_connects` 覆盖接收-only nicesrc 也能推进 ICE.
+
 ## 优雅关停
 
 全进程共享一棵 `CancellationToken` 树（commit `d0b67c9`）：Ctrl+C/SIGTERM

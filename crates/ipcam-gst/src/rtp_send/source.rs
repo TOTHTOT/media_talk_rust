@@ -39,6 +39,23 @@ impl TrackSource {
             Self::Mic => "mic".to_string(),
         }
     }
+
+    /// 作为视频发送源是否合法: Mic 只能出音频, 其余源都可能带视频轨.
+    pub fn as_video_source(&self) -> Option<Self> {
+        match self {
+            Self::Mic => None,
+            src => Some(src.clone()),
+        }
+    }
+
+    /// 作为音频发送源是否合法: LocalCamera 只能出视频, 其余源都可能
+    /// 带音频轨 (文件/RTSP 由解复用器决定有没有音轨).
+    pub fn as_audio_source(&self) -> Option<Self> {
+        match self {
+            Self::LocalCamera { .. } => None,
+            src => Some(src.clone()),
+        }
+    }
 }
 
 /// CLI 源描述解析: file:<路径> | rtsp://<uri> | camera[:<设备>] | mic.
@@ -78,7 +95,7 @@ pub fn parse_track_source(s: &str) -> Result<TrackSource, String> {
 }
 
 /// 把 uri authority 里的 user:pass@ 换成 ***:***@; 无凭据原样返回
-pub(super) fn redact_uri_credentials(uri: &str) -> String {
+pub(crate) fn redact_uri_credentials(uri: &str) -> String {
     let Some(scheme_end) = uri.find("://") else {
         return uri.to_string();
     };

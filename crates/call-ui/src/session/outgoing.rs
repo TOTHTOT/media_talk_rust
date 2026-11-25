@@ -108,14 +108,17 @@ async fn prepare_offer(ctx: &OutgoingCtx) -> Result<OutgoingOffer> {
             ctx.base.local,
             ctx.base.cfg.ice.stun.clone(),
             true, // 主叫 = offerer = controlling
+            true, // 本端 offer 固定带 H264 视频路
         )
         .await?;
         let ports = local.ports();
+        // ICE 媒体链只支持 Opus; offer 里只列 Opus, 避免 Linphone
+        // 按偏好选 PCMU 导致 answer_supports_ice 回退普通 RTP.
         let plain = build_av_offer(
             IpAddr::V4(ctx.base.local),
             ports.audio,
             ports.video,
-            &[PT_PCMU, PT_PCMA, PT_OPUS],
+            &[PT_OPUS],
         )
         .to_string();
         let text = local.offer_sdp(&plain)?;
@@ -231,13 +234,14 @@ async fn outgoing_inner(
         ),
         OutgoingTransport::Ice { ports, local } => {
             let mut media = None;
-            if ice::answer_supports_ice(&peers) {
+            if let Some(codecs) = ice::answer_supports_ice(&peers) {
                 let answer = String::from_utf8_lossy(resp.body());
                 media = Some(media::CallMedia::Ice(
-                    ice::activate(local, answer.as_ref(), &ctx.base.cfg, &ctx.base.tap).await?,
+                    ice::activate(local, answer.as_ref(), &ctx.base.cfg, &ctx.base.tap, codecs)
+                        .await?,
                 ));
             } else {
-                warn!("answer did not select Opus/H264 for ICE, falling back to plain RTP");
+                warn!("answer did not select Opus for ICE, falling back to plain RTP");
                 drop(local);
             }
             let ports = if media.is_none() {

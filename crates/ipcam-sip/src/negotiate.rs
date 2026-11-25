@@ -11,7 +11,7 @@ use sdp_rs::lines::media::{Media, MediaType, ProtoType};
 use tracing::warn;
 
 use crate::sdp::{
-    OfferMedia, OfferMedias, audio_media_description, rtpmap_attribute, session_skeleton,
+    OfferMedia, OfferMedias, audio_media_description_for_codec, rtpmap_attribute, session_skeleton,
     video_media_description,
 };
 
@@ -131,9 +131,9 @@ pub fn build_answer(
     let mut sdp = session_skeleton(local_ip, "2");
     if let Some(oa) = &offer.audio {
         match audio {
-            Some((pt, _)) => sdp
+            Some((pt, codec)) => sdp
                 .media_descriptions
-                .push(audio_media_description(audio_port, &[pt])),
+                .push(audio_media_description_for_codec(audio_port, pt, codec)),
             None => sdp
                 .media_descriptions
                 .push(rejected_media(MediaType::Audio, oa)),
@@ -299,6 +299,38 @@ mod tests {
             answer.contains("m=audio 40000 RTP/AVP 0"),
             "answer:\n{answer}"
         );
+    }
+
+    /// 动态 PT 的 Opus (Linphone 默认 96) 必须按编码生成 rtpmap,
+    /// 不能按 pt 猜成 unknown/8000.
+    #[test]
+    fn build_answer_uses_offered_opus_payload_type() {
+        let o = offer(concat!(
+            "v=0\r\n",
+            "o=- 1 1 IN IP4 192.168.1.50\r\n",
+            "s=-\r\n",
+            "c=IN IP4 192.168.1.50\r\n",
+            "t=0 0\r\n",
+            "m=audio 30000 RTP/AVP 96\r\n",
+            "a=rtpmap:96 opus/48000/2\r\n",
+            "a=fmtp:96 useinbandfec=1\r\n",
+        ));
+        let opus_pred = |name: &str| {
+            name.eq_ignore_ascii_case("opus")
+                .then_some(AudioCodec::Opus)
+        };
+        let (audio, video, answer) = build_answer(&o, local(), 40000, 40002, opus_pred, |_| None);
+        assert_eq!(audio, Some((96, AudioCodec::Opus)));
+        assert_eq!(video, None);
+        assert!(
+            answer.contains("m=audio 40000 RTP/AVP 96"),
+            "answer:\n{answer}"
+        );
+        assert!(
+            answer.contains("a=rtpmap:96 opus/48000/2"),
+            "answer:\n{answer}"
+        );
+        assert!(!answer.contains("m=video"), "answer:\n{answer}");
     }
 
     /// offer 有音频路但全不支持 → 该路端口置 0 (RFC 3264 拒路)

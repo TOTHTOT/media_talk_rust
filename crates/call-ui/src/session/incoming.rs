@@ -139,17 +139,26 @@ async fn try_ice_answer(
     ctx: &CallBase,
     offer: &OfferMedias,
     offer_body: &[u8],
-) -> Option<(LocalIce, String)> {
+) -> Option<(LocalIce, String, media::IceCodecs)> {
     let offer_text = String::from_utf8_lossy(offer_body);
-    if ipcam_ice::sdp::parse_offer(&offer_text).is_err() {
-        info!("incoming offer has no ICE, using plain RTP");
+    let remote = match ipcam_ice::sdp::parse_offer(&offer_text) {
+        Ok(remote) => remote,
+        Err(_) => {
+            info!("incoming offer has no ICE, using plain RTP");
+            return None;
+        }
+    };
+    if remote.audio.is_none() {
+        info!("incoming offer has no audio ICE, using plain RTP");
         return None;
     }
-    if !ice::offer_supports_ice(offer) {
-        warn!("offer has no Opus/H264 at ICE payload types, using plain RTP");
+    let Some(codecs) = ice::offer_supports_ice(offer) else {
+        warn!("offer has no Opus at ICE payload types, using plain RTP");
         return None;
-    }
-    let local = match ice::prepare(ctx.local, ctx.cfg.ice.stun.clone(), false).await {
+    };
+    let want_video = remote.video.is_some() && codecs.video_pt.is_some();
+    let mut local = match ice::prepare(ctx.local, ctx.cfg.ice.stun.clone(), false, want_video).await
+    {
         Ok(local) => local,
         Err(e) => {
             warn!(error = %e, "ICE setup failed, using plain RTP");
@@ -157,7 +166,10 @@ async fn try_ice_answer(
         }
     };
     match local.answer_sdp(offer, ctx.local) {
-        Ok(Some(answer)) => Some((local, answer)),
+        Ok(Some(answer)) => {
+            let answer = ice::mirror_offer_transport_attrs(&answer, &offer_text);
+            Some((local, answer, codecs))
+        }
         Ok(None) => {
             warn!("ICE negotiation not usable for this offer, using plain RTP");
             None
@@ -210,8 +222,8 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<Str
 
     // 先尝试 ICE (offer 有 ICE 且编码/端口可用), 失败回退普通 RTP.
     let (rtp_ports, sockets, local_ice, answer) =
-        if let Some((local, answer)) = try_ice_answer(ctx, &offer, &offer_body).await {
-            (local.ports(), None, Some(local), answer)
+        if let Some((local, answer, codecs)) = try_ice_answer(ctx, &offer, &offer_body).await {
+            (local.ports(), None, Some((local, codecs)), answer)
         } else {
             // 被叫优先用配置端口, 被占 (同机另一个通话进程) 回退临时端口;
             // 端口要写进 answer SDP, socket 从 accept 前绑好活到通话结束:
@@ -239,9 +251,9 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<Str
         };
     accept_with_answer(dialog, &caller, &ctx.ui, answer)?;
 
-    let mut media = if let Some(local) = local_ice {
+    let mut media = if let Some((local, codecs)) = local_ice {
         let offer_text = String::from_utf8_lossy(&offer_body);
-        match ice::activate(local, offer_text.as_ref(), &ctx.cfg, &ctx.tap).await {
+        match ice::activate(local, offer_text.as_ref(), &ctx.cfg, &ctx.tap, codecs).await {
             Ok(media) => Some(media::CallMedia::Ice(media)),
             Err(e) => {
                 // answer 已经宣称 ICE, 无法再回退普通 RTP; 先 BYE 再报错,
