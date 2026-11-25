@@ -278,8 +278,19 @@ fn ice_video_pred(name: &str) -> Option<VideoCodec> {
 /// 等不到该 component, 表现为 ICE 不 Connected 或没有媒体. 单 m-line
 /// 也回 `a=mid`, 避免部分实现对 BUNDLE offer 的 answer 校验过严.
 pub fn mirror_offer_transport_attrs(answer: &str, offer_text: &str) -> String {
-    // 按媒体段取 offer 的 mid: audio 的 mid 要进 BUNDLE group,
-    // 被拒的 video 段也要回自己的 mid (RFC 8843).
+    let transport = parse_offer_transport(offer_text);
+    inject_answer_transport_attrs(answer, &transport)
+}
+
+/// offer 里与本端传输相关的属性.
+#[derive(Default)]
+struct OfferTransport {
+    audio_mid: Option<String>,
+    video_mid: Option<String>,
+    rtcp_mux: bool,
+}
+
+fn parse_offer_transport(offer_text: &str) -> OfferTransport {
     let mut sections: Vec<(String, Option<String>)> = Vec::new();
     let mut current: Option<(String, Option<String>)> = None;
     for raw in offer_text.lines() {
@@ -304,47 +315,59 @@ pub fn mirror_offer_transport_attrs(answer: &str, offer_text: &str) -> String {
         sections.push(section);
     }
 
-    let audio_mid = sections
+    OfferTransport {
+        audio_mid: section_mid(&sections, "audio"),
+        video_mid: section_mid(&sections, "video"),
+        rtcp_mux: offer_text
+            .lines()
+            .any(|line| line.trim().eq_ignore_ascii_case("a=rtcp-mux")),
+    }
+}
+
+fn section_mid(sections: &[(String, Option<String>)], media: &str) -> Option<String> {
+    sections
         .iter()
-        .find(|(media, _)| media == "audio")
-        .and_then(|(_, mid)| mid.clone());
-    let video_mid = sections
-        .iter()
-        .find(|(media, _)| media == "video")
-        .and_then(|(_, mid)| mid.clone());
-    let rtcp_mux = offer_text
-        .lines()
-        .any(|line| line.trim().eq_ignore_ascii_case("a=rtcp-mux"));
-    if audio_mid.is_none() && video_mid.is_none() && !rtcp_mux {
+        .find(|(name, _)| name == media)
+        .and_then(|(_, mid)| mid.clone())
+}
+
+fn inject_answer_transport_attrs(answer: &str, transport: &OfferTransport) -> String {
+    if transport.audio_mid.is_none() && transport.video_mid.is_none() && !transport.rtcp_mux {
         return answer.to_string();
     }
 
     // 本端 audio/video 各用一个独立 ICE agent + 独立 5-tuple, 无法把
     // video 塞进 audio 的 BUNDLE transport; 因此 answer 明确不写
     // `a=group:BUNDLE`, 让 Linphone 对两条 m-line 各走各的 ICE.
-    // 只保留 a=mid/a=rtcp-mux, 避免部分实现把 video 误绑到 audio 上.
     let mut out = String::with_capacity(answer.len() + 64);
     for raw in answer.lines() {
         let line = raw.trim_end_matches('\r');
         out.push_str(line);
         out.push_str("\r\n");
         if line.starts_with("m=audio") {
-            if let Some(mid) = audio_mid.as_deref() {
-                out.push_str(&format!("a=mid:{mid}\r\n"));
-            }
-            if rtcp_mux {
-                out.push_str("a=rtcp-mux\r\n");
-            }
+            push_media_transport_attrs(
+                &mut out,
+                transport.audio_mid.as_deref(),
+                transport.rtcp_mux,
+            );
         } else if line.starts_with("m=video") {
-            if let Some(mid) = video_mid.as_deref() {
-                out.push_str(&format!("a=mid:{mid}\r\n"));
-            }
-            if rtcp_mux {
-                out.push_str("a=rtcp-mux\r\n");
-            }
+            push_media_transport_attrs(
+                &mut out,
+                transport.video_mid.as_deref(),
+                transport.rtcp_mux,
+            );
         }
     }
     out
+}
+
+fn push_media_transport_attrs(out: &mut String, mid: Option<&str>, rtcp_mux: bool) {
+    if let Some(mid) = mid {
+        out.push_str(&format!("a=mid:{mid}\r\n"));
+    }
+    if rtcp_mux {
+        out.push_str("a=rtcp-mux\r\n");
+    }
 }
 
 /// 喂入对端 ICE -> 起媒体 -> 等连通. 先起 media 再等, 保证 nicesink/

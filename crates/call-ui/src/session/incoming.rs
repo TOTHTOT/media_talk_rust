@@ -141,7 +141,16 @@ async fn try_ice_answer(
     offer_body: &[u8],
 ) -> Option<(LocalIce, String, media::IceCodecs)> {
     let offer_text = String::from_utf8_lossy(offer_body);
-    let remote = match ipcam_ice::sdp::parse_offer(&offer_text) {
+    let remote = parse_incoming_ice(&offer_text)?;
+    let codecs = select_incoming_ice_codecs(offer)?;
+    let want_video = remote.video.is_some() && codecs.video_pt.is_some();
+    let local = prepare_incoming_ice(ctx, want_video).await?;
+    build_incoming_ice_answer(local, ctx, offer, &offer_text, codecs)
+}
+
+/// 解析远端 ICE; 无 ICE / 无音频 ICE 都回退普通 RTP.
+fn parse_incoming_ice(offer_text: &str) -> Option<ipcam_ice::sdp::RemoteMedia> {
+    let remote = match ipcam_ice::sdp::parse_offer(offer_text) {
         Ok(remote) => remote,
         Err(_) => {
             info!("incoming offer has no ICE, using plain RTP");
@@ -152,22 +161,40 @@ async fn try_ice_answer(
         info!("incoming offer has no audio ICE, using plain RTP");
         return None;
     }
-    let Some(codecs) = ice::offer_supports_ice(offer) else {
-        warn!("offer has no Opus at ICE payload types, using plain RTP");
-        return None;
-    };
-    let want_video = remote.video.is_some() && codecs.video_pt.is_some();
-    let mut local = match ice::prepare(ctx.local, ctx.cfg.ice.stun.clone(), false, want_video).await
-    {
-        Ok(local) => local,
+    Some(remote)
+}
+
+/// 本端 ICE 媒体链只支持 Opus 音频; 视频可选.
+fn select_incoming_ice_codecs(offer: &OfferMedias) -> Option<media::IceCodecs> {
+    match ice::offer_supports_ice(offer) {
+        Some(codecs) => Some(codecs),
+        None => {
+            warn!("offer has no Opus at ICE payload types, using plain RTP");
+            None
+        }
+    }
+}
+
+async fn prepare_incoming_ice(ctx: &CallBase, want_video: bool) -> Option<LocalIce> {
+    match ice::prepare(ctx.local, ctx.cfg.ice.stun.clone(), false, want_video).await {
+        Ok(local) => Some(local),
         Err(e) => {
             warn!(error = %e, "ICE setup failed, using plain RTP");
-            return None;
+            None
         }
-    };
+    }
+}
+
+fn build_incoming_ice_answer(
+    mut local: LocalIce,
+    ctx: &CallBase,
+    offer: &OfferMedias,
+    offer_text: &str,
+    codecs: media::IceCodecs,
+) -> Option<(LocalIce, String, media::IceCodecs)> {
     match local.answer_sdp(offer, ctx.local) {
         Ok(Some(answer)) => {
-            let answer = ice::mirror_offer_transport_attrs(&answer, &offer_text);
+            let answer = ice::mirror_offer_transport_attrs(&answer, offer_text);
             Some((local, answer, codecs))
         }
         Ok(None) => {

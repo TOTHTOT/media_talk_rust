@@ -130,75 +130,68 @@ fn build_shared_file_track(
 pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError> {
     info!(send_config = ?cfg);
     ensure_init_internal()?;
-    if cfg.audio.is_none() && cfg.video.is_none() {
-        return Err(GstStreamError::InvalidConfig(
-            "neither audio nor video destination given".into(),
-        ));
-    }
+    validate_send_config(&cfg)?;
 
     let pipeline = Arc::new(gst::Pipeline::new());
     let stats = Arc::new(crate::PktStats::default());
     let stop_flag = Arc::new(AtomicBool::new(false));
 
+    build_sender_tracks(&pipeline, &cfg, &stats)?;
+    // 先 Playing 再起 bus/stats 线程: 失败直接返回, 不泄漏线程.
+    crate::gstutil::set_playing_with_detail(&pipeline, "pipeline set Playing")
+        .map_err(GstStreamError::Init)?;
+    spawn_bus_logger(&pipeline)?;
+    spawn_stats_logger(stats.clone(), stop_flag.clone());
+
+    info!(
+        audio = ?cfg.audio.as_ref().map(|(source, _)| source.label()),
+        video = ?cfg.video.as_ref().map(|(source, _)| source.label()),
+        "rtp sender started"
+    );
+    Ok(RtpSender {
+        pipeline,
+        stop_flag,
+        stats,
+    })
+}
+
+fn validate_send_config(cfg: &RtpSendConfig) -> Result<(), GstStreamError> {
+    if cfg.audio.is_none() && cfg.video.is_none() {
+        return Err(GstStreamError::InvalidConfig(
+            "neither audio nor video destination given".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 建发送 track: 同文件音视频共享一个 uridecodebin3, 否则按 media 各建一条.
+fn build_sender_tracks(
+    pipeline: &Arc<gst::Pipeline>,
+    cfg: &RtpSendConfig,
+    stats: &Arc<crate::PktStats>,
+) -> Result<(), GstStreamError> {
     // 同文件共享: audio 和 video 都是 TrackSource::File 且路径相同,
     // 只建一个 uridecodebin3 解码一次, 音视频 pad 各自接发送链
-    let shared_file = shared_file_info(&cfg.audio, &cfg.video);
-
-    if let Some((file_path, audio_dest, video_dest)) = shared_file {
+    if let Some((file_path, audio_dest, video_dest)) = shared_file_info(&cfg.audio, &cfg.video) {
         let uri = file_uri(&file_path)?;
         info!("some audio and video path");
-        build_shared_file_track(
-            &pipeline,
+        return build_shared_file_track(
+            pipeline,
             &uri,
             audio_dest,
             video_dest,
             cfg.audio_socket.clone(),
             cfg.video_socket.clone(),
-            &stats,
-        )?;
-    } else {
-        build_tracks(&pipeline, &cfg, &stats)?;
+            stats,
+        );
     }
+    build_tracks(pipeline, cfg, stats)
+}
 
-    // 先把管线切到 Playing; 失败就直接返回, 不启动 bus/stats 线程.
-    // 之前线程先启动再 set_state, 失败时 stats 线程没人 stop, 会永久打印
-    // video_pkts=0 / audio_pkts=0.
-    if let Err(e) = pipeline.set_state(gst::State::Playing) {
-        // set_state 的 Display 只有 "Element failed to change its state",
-        // 真正原因在 bus 的 Error 消息里 (哪个 source/udpsink 失败).
-        let detail = pipeline
-            .bus()
-            .and_then(|bus| {
-                bus.timed_pop_filtered(
-                    gst::ClockTime::from_mseconds(100),
-                    &[gst::MessageType::Error],
-                )
-            })
-            .map(|msg| match msg.view() {
-                gst::MessageView::Error(err) => {
-                    let error_text = redact_uri_credentials(&err.error().to_string());
-                    let debug_text = err
-                        .debug()
-                        .map(|d| redact_uri_credentials(&d))
-                        .unwrap_or_default();
-                    format!("{error_text} ({debug_text})")
-                }
-                _ => String::new(),
-            })
-            .unwrap_or_default();
-        let _ = pipeline.set_state(gst::State::Null);
-        let msg = if detail.is_empty() {
-            format!("pipeline set Playing: {e}")
-        } else {
-            format!("pipeline set Playing: {e}; bus error: {detail}")
-        };
-        return Err(GstStreamError::Init(msg));
-    }
-
-    // bus 线程: 只盯 EOS/Error 打日志, 不负责拆管线.
-    // 注意: iter 在 bus 进入 flushing 时也会结束 (不一定是 EOS/Error),
-    // 盲目在这里 set_state(Null) 会把刚起起来的管线误杀 (启动竞态实测复现),
-    // 收尾统一由 RtpSender::stop/Drop 负责
+/// bus 线程: 只盯 EOS/Error 打日志, 不负责拆管线.
+/// iter 在 bus entering flushing 时也会结束 (不一定是 EOS/Error), 盲目
+/// set_state(Null) 会把刚起起来的管线误杀; 收尾统一由 stop/Drop 负责.
+fn spawn_bus_logger(pipeline: &gst::Pipeline) -> Result<(), GstStreamError> {
     let bus = pipeline
         .clone()
         .bus()
@@ -229,39 +222,29 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
         }
         debug!(reason, "rtp sender: bus thread exiting");
     });
+    Ok(())
+}
 
-    // 每 2s 报一次发包数: 视频约 fps 个包, 音频 ptime=20ms 即 50 包/s,
-    // 看到数字涨就证明数据确实离开了我们, 问题在对端或网络
-    let stats_for_tick = stats.clone();
-    let stop_for_tick = stop_flag.clone();
+/// 每 2s 报一次发包数: 视频约 fps 个包, 音频 ptime=20ms 即 50 包/s,
+/// 看到数字涨就证明数据确实离开了我们, 问题在对端或网络.
+fn spawn_stats_logger(stats: Arc<crate::PktStats>, stop_flag: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         loop {
-            if stop_for_tick.load(Ordering::Relaxed) {
+            if stop_flag.load(Ordering::Relaxed) {
                 break;
             }
             std::thread::sleep(Duration::from_secs(2));
             // stop() 可能发生在 sleep 期间: 醒来再查一次, 不再补打最后一轮
-            if stop_for_tick.load(Ordering::Relaxed) {
+            if stop_flag.load(Ordering::Relaxed) {
                 break;
             }
             info!(
-                video_pkts = stats_for_tick.video_pkts.load(Ordering::Relaxed),
-                audio_pkts = stats_for_tick.audio_pkts.load(Ordering::Relaxed),
+                video_pkts = stats.video_pkts.load(Ordering::Relaxed),
+                audio_pkts = stats.audio_pkts.load(Ordering::Relaxed),
                 "rtp sender stats"
             );
         }
     });
-
-    info!(
-        audio = ?cfg.audio.as_ref().map(|(source, _)| source.label()),
-        video = ?cfg.video.as_ref().map(|(source, _)| source.label()),
-        "rtp sender started"
-    );
-    Ok(RtpSender {
-        pipeline,
-        stop_flag,
-        stats,
-    })
 }
 
 /// 通用的单路媒体 track 构建: File/Rtsp 走 uridecodebin3, 设备走对应源元件.

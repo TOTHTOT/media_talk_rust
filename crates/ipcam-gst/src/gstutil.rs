@@ -6,6 +6,47 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 
 use crate::GstStreamError;
+use crate::rtp_send::redact_uri_credentials;
+
+/// 把 pipeline 切到 Playing; 失败时把 bus 里的具体 Error 一起返回.
+///
+/// `set_state` 的 Display 只有 "Element failed to change its state",
+/// 真正原因在 bus 的 Error 消息里 (哪个 source/sink 失败). 错误文本可能
+/// 带原始 URI (含 rtsp://user:pass@...), 所以两段都先脱敏.
+pub(crate) fn set_playing_with_detail(
+    pipeline: &gst::Pipeline,
+    prefix: &str,
+) -> Result<(), String> {
+    if let Err(e) = pipeline.set_state(gst::State::Playing) {
+        let detail = pipeline
+            .bus()
+            .and_then(|bus| {
+                bus.timed_pop_filtered(
+                    gst::ClockTime::from_mseconds(100),
+                    &[gst::MessageType::Error],
+                )
+            })
+            .map(|msg| match msg.view() {
+                gst::MessageView::Error(err) => {
+                    let error_text = redact_uri_credentials(&err.error().to_string());
+                    let debug_text = err
+                        .debug()
+                        .map(|d| redact_uri_credentials(&d))
+                        .unwrap_or_default();
+                    format!("{error_text} ({debug_text})")
+                }
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let _ = pipeline.set_state(gst::State::Null);
+        return Err(if detail.is_empty() {
+            format!("{prefix}: {e}")
+        } else {
+            format!("{prefix}: {e}; bus error: {detail}")
+        });
+    }
+    Ok(())
+}
 
 /// Create an element, mapping a missing factory/plugin to `Init` with
 /// the element name in the message (a missing `rtspsrc` usually means

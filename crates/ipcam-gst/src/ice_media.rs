@@ -40,7 +40,7 @@ use tracing::info;
 
 use crate::rtp_send::{
     TrackKind, TrackSource, audio_source_branch, camera_src_name, file_uri, mic_src_name,
-    plug_device_source, plug_uri_source, redact_uri_credentials, video_source_branch,
+    plug_device_source, plug_uri_source, video_source_branch,
 };
 use crate::{
     AudioChunkSink, GstStreamError, RawAudioChunk, RawTaps, RawVideoFrame, VideoFrameSink,
@@ -160,142 +160,16 @@ unsafe impl Sync for AgentPtr {}
 /// ```
 pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstStreamError> {
     crate::ensure_init_internal()?;
-    if cfg.video_src.is_none() && cfg.audio_src.is_none() && !audio_recv_wanted(cfg) {
-        return Err(GstStreamError::InvalidConfig(
-            "ice media: nothing to send or receive".into(),
-        ));
-    }
+    let agents = IceAgents::from_config(cfg);
+    validate_ice_config(cfg, agents)?;
+
     let pipeline = gst::Pipeline::new();
     let bytes = Arc::new(AtomicBytes::default());
-    // 产品化路径: 每路媒体一个独立 ICE agent, 各自 stream=1/component=1.
-    let video = cfg.video_agent.map(|agent| AgentPtr(agent.raw_agent()));
-    let audio = cfg.audio_agent.map(|agent| AgentPtr(agent.raw_agent()));
-    let video_wanted = cfg.taps.video.is_some() || cfg.video_src.is_some();
-    let audio_wanted = audio_recv_wanted(cfg) || cfg.audio_src.is_some();
-    if video_wanted && video.is_none() {
-        return Err(GstStreamError::InvalidConfig(
-            "ice media: video agent missing".into(),
-        ));
-    }
-    if audio_wanted && audio.is_none() {
-        return Err(GstStreamError::InvalidConfig(
-            "ice media: audio agent missing".into(),
-        ));
-    }
-    let max_width = cfg.max_width;
-    let video_pt = cfg.codecs.video_pt.unwrap_or(VIDEO_PT);
-    let audio_pt = cfg.codecs.audio_pt;
+    build_receive_branches(&pipeline, cfg, agents, &bytes)?;
+    build_video_send_branch(&pipeline, cfg, agents, &bytes)?;
+    build_audio_send_branch(&pipeline, cfg, agents, &bytes)?;
+    set_ice_pipeline_playing(&pipeline)?;
 
-    if let Some(tap) = &cfg.taps.video {
-        build_video_recv(
-            &pipeline,
-            video.expect("video agent checked"),
-            tap.clone(),
-            &bytes,
-        )?;
-    }
-    if audio_recv_wanted(cfg) {
-        build_audio_recv(&pipeline, audio.expect("audio agent checked"), cfg, &bytes)?;
-    }
-    if let Some(source) = &cfg.video_src {
-        info!(video_src = %source.label(), "ice media: video send branch");
-        let pipeline_cb = pipeline.clone();
-        let video = video.expect("video agent checked");
-        match source {
-            TrackSource::File(path) => {
-                let uri = file_uri(path)?;
-                let bytes = bytes.clone();
-                plug_uri_source(&pipeline, &uri, TrackKind::Video, move |pad| {
-                    link_video_send(&pipeline_cb, &pad, video, max_width, video_pt, &bytes)
-                })?;
-            }
-            TrackSource::Rtsp { uri } => {
-                let uri = uri.clone();
-                let bytes = bytes.clone();
-                plug_uri_source(&pipeline, &uri, TrackKind::Video, move |pad| {
-                    link_video_send(&pipeline_cb, &pad, video, max_width, video_pt, &bytes)
-                })?;
-            }
-            TrackSource::LocalCamera { device } => {
-                let bytes = bytes.clone();
-                plug_device_source(
-                    &pipeline,
-                    camera_src_name(),
-                    device.as_deref(),
-                    move |pad| {
-                        link_video_send(&pipeline_cb, &pad, video, max_width, video_pt, &bytes)
-                    },
-                )?;
-            }
-            TrackSource::Mic => {
-                return Err(GstStreamError::InvalidConfig(
-                    "video_src=mic not supported (audio_src uses the mic)".into(),
-                ));
-            }
-        }
-    }
-    if let Some(source) = &cfg.audio_src {
-        info!(audio_src = %source.label(), "ice media: audio send branch");
-        let pipeline_cb = pipeline.clone();
-        let bytes = bytes.clone();
-        let audio = audio.expect("audio agent checked");
-        match source {
-            TrackSource::Mic => {
-                plug_device_source(&pipeline, mic_src_name(), None, move |pad| {
-                    link_audio_send(&pipeline_cb, &pad, audio, audio_pt, &bytes)
-                })?;
-            }
-            TrackSource::File(path) => {
-                let uri = file_uri(path)?;
-                plug_uri_source(&pipeline, &uri, TrackKind::Audio, move |pad| {
-                    link_audio_send(&pipeline_cb, &pad, audio, audio_pt, &bytes)
-                })?;
-            }
-            TrackSource::Rtsp { uri } => {
-                let uri = uri.clone();
-                plug_uri_source(&pipeline, &uri, TrackKind::Audio, move |pad| {
-                    link_audio_send(&pipeline_cb, &pad, audio, audio_pt, &bytes)
-                })?;
-            }
-            TrackSource::LocalCamera { .. } => {
-                return Err(GstStreamError::InvalidConfig(
-                    "audio_src=local camera not supported".into(),
-                ));
-            }
-        }
-    }
-
-    if let Err(e) = pipeline.set_state(gst::State::Playing) {
-        // set_state 的 Display 只有 "Element failed to change its state",
-        // 真正原因在 bus 的 Error 消息里 (哪个 source/sink 失败).
-        let detail = pipeline
-            .bus()
-            .and_then(|bus| {
-                bus.timed_pop_filtered(
-                    gst::ClockTime::from_mseconds(100),
-                    &[gst::MessageType::Error],
-                )
-            })
-            .map(|msg| match msg.view() {
-                gst::MessageView::Error(err) => {
-                    let error_text = redact_uri_credentials(&err.error().to_string());
-                    let debug_text = err
-                        .debug()
-                        .map(|d| redact_uri_credentials(&d))
-                        .unwrap_or_default();
-                    format!("{error_text} ({debug_text})")
-                }
-                _ => String::new(),
-            })
-            .unwrap_or_default();
-        let _ = pipeline.set_state(gst::State::Null);
-        let msg = if detail.is_empty() {
-            format!("ice media play: {e}")
-        } else {
-            format!("ice media play: {e}; bus error: {detail}")
-        };
-        return Err(GstStreamError::Stream(msg));
-    }
     info!(
         video_tx = cfg.video_src.is_some(),
         audio_tx = cfg.audio_src.is_some(),
@@ -304,6 +178,163 @@ pub fn start_ice_media(cfg: &IceMediaConfig<'_>) -> Result<IceMediaHandle, GstSt
         "ice media started"
     );
     Ok(IceMediaHandle { pipeline, bytes })
+}
+
+/// 本端两路媒体各自的 ICE agent 裸指针; 校验后传给各建链 helper.
+#[derive(Clone, Copy)]
+struct IceAgents {
+    video: Option<AgentPtr>,
+    audio: Option<AgentPtr>,
+}
+
+impl IceAgents {
+    fn from_config(cfg: &IceMediaConfig<'_>) -> Self {
+        Self {
+            video: cfg.video_agent.map(|agent| AgentPtr(agent.raw_agent())),
+            audio: cfg.audio_agent.map(|agent| AgentPtr(agent.raw_agent())),
+        }
+    }
+}
+
+fn validate_ice_config(cfg: &IceMediaConfig<'_>, agents: IceAgents) -> Result<(), GstStreamError> {
+    if cfg.video_src.is_none() && !audio_wanted(cfg) {
+        return Err(GstStreamError::InvalidConfig(
+            "ice media: nothing to send or receive".into(),
+        ));
+    }
+    ensure_agent(video_wanted(cfg), agents.video, "video")?;
+    ensure_agent(audio_wanted(cfg), agents.audio, "audio")?;
+    Ok(())
+}
+
+fn video_wanted(cfg: &IceMediaConfig<'_>) -> bool {
+    cfg.taps.video.is_some() || cfg.video_src.is_some()
+}
+
+fn audio_wanted(cfg: &IceMediaConfig<'_>) -> bool {
+    audio_recv_wanted(cfg) || cfg.audio_src.is_some()
+}
+
+fn ensure_agent(wanted: bool, agent: Option<AgentPtr>, what: &str) -> Result<(), GstStreamError> {
+    if wanted && agent.is_none() {
+        return Err(GstStreamError::InvalidConfig(format!(
+            "ice media: {what} agent missing"
+        )));
+    }
+    Ok(())
+}
+
+fn build_receive_branches(
+    pipeline: &gst::Pipeline,
+    cfg: &IceMediaConfig<'_>,
+    agents: IceAgents,
+    bytes: &Arc<AtomicBytes>,
+) -> Result<(), GstStreamError> {
+    if let Some(tap) = &cfg.taps.video {
+        build_video_recv(
+            pipeline,
+            agents.video.expect("video agent validated"),
+            tap.clone(),
+            bytes,
+        )?;
+    }
+    if audio_recv_wanted(cfg) {
+        build_audio_recv(
+            pipeline,
+            agents.audio.expect("audio agent validated"),
+            cfg,
+            bytes,
+        )?;
+    }
+    Ok(())
+}
+
+fn build_video_send_branch(
+    pipeline: &gst::Pipeline,
+    cfg: &IceMediaConfig<'_>,
+    agents: IceAgents,
+    bytes: &Arc<AtomicBytes>,
+) -> Result<(), GstStreamError> {
+    let Some(source) = &cfg.video_src else {
+        return Ok(());
+    };
+    info!(video_src = %source.label(), "ice media: video send branch");
+    let agent = agents.video.expect("video agent validated");
+    let max_width = cfg.max_width;
+    let pt = cfg.codecs.video_pt.unwrap_or(VIDEO_PT);
+    let pipeline_cb = pipeline.clone();
+    let bytes_cb = bytes.clone();
+    match source {
+        TrackSource::File(path) => {
+            let uri = file_uri(path)?;
+            plug_uri_source(pipeline, &uri, TrackKind::Video, move |pad| {
+                link_video_send(&pipeline_cb, &pad, agent, max_width, pt, &bytes_cb)
+            })?;
+        }
+        TrackSource::Rtsp { uri } => {
+            let uri = uri.clone();
+            plug_uri_source(pipeline, &uri, TrackKind::Video, move |pad| {
+                link_video_send(&pipeline_cb, &pad, agent, max_width, pt, &bytes_cb)
+            })?;
+        }
+        TrackSource::LocalCamera { device } => {
+            plug_device_source(pipeline, camera_src_name(), device.as_deref(), move |pad| {
+                link_video_send(&pipeline_cb, &pad, agent, max_width, pt, &bytes_cb)
+            })?;
+        }
+        TrackSource::Mic => {
+            return Err(GstStreamError::InvalidConfig(
+                "video_src=mic not supported (audio_src uses the mic)".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn build_audio_send_branch(
+    pipeline: &gst::Pipeline,
+    cfg: &IceMediaConfig<'_>,
+    agents: IceAgents,
+    bytes: &Arc<AtomicBytes>,
+) -> Result<(), GstStreamError> {
+    let Some(source) = &cfg.audio_src else {
+        return Ok(());
+    };
+    info!(audio_src = %source.label(), "ice media: audio send branch");
+    let agent = agents.audio.expect("audio agent validated");
+    let pt = cfg.codecs.audio_pt;
+    let pipeline_cb = pipeline.clone();
+    let bytes_cb = bytes.clone();
+    match source {
+        TrackSource::Mic => {
+            plug_device_source(pipeline, mic_src_name(), None, move |pad| {
+                link_audio_send(&pipeline_cb, &pad, agent, pt, &bytes_cb)
+            })?;
+        }
+        TrackSource::File(path) => {
+            let uri = file_uri(path)?;
+            plug_uri_source(pipeline, &uri, TrackKind::Audio, move |pad| {
+                link_audio_send(&pipeline_cb, &pad, agent, pt, &bytes_cb)
+            })?;
+        }
+        TrackSource::Rtsp { uri } => {
+            let uri = uri.clone();
+            plug_uri_source(pipeline, &uri, TrackKind::Audio, move |pad| {
+                link_audio_send(&pipeline_cb, &pad, agent, pt, &bytes_cb)
+            })?;
+        }
+        TrackSource::LocalCamera { .. } => {
+            return Err(GstStreamError::InvalidConfig(
+                "audio_src=local camera not supported".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn set_ice_pipeline_playing(pipeline: &gst::Pipeline) -> Result<(), GstStreamError> {
+    crate::gstutil::set_playing_with_detail(pipeline, "ice media play")
+        .map_err(GstStreamError::Stream)
 }
 
 /// 音频收分支路是否有消费者: Alsa/Auto 喇叭恒有, TapOnly 依赖 audio tap 存在.
@@ -385,29 +416,8 @@ fn build_audio_recv(
     let conv = make("audioconvert")?;
     let resample = make("audioresample")?;
     let tee = make("tee")?;
-    // 播放支路: queue → alsasink(device) 或平台默认 autoaudiosink,
-    // 转码已在 tee 前共用段完成. autoaudiosink 内部真实 sink 在
-    // READY→PAUSED 才创建, async 必须用 element-added 逮住再关.
-    let playback = match &cfg.audio_recv {
-        AudioRecv::Alsa(device) => {
-            let queue = make("queue")?;
-            let sink = make("alsasink")?;
-            sink.set_property("device", device);
-            Some(vec![queue, sink])
-        }
-        AudioRecv::Auto => {
-            let queue = make("queue")?;
-            let sink = make("autoaudiosink")?;
-            disable_sink_async(&sink);
-            Some(vec![queue, sink])
-        }
-        _ => None,
-    };
-    // tap 支路: leaky_queue → S16LE appsink (与 ingest 音频 tap 同形).
-    let tap = match &cfg.taps.audio {
-        Some(cb) => Some(vec![leaky_queue()?, audio_tap_appsink(cb.clone())]),
-        None => None,
-    };
+    let playback = build_audio_playback_branch(cfg)?;
+    let tap = build_audio_tap_branch(cfg)?;
 
     let mut refs = vec![&src, &depay, &dec, &conv, &resample, &tee];
     if let Some(playback) = &playback {
@@ -421,18 +431,57 @@ fn build_audio_recv(
         &[&src, &depay, &dec, &conv, &resample, &tee],
         "ice audio receive",
     )?;
-    if let Some(playback) = &playback {
-        let playback_refs: Vec<&gst::Element> = playback.iter().collect();
-        link_chain(&playback_refs, "ice audio playback branch")?;
-        link_tee_branch(&tee, &playback[0])?;
-    }
-    if let Some(tap) = &tap {
-        let tap_refs: Vec<&gst::Element> = tap.iter().collect();
-        link_chain(&tap_refs, "ice audio tap branch")?;
-        link_tee_branch(&tee, &tap[0])?;
-    }
+    link_tee_optional(&tee, playback.as_deref(), "ice audio playback branch")?;
+    link_tee_optional(&tee, tap.as_deref(), "ice audio tap branch")?;
     install_byte_probe(&static_pad(&src, "src")?, bytes, false);
     Ok(())
+}
+
+/// 播放支路: queue → alsasink(device) 或平台默认 autoaudiosink.
+/// autoaudiosink 内部真实 sink 在 READY→PAUSED 才创建, async 必须用
+/// element-added 逮住再关.
+fn build_audio_playback_branch(
+    cfg: &IceMediaConfig<'_>,
+) -> Result<Option<Vec<gst::Element>>, GstStreamError> {
+    match &cfg.audio_recv {
+        AudioRecv::Alsa(device) => {
+            let queue = make("queue")?;
+            let sink = make("alsasink")?;
+            sink.set_property("device", device);
+            Ok(Some(vec![queue, sink]))
+        }
+        AudioRecv::Auto => {
+            let queue = make("queue")?;
+            let sink = make("autoaudiosink")?;
+            disable_sink_async(&sink);
+            Ok(Some(vec![queue, sink]))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// tap 支路: leaky_queue → S16LE appsink (与 ingest 音频 tap 同形).
+fn build_audio_tap_branch(
+    cfg: &IceMediaConfig<'_>,
+) -> Result<Option<Vec<gst::Element>>, GstStreamError> {
+    match &cfg.taps.audio {
+        Some(cb) => Ok(Some(vec![leaky_queue()?, audio_tap_appsink(cb.clone())])),
+        None => Ok(None),
+    }
+}
+
+/// 把 tee 的一条可选支路链起来; 支路为空时 no-op.
+fn link_tee_optional(
+    tee: &gst::Element,
+    branch: Option<&[gst::Element]>,
+    what: &str,
+) -> Result<(), GstStreamError> {
+    let Some(branch) = branch else {
+        return Ok(());
+    };
+    let refs: Vec<&gst::Element> = branch.iter().collect();
+    link_chain(&refs, what)?;
+    link_tee_branch(tee, &branch[0])
 }
 
 /// 视频发: 源支路 (rtp_send 复用, x264enc 基础五属性) →
