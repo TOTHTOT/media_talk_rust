@@ -42,6 +42,11 @@ pub(super) async fn call_loop(
             ctl = ctl_rx.recv() => {
                 match ctl {
                     Some(WorkerCmd::Hangup) | None => {
+                        // 用户已挂断: 先停媒体再等 BYE. BYE 事务可能等待
+                        // 响应/超时, 期间不能让 RTP 继续发、统计线程继续打印.
+                        if let Some(m) = media.take() {
+                            m.stop();
+                        }
                         dialog.bye_with_headers(None).await?;
                         break "local hung up".to_string();
                     }
@@ -55,6 +60,11 @@ pub(super) async fn call_loop(
             }
         }
     };
+    // 其他退出路径 (对端 BYE / 路由关闭) 也先停媒体再返回;
+    // 本地挂断已在 BYE 前 take 过, 这里为空.
+    if let Some(m) = media.take() {
+        m.stop();
+    }
     Ok(reason)
 }
 

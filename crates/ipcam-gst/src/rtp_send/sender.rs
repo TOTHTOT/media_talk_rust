@@ -160,6 +160,41 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
         build_tracks(&pipeline, &cfg, &stats)?;
     }
 
+    // 先把管线切到 Playing; 失败就直接返回, 不启动 bus/stats 线程.
+    // 之前线程先启动再 set_state, 失败时 stats 线程没人 stop, 会永久打印
+    // video_pkts=0 / audio_pkts=0.
+    if let Err(e) = pipeline.set_state(gst::State::Playing) {
+        // set_state 的 Display 只有 "Element failed to change its state",
+        // 真正原因在 bus 的 Error 消息里 (哪个 source/udpsink 失败).
+        let detail = pipeline
+            .bus()
+            .and_then(|bus| {
+                bus.timed_pop_filtered(
+                    gst::ClockTime::from_mseconds(100),
+                    &[gst::MessageType::Error],
+                )
+            })
+            .map(|msg| match msg.view() {
+                gst::MessageView::Error(err) => {
+                    let error_text = redact_uri_credentials(&err.error().to_string());
+                    let debug_text = err
+                        .debug()
+                        .map(|d| redact_uri_credentials(&d))
+                        .unwrap_or_default();
+                    format!("{error_text} ({debug_text})")
+                }
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let _ = pipeline.set_state(gst::State::Null);
+        let msg = if detail.is_empty() {
+            format!("pipeline set Playing: {e}")
+        } else {
+            format!("pipeline set Playing: {e}; bus error: {detail}")
+        };
+        return Err(GstStreamError::Init(msg));
+    }
+
     // bus 线程: 只盯 EOS/Error 打日志, 不负责拆管线.
     // 注意: iter 在 bus 进入 flushing 时也会结束 (不一定是 EOS/Error),
     // 盲目在这里 set_state(Null) 会把刚起起来的管线误杀 (启动竞态实测复现),
@@ -200,8 +235,15 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
     let stats_for_tick = stats.clone();
     let stop_for_tick = stop_flag.clone();
     std::thread::spawn(move || {
-        while !stop_for_tick.load(Ordering::Relaxed) {
+        loop {
+            if stop_for_tick.load(Ordering::Relaxed) {
+                break;
+            }
             std::thread::sleep(Duration::from_secs(2));
+            // stop() 可能发生在 sleep 期间: 醒来再查一次, 不再补打最后一轮
+            if stop_for_tick.load(Ordering::Relaxed) {
+                break;
+            }
             info!(
                 video_pkts = stats_for_tick.video_pkts.load(Ordering::Relaxed),
                 audio_pkts = stats_for_tick.audio_pkts.load(Ordering::Relaxed),
@@ -210,9 +252,6 @@ pub fn start_rtp_sender(cfg: RtpSendConfig) -> Result<RtpSender, GstStreamError>
         }
     });
 
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|e| GstStreamError::Init(format!("pipeline set Playing: {e}")))?;
     info!(
         audio = ?cfg.audio.as_ref().map(|(source, _)| source.label()),
         video = ?cfg.video.as_ref().map(|(source, _)| source.label()),
