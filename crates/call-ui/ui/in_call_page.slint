@@ -1,5 +1,5 @@
 // 通话中: 视频铺满 + 开锁/挂断
-import { FilledButton, TonalButton } from "../material-1.1.0/material.slint";
+import { ButtonIntent, KitButton, KitThemeContext } from "@kit";
 
 export component InCallPage inherits Rectangle {
     in property <image> video-frame;
@@ -20,15 +20,16 @@ export component InCallPage inherits Rectangle {
         height: self.preferred-height;
         x: parent.width - self.width - 24px;
         y: parent.height - self.height - 24px;
-        spacing: 12px;
-        TonalButton {
+        spacing: KitThemeContext.current.spacing.unit * 3;
+        KitButton {
             text: @tr("开锁");
-            clicked => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); }
+            activated => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); }
         }
 
-        FilledButton {
+        KitButton {
             text: @tr("挂断");
-            clicked => { root.hangup(); }
+            intent: ButtonIntent.destructive;
+            activated => { root.hangup(); }
         }
     }
 }

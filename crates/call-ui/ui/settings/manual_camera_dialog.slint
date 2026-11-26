@@ -1,22 +1,26 @@
 // 手动添加摄像头对话框内容, 可在 slint 预览器直接查看
 import {
-    FilledButton,
-    TextButton,
-    MaterialText,
-    MaterialTypography,
-} from "../../material-1.1.0/material.slint";
+    ButtonIntent,
+    KitButton,
+    KitMetrics,
+    KitThemeContext,
+    TypographyRole,
+} from "@kit";
 import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
 
 export component ManualCameraDialog inherits VerticalLayout {
     callback add-camera(string, string, string, string);
     callback cancelled();
 
-    padding: 24px;
-    spacing: 12px;
+    padding: KitThemeContext.current.spacing.unit * 6;
+    spacing: KitThemeContext.current.spacing.unit * 3;
 
-    MaterialText {
+    Text {
         text: @tr("手动添加摄像头");
-        style: MaterialTypography.title_large;
+        color: KitThemeContext.current.text-primary;
+        font-family: KitThemeContext.current.typography.family;
+        font-size: KitMetrics.font-size(KitThemeContext.current, TypographyRole.subtitle);
+        font-weight: KitThemeContext.current.typography.weight-semibold;
     }
 
     m-name := KbTextField {
@@ -35,7 +39,6 @@ export component ManualCameraDialog inherits VerticalLayout {
 
     m-user := KbTextField {
         label: @tr("用户名");
-        // 这套 material TextField 不渲染 placeholder, 提示走 supporting-text
         supporting-text: @tr("留空使用默认 admin");
         commit-seq: KeyboardCtx.commit-seq;
         commit-text: KeyboardCtx.commit-text;
@@ -54,17 +57,18 @@ export component ManualCameraDialog inherits VerticalLayout {
     Rectangle { vertical-stretch: 1; }
 
     HorizontalLayout {
-        spacing: 12px;
+        spacing: KitThemeContext.current.spacing.unit * 3;
         alignment: end;
-        TextButton {
+        KitButton {
             text: @tr("取消");
-            clicked => { root.cancelled(); }
+            intent: ButtonIntent.outline;
+            activated => { root.cancelled(); }
         }
 
-        FilledButton {
+        KitButton {
             text: @tr("保存");
-            enabled: m-name.text != "" && m-uri.text != "";
-            clicked => {
+            disabled: m-name.text == "" || m-uri.text == "";
+            activated => {
                 root.add-camera(m-name.text, m-uri.text, m-user.text, m-pass.text);
             }
         }

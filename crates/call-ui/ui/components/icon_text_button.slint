@@ -1,0 +1,49 @@
+// 紧凑的 图标 + 文字 按钮.
+//
+// KitButton 为了让文字在按钮里居中, 会按 max(leading, trailing) 在左右两侧
+// 同时预留图标宽度. 只放 leading-icon 时右侧就会空出一块.
+// 这里继承 KitPressable 自己排版, 宽度只由 图标 + 间距 + 文字 + 内边距 决定,
+// 悬停/按下/焦点/无障碍行为仍复用 KitPressable.
+import {
+    IconGlyph,
+    KitIcon,
+    KitMetrics,
+    KitPressable,
+} from "@kit";
+
+export component IconTextButton inherits KitPressable {
+    in property <IconGlyph> icon;
+    in property <string> text;
+    private property <bool> has-icon: root.icon.stroke != "" || root.icon.fill != "";
+    private property <length> icon-gap: KitMetrics.inline-gap(root.theme);
+    private property <length> natural-width:
+        content.preferred-width + 2 * root.padding-inline;
+
+    accessible-label: root.accessible-name == "" ? root.text : root.accessible-name;
+
+    min-width: root.natural-width;
+    preferred-width: root.natural-width;
+    max-width: root.natural-width;
+
+    content := HorizontalLayout {
+        spacing: root.has-icon ? root.icon-gap : 0px;
+        alignment: start;
+        cross-axis-alignment: center;
+
+        if root.has-icon: KitIcon {
+            theme: root.theme;
+            control-size: root.control-size;
+            glyph: root.icon;
+            ink: root.disabled ? root.recipe.disabled-foreground : root.recipe.foreground;
+        }
+
+        Text {
+            text: root.text;
+            color: root.disabled ? root.recipe.disabled-foreground : root.recipe.foreground;
+            font-family: root.theme.typography.family;
+            font-size: root.text-size;
+            font-weight: root.text-weight;
+            vertical-alignment: center;
+        }
+    }
+}

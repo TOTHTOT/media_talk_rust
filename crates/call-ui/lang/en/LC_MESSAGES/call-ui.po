@@ -114,6 +114,12 @@ msgstr "Network"
 msgid "设置"
 msgstr "Settings"
 
+msgid "休眠时间: 秒"
+msgstr "Sleep timeout (s)"
+
+msgid "永不"
+msgstr "Never"
+
 msgid "访客留影"
 msgstr "Visitor Snapshots"
 

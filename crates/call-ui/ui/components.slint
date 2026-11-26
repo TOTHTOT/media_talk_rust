@@ -1,12 +1,16 @@
-// 通用小组件与共享类型 (基于 Slint 官方 Material 组件集)
+// 通用小组件与共享类型 (Kit 主题 + 现有业务结构体)
 // 图标: lucide (https://lucide.dev), 编译期内嵌, 白描边风格统一 colorize
 import {
-    FilledCard,
-    Badge,
-    MaterialText,
-    MaterialTypography,
-    MaterialPalette,
-} from "../material-1.1.0/material.slint";
+    AlertSeverity,
+    KitAlert,
+    KitBadge,
+    KitMetrics,
+    KitTheme,
+    KitThemeContext,
+    KitToast,
+    ToastEntry,
+    TypographyRole,
+} from "@kit";
 
 export struct CallLogEntry {
     outgoing: bool,    // true=呼出 false=呼入 (未接必为呼入)
@@ -55,31 +59,31 @@ export component Dot inherits Rectangle {
     background: root.tint;
 }
 
-// 应用图标卡片: Material 卡片 + 彩色圆角底 lucide 图标 + 名称 + 角标
+// 应用图标卡片: Kit 主题卡片表面 + 彩色圆角底 lucide 图标 + 名称 + 角标
 // 尺寸由外层 GridLayout 格子拉伸决定, 内部元素按格子尺寸缩放
-export component AppIcon inherits FilledCard {
+export component AppIcon inherits Rectangle {
+    property <KitTheme> theme: KitThemeContext.current;
+    callback clicked();
     in property <image> icon;
     in property <string> label;
     in property <brush> tint;
     in property <int> badge: 0;
 
-    // 不用 FilledCard 自带 clickable: 其 StateLayerArea 的 color 官方没接线 (透明),
-    // 悬停/按压反馈不可见; 这里自绘反馈层 + 自己的 TouchArea
-    clickable: false;
+    background: root.theme.surface;
+    border-width: root.theme.shape.border-width;
+    border-color: root.theme.border-subtle;
+    border-radius: root.theme.shape.radius-container;
+    clip: true;
 
     // 悬停/按压反馈 (压在图标盒和文字下面, 只染卡片底色)
     Rectangle {
-        width: 100%;
-        height: 100%;
-        border-radius: 12px;
-        background: MaterialPalette.on_surface;
+        border-radius: root.theme.shape.radius-container;
+        background: root.theme.text-primary;
         opacity: touch.pressed ? 0.12 : touch.has-hover ? 0.08 : 0;
-        animate opacity { duration: 120ms; }
+        animate opacity { duration: root.theme.motion.fast; }
     }
 
     touch := TouchArea {
-        width: 100%;
-        height: 100%;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
@@ -88,7 +92,7 @@ export component AppIcon inherits FilledCard {
     // 盒子尺寸依赖卡片尺寸, 进 Layout 会造成绑定循环, 用绝对定位手动组居中
     property <length> box: min(min(88px, root.width * 0.5), root.height * 0.45);
     property <length> label-h: 28px;
-    property <length> group-h: root.box + 10px + root.label-h;
+    property <length> group-h: root.box + root.theme.spacing.unit * 2 + root.label-h;
 
     Rectangle {
         x: (parent.width - root.box) / 2;
@@ -97,6 +101,7 @@ export component AppIcon inherits FilledCard {
         height: root.box;
         background: root.tint;
         border-radius: root.box * 0.28;
+
         Image {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
@@ -107,60 +112,58 @@ export component AppIcon inherits FilledCard {
         }
     }
 
-    MaterialText {
-        y: (parent.height - root.group-h) / 2 + root.box + 10px;
+    Text {
+        y: (parent.height - root.group-h) / 2 + root.box + root.theme.spacing.unit * 2;
         width: 100%;
         height: root.label-h;
         text: root.label;
-        style: MaterialTypography.title_medium;
+        color: root.theme.text-primary;
+        font-family: root.theme.typography.family;
+        font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
+        font-weight: root.theme.typography.weight-medium;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
 
-    if root.badge > 0: Badge {
-        x: parent.width - self.width - 12px;
-        y: 12px;
-        text: root.badge;
+    if root.badge > 0: KitBadge {
+        x: parent.width - self.width - root.theme.spacing.unit * 3;
+        y: root.theme.spacing.unit * 3;
+        text: root.badge + "";
     }
 }
 
-// 气泡提示: 底部居中浮条, 视觉复刻 Material SnackBar
-// 不用官方 SnackBar (PopupWindow): 弹层需铺满窗口来定位, 会吃掉所有鼠标事件,
-// toast 期间整窗不可点; 纯 Rectangle 无 TouchArea 事件穿透, 不挡界面
+// 气泡提示: 底部居中浮条. 使用 KitToast 的主题表面和语义色, 外层仍用
+// 纯 Rectangle 定位, 避免 PopupWindow 吃掉整窗事件.
 export component AppToast inherits Rectangle {
     in property <string> text;
     in property <bool> shown;
+    property <KitTheme> theme: KitThemeContext.current;
+    property <ToastEntry> entry: {
+        token: 0,
+        title: root.text,
+        message: "",
+        action-label: "",
+        severity: AlertSeverity.information,
+        dismissible: false,
+        dismiss-label: "",
+    };
 
     // 本体: shown 时滑入到底部, 隐藏时停在窗口底缘外
-    Rectangle {
+    toast-holder := Rectangle {
         x: (parent.width - self.width) / 2;
-        y: root.shown ? parent.height - self.height - 30px : parent.height + 8px;
-
-        // 自适应宽度
-        width: Math.clamp(inner.preferred-width, 100px, Math.min(344px, parent.width - 32px));
-        height: inner.preferred-height;
-        background: MaterialPalette.inverse_surface;
-        border-radius: 4px;
-        drop-shadow-blur: 12px;
-        drop-shadow-color: #00000060;
+        y: root.shown ? parent.height - self.height - root.theme.spacing.unit * 8 : parent.height + 8px;
+        width: Math.clamp(toast.preferred-width, 100px, Math.min(344px, parent.width - 32px));
+        height: toast.preferred-height;
+        opacity: root.shown ? 1 : 0;
         animate y {
-            duration: 250ms;
+            duration: root.theme.reduced-motion ? 0ms : 250ms;
             easing: ease-out;
         }
+        animate opacity { duration: root.theme.reduced-motion ? 0ms : 150ms; }
 
-        inner := HorizontalLayout {
-            padding-left: 26px;
-            padding-right: 26px;
-            padding-top: 12px;
-            padding-bottom: 12px;
-            MaterialText {
-                horizontal-alignment: center;
-                text: root.text;
-                wrap: word-wrap;
-                style: MaterialTypography.body_medium;
-                color: MaterialPalette.inverse_on_surface;
-                vertical-alignment: center;
-            }
+        toast := KitToast {
+            width: 100%;
+            entry: root.entry;
         }
     }
 }
@@ -170,18 +173,10 @@ export component AppToast inherits Rectangle {
 export component ErrorBanner inherits Rectangle {
     in property <string> text;
 
-    if root.text != "" : Rectangle {
+    if root.text != "": KitAlert {
         y: 0;
         width: 100%;
-        height: 32px;
-        background: MaterialPalette.error;
-        MaterialText {
-            text: root.text;
-            color: MaterialPalette.on_error;
-            width: 100%;
-            height: 100%;
-            vertical-alignment: center;
-            horizontal-alignment: center;
-        }
+        severity: AlertSeverity.error;
+        title: root.text;
     }
 }

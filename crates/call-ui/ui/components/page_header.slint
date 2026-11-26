@@ -1,0 +1,57 @@
+// 页面顶部通用栏: 左返回 / 中标题 / 右占位.
+// 三段等分, 标题始终在窗口中间; 不依赖 back.width, 避免布局绑定环.
+import {
+    ButtonIntent,
+    KitMetrics,
+    KitThemeContext,
+    TypographyRole,
+} from "@kit";
+import { LucideIcons } from "@kit-icons/all.slint";
+import { IconTextButton } from "icon_text_button.slint";
+
+export component PageHeader inherits HorizontalLayout {
+    in property <string> title;
+    in property <bool> show-back: true;
+    callback back();
+
+    width: 100%;
+    spacing: 0;
+    cross-axis-alignment: center;
+
+    // 左三分之一: 返回按钮靠左
+    VerticalLayout {
+        width: root.width / 3;
+        horizontal-stretch: 0;
+        alignment: start;
+
+        if root.show-back: IconTextButton {
+            icon: LucideIcons.arrow-left();
+            text: @tr("返回");
+            intent: ButtonIntent.quiet;
+            activated => { root.back(); }
+        }
+    }
+
+    // 中三分之一: 标题居中
+    VerticalLayout {
+        width: root.width / 3;
+        horizontal-stretch: 0;
+        alignment: center;
+
+        Text {
+            text: root.title;
+            color: KitThemeContext.current.text-primary;
+            font-family: KitThemeContext.current.typography.family;
+            font-size: KitMetrics.font-size(KitThemeContext.current, TypographyRole.subtitle);
+            font-weight: KitThemeContext.current.typography.weight-semibold;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // 右三分之一: 预留操作位; 现在留空
+    VerticalLayout {
+        width: root.width / 3;
+        horizontal-stretch: 0;
+    }
+}

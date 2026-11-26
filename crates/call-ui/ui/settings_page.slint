@@ -1,12 +1,12 @@
 // 设置页: 组装通用设置卡 + 摄像头管理卡 + ICE 通话卡 + SIP 通话卡 + 摄像头对话框
 // 子组件在 settings/ 目录: GeneralSettingsCard / CamerasCard / IceSettingsCard / SipSettingsCard / CameraDialogs
 import {
-    TextButton,
-    MaterialPalette,
-} from "../material-1.1.0/material.slint";
-import { ScrollView } from "std-widgets.slint";
+    KitScrollArea,
+    KitThemeContext,
+} from "@kit";
 import { KeyboardCtx } from "kb_text_field.slint";
 import { CameraEntry, DiscoveredEntry, ProfileEntry } from "components.slint";
+import { PageHeader } from "components/page_header.slint";
 import { GeneralSettingsCard } from "settings/general_card.slint";
 import { CamerasCard } from "settings/cameras_card.slint";
 import { CameraDialogs } from "settings/camera_dialogs.slint";
@@ -22,6 +22,8 @@ export component SettingsPage inherits Rectangle {
     in-out property <string> weather-key: ""; // 和风 key (可选)
     in property <string> resolved-city: ""; // 当前生效城市 (worker 定位结果)
     in-out property <float> screen-brightness: 80;
+    // 自动休眠: 选项下标 (语义见 GeneralSettingsCard.sleep-timeout-index)
+    in-out property <int> sleep-timeout-index: 2;
     // ICE 通话卡穿透 (ice_card.slint 本体, 属性/回调经主窗口直达 Rust)
     in-out property <string> ice-sigserver: ""; // sigserver WS 地址
     in-out property <string> ice-room: ""; // 信令房间名
@@ -44,6 +46,8 @@ export component SettingsPage inherits Rectangle {
     // 抬升门控: 聚焦字段的页内纵坐标 (内容空间, 由卡片焦点处理器写入);
     in-out property <length> focused-page-y: 0px;
     property <length> scroll-y: sv.content-y;
+    // 卡片宽度跟随 ScrollArea 的可视宽度 (自动扣掉滚动条), 两侧只留页面 padding.
+    property <length> card-width: sv.visible-width;
 
     changed scroll-y => {
         root.update-lift();
@@ -61,6 +65,7 @@ export component SettingsPage inherits Rectangle {
     callback set-city(string); // 留空 = IP 自动定位
     callback set-weather-key(string); // 留空 = Open-Meteo
     callback set-screen-brightness(float);
+    callback set-sleep-timeout-index(int);
     callback ice-call();
     callback ice-hangup();
     callback set-ice-sigserver(string);
@@ -86,21 +91,22 @@ export component SettingsPage inherits Rectangle {
     callback show-toast(string);
     // 屏幕键盘聚焦登记透传 (KbTextField → 根部 → Rust)
 
-    background: MaterialPalette.background;
+    background: KitThemeContext.current.canvas;
 
     VerticalLayout {
-        padding: 24px;
-        spacing: 12px;
-        HorizontalLayout {
-            alignment: start;
-            TextButton {
-                icon: @image-url("icons/arrow-left.svg");
-                text: @tr("返回");
-                clicked => { root.back(); }
-            }
+        padding-top: 5px;
+        padding-bottom: 10px;
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 5px;
+        width: 100%;
+
+        PageHeader {
+            title: @tr("设置");
+            back => { root.back(); }
         }
 
-        sv := ScrollView {
+        sv := KitScrollArea {
             vertical-stretch: 1;
             // 卡片水平居中: VerticalLayout 的 alignment 只管纵轴,
             // 横轴居中要套 HorizontalLayout
@@ -109,20 +115,23 @@ export component SettingsPage inherits Rectangle {
                 spacing: 16px;
 
                 hl_general := HorizontalLayout {
-                    alignment: center;
+                    alignment: start;
+
                     general_card := GeneralSettingsCard {
                         // 宽度基准用页面宽度, 不能用父布局 (ScrollView 内容宽度
                         // 反过来依赖子元素, 构成绑定环)
-                        width: min(760px, root.width - 48px);
+                        width: root.card-width;
                         city <=> root.city;
                         weather-key <=> root.weather-key;
                         resolved-city: root.resolved-city;
                         brightness <=> root.screen-brightness;
+                        sleep-timeout-index <=> root.sleep-timeout-index;
                         set-language(lang) => { root.set-language(lang); }
                         set-city(city) => { root.set-city(city); }
                         set-weather-key(key) => { root.set-weather-key(key); }
                         set-brightness(v) => { root.set-screen-brightness(v); }
-                    
+                        set-sleep-timeout-index(v) => { root.set-sleep-timeout-index(v); }
+
                         kb-field-focused(f) => {
                             if f {
                                 root.focused-page-y = sv.y + hl_general.y + general_card.focus-offset-y;
@@ -134,8 +143,9 @@ export component SettingsPage inherits Rectangle {
 
                 hl_cameras := HorizontalLayout {
                     alignment: center;
+
                     CamerasCard {
-                        width: min(760px, root.width - 48px);
+                        width: root.card-width;
                         cameras: root.cameras;
                         delete-camera(id) => { root.delete-camera(id); }
                         // 搜索添加: 开对话框 + 立即触发一次扫描
@@ -150,10 +160,11 @@ export component SettingsPage inherits Rectangle {
                 // ICE 通话卡 (卡片本体 Task 7): 设置/呼叫/状态行
                 hl_ice := HorizontalLayout {
                     alignment: center;
+
                     ice_card := IceSettingsCard {
                         // 宽度基准用页面宽度, 不能用父布局 (ScrollView 内容宽度
                         // 反过来依赖子元素, 构成绑定环)
-                        width: min(760px, root.width - 48px);
+                        width: root.card-width;
                         sigserver <=> root.ice-sigserver;
                         room <=> root.ice-room;
                         stun <=> root.ice-stun;
@@ -164,7 +175,7 @@ export component SettingsPage inherits Rectangle {
                         set-sigserver(v) => { root.set-ice-sigserver(v); }
                         set-room(v) => { root.set-ice-room(v); }
                         set-stun(v) => { root.set-ice-stun(v); }
-                    
+
                         kb-field-focused(f) => {
                             if f {
                                 root.focused-page-y = sv.y + hl_ice.y + ice_card.focus-offset-y;
@@ -177,10 +188,11 @@ export component SettingsPage inherits Rectangle {
                 // SIP 通话卡: 服务器/账号/媒体源设置, 写 kv 下次呼叫生效
                 hl_sip := HorizontalLayout {
                     alignment: center;
+
                     sip_card := SipSettingsCard {
                         // 宽度基准用页面宽度, 不能用父布局 (ScrollView 内容宽度
                         // 反过来依赖子元素, 构成绑定环)
-                        width: min(760px, root.width - 48px);
+                        width: root.card-width;
                         server <=> root.sip-server;
                         username <=> root.sip-username;
                         password <=> root.sip-password;
@@ -205,7 +217,7 @@ export component SettingsPage inherits Rectangle {
                         set-rtp-audio(v) => { root.set-sip-rtp-audio(v); }
                         set-rtp-video(v) => { root.set-sip-rtp-video(v); }
                         set-ice(v) => { root.set-sip-ice(v); }
-                        
+
                         kb-field-focused(f) => {
                             if f {
                                 root.focused-page-y = sv.y + hl_sip.y + sip_card.focus-offset-y;
@@ -231,6 +243,5 @@ export component SettingsPage inherits Rectangle {
             root.save-discovered-camera(xaddr, name, user, pass, token);
         }
         add-camera(name, uri, user, pass) => { root.add-camera(name, uri, user, pass); }
-        
     }
-                    }
+}

@@ -43,6 +43,8 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
     info!(gui_overrides = ?over, "start gui");
 
     let ui = MainWindow::new()?;
+    // Kit 服务必须在窗口显示前安装 (弹层定位/选择/焦点/主题全局)
+    slint_kit::install(&ui);
     let _clock_timer = props::start_clock_timer(&ui); // 保活到 ui.run() 返回
 
     let app: bridge::SharedApp =
@@ -238,6 +240,7 @@ fn kb_flush(weak: &slint::Weak<MainWindow>, kb: &mut keyboard::KeyboardControlle
 /// ```
 pub fn smoke() -> anyhow::Result<()> {
     let ui = MainWindow::new()?;
+    slint_kit::install(&ui);
     let weak = ui.as_weak();
     ui.on_dial(move |number| {
         // 回调触发时窗口必然存活; 万一已销毁则忽略本次拨号

@@ -1,16 +1,18 @@
 // 设置页 ICE 通话卡: sigserver/房间/STUN 设置 + 呼叫/挂断 + 状态行.
 import {
-    FilledCard,
-    FilledButton,
-    TextButton,
-    HorizontalDivider,
-    MaterialText,
-    MaterialTypography,
-    MaterialPalette,
-} from "../../material-1.1.0/material.slint";
+    ButtonIntent,
+    KitCard,
+    KitCardBody,
+    KitCardHeader,
+    KitMetrics,
+    LayoutSpace,
+    TypographyRole,
+} from "@kit";
+import { LucideIcons } from "@kit-icons/all.slint";
+import { IconTextButton } from "../components/icon_text_button.slint";
 import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
 
-export component IceSettingsCard inherits FilledCard {
+export component IceSettingsCard inherits KitCard {
     callback ice-call();
     callback ice-hangup();
     // 三个文本项写 kv (下次呼叫生效), 照 general_card 的 set-city 模式
@@ -36,18 +38,15 @@ export component IceSettingsCard inherits FilledCard {
     property <bool> calling: root.status-text == "收集中"
         || root.status-text == "连接中" || root.status-text == "已连接";
 
-    VerticalLayout {
-        padding: 24px;
-        spacing: 16px;
-        MaterialText {
-            text: @tr("ICE 通话");
-            style: MaterialTypography.headline_small;
-        }
+    inset: LayoutSpace.roomy;
+    gap: LayoutSpace.regular;
 
-        HorizontalDivider {}
+    KitCardHeader {
+        title: @tr("ICE 通话");
+    }
 
-        // 信令服务器: 留空用默认 ws://127.0.0.1:9000. material TextField
-        // placeholder 不渲染, 提示走 supporting-text; edited 输入即提交
+    KitCardBody {
+        // 信令服务器: 留空用默认 ws://127.0.0.1:9000. 输入即提交
         f1 := KbTextField {
             label: @tr("信令服务器");
             supporting-text: @tr("ws://Mac的局域网IP:9000");
@@ -57,7 +56,7 @@ export component IceSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-sigserver(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f1.y; }
+                if focused { root.focus-offset-y = f1.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -72,7 +71,7 @@ export component IceSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-room(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f2.y; }
+                if focused { root.focus-offset-y = f2.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -87,39 +86,47 @@ export component IceSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-stun(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f3.y; }
+                if focused { root.focus-offset-y = f3.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
 
         // 呼叫 / 挂断: 进行中禁用呼叫, 空闲禁用挂断
         HorizontalLayout {
-            spacing: 12px;
+            spacing: root.theme.spacing.unit * 3;
             alignment: start;
-            FilledButton {
+            IconTextButton {
+                intent: ButtonIntent.success;
+                icon: LucideIcons.phone-call();
                 text: @tr("呼叫");
-                enabled: !root.calling;
-                clicked => { root.ice-call(); }
+                disabled: root.calling;
+                activated => { root.ice-call(); }
             }
 
-            TextButton {
+            IconTextButton {
+                intent: ButtonIntent.destructive;
+                icon: LucideIcons.phone-off();
                 text: @tr("挂断");
-                enabled: root.calling;
-                clicked => { root.ice-hangup(); }
+                disabled: !root.calling;
+                activated => { root.ice-hangup(); }
             }
         }
 
         // 状态行: 状态文案 + 收发统计 (通话期每秒上报, 空闲隐藏统计)
-        MaterialText {
+        Text {
             text: root.status-text;
-            style: MaterialTypography.body_medium;
-            color: MaterialPalette.on_surface_variant;
+            color: root.theme.text-secondary;
+            font-family: root.theme.typography.family;
+            font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
+            wrap: word-wrap;
         }
 
-        if root.calling: MaterialText {
+        if root.calling: Text {
             text: root.stats-text;
-            style: MaterialTypography.body_small;
-            color: MaterialPalette.on_surface_variant;
+            color: root.theme.text-secondary;
+            font-family: root.theme.typography.family;
+            font-size: KitMetrics.font-size(root.theme, TypographyRole.caption);
+            wrap: word-wrap;
         }
     }
 }

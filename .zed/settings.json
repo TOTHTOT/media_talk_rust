@@ -1,0 +1,17 @@
+{
+  "lsp": {
+    "slint": {
+      "binary": {
+        "path": "target/slint-editor/bin/slint-lsp.exe",
+        "arguments": [
+          "-L",
+          "kit=target/slint-editor/vendor/slint-kit-slint/ui/slint-project.json",
+          "-L",
+          "kit-icons=target/slint-editor/vendor/slint-kit-slint/ui/icons/lucide",
+          "-L",
+          "kit-fonts=target/slint-editor/vendor/slint-kit-slint/ui/fonts"
+        ]
+      }
+    }
+  }
+}

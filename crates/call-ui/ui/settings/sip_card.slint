@@ -2,16 +2,18 @@
 // 全部写 kv (下次呼叫生效), 照 ice_card 的 set-* 模式; 初值由 Rust 启动时
 // 从 resolve 合成结果刷入.
 import {
-    FilledCard,
-    HorizontalDivider,
-    MaterialText,
-    MaterialTypography,
-    MaterialPalette,
-    Switch,
-} from "../../material-1.1.0/material.slint";
+    KitCard,
+    KitCardBody,
+    KitCardHeader,
+    KitMetrics,
+    KitSwitch,
+    KitThemeContext,
+    LayoutSpace,
+    TypographyRole,
+} from "@kit";
 import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
 
-export component SipSettingsCard inherits FilledCard {
+export component SipSettingsCard inherits KitCard {
     // 文本项写 kv (下次呼叫生效), 照 ice_card 的 set-* 模式
     callback set-server(string);
     callback set-username(string);
@@ -48,16 +50,14 @@ export component SipSettingsCard inherits FilledCard {
     callback kb-field-focused(bool);
     // 由 KbTextField focus-changed 在聚焦时写入
 
-    VerticalLayout {
-        padding: 24px;
-        spacing: 16px;
-        MaterialText {
-            text: @tr("SIP 通话");
-            style: MaterialTypography.headline_small;
-        }
+    inset: LayoutSpace.roomy;
+    gap: LayoutSpace.regular;
 
-        HorizontalDivider {}
+    KitCardHeader {
+        title: @tr("SIP 通话");
+    }
 
+    KitCardBody {
         // 服务器地址: ip:port
         f1 := KbTextField {
             label: @tr("服务器");
@@ -68,7 +68,7 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-server(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f1.y; }
+                if focused { root.focus-offset-y = f1.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -82,7 +82,7 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-username(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f2.y; }
+                if focused { root.focus-offset-y = f2.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -103,7 +103,7 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-password(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f3.y; }
+                if focused { root.focus-offset-y = f3.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -118,7 +118,7 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-expires(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f4.y; }
+                if focused { root.focus-offset-y = f4.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -133,7 +133,7 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-stun(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f5.y; }
+                if focused { root.focus-offset-y = f5.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -148,7 +148,7 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-local-ip(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f6.y; }
+                if focused { root.focus-offset-y = f6.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -163,7 +163,7 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-video-src(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f7.y; }
+                if focused { root.focus-offset-y = f7.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -178,7 +178,7 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-audio-src(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f8.y; }
+                if focused { root.focus-offset-y = f8.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -193,16 +193,18 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-max-width(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f9.y; }
+                if focused { root.focus-offset-y = f9.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
 
         // 高级: 被叫侧 RTP 首选端口 (主叫永远临时端口), 被占时回退临时端口
-        MaterialText {
+        Text {
             text: @tr("高级");
-            style: MaterialTypography.title_small;
-            color: MaterialPalette.on_surface_variant;
+            color: KitThemeContext.current.text-secondary;
+            font-family: KitThemeContext.current.typography.family;
+            font-size: KitMetrics.font-size(KitThemeContext.current, TypographyRole.control);
+            font-weight: KitThemeContext.current.typography.weight-semibold;
         }
 
         f10 := KbTextField {
@@ -213,7 +215,7 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-rtp-audio(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f10.y; }
+                if focused { root.focus-offset-y = f10.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
@@ -226,26 +228,16 @@ export component SipSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(text) => { root.set-rtp-video(text); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f11.y; }
+                if focused { root.focus-offset-y = f11.absolute-position.y - root.absolute-position.y; }
                 root.kb-field-focused(focused);
             }
         }
 
         // ICE 开关: SIP offer/answer 附带 ICE 参数, 对端不回自动回退普通 RTP
-        HorizontalLayout {
-            spacing: 12px;
-            alignment: start;
-            MaterialText {
-                text: @tr("启用 ICE");
-                style: MaterialTypography.body_large;
-                color: MaterialPalette.on_surface_variant;
-                vertical-alignment: center;
-            }
-
-            Switch {
-                checked <=> root.ice-enabled;
-                checked_state_changed(checked) => { root.set-ice(checked); }
-            }
+        KitSwitch {
+            label: @tr("启用 ICE");
+            checked <=> root.ice-enabled;
+            toggled(checked) => { root.set-ice(checked); }
         }
     }
 }

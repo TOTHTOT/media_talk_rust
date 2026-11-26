@@ -1,15 +1,17 @@
 // 主窗口: 组装各页面/状态栏/覆盖层, 持有跨页面共享状态 (toast/page)
-// 组件集: Slint 官方 Material (build.rs 构建时下载解压到 ../material-1.1.0/,
-// 用相对路径 import 而非 @material 库语法 — 编辑器 LSP 无需任何配置)
+// 组件集: Slint Kit (统一主题/组件); 文本输入例外见 kb_text_field.slint.
 // phase: 0=Idle 1=Outgoing 2=Incoming 3=InCall (与 app.rs Phase 一一对应)
 // Idle 下再分子页面 page: 0=主页 1=拨号 2=设置 3=监控 (纯 UI 状态, 不进状态机)
+import { KitAppShell, KitThemeContext, KitThemes } from "@kit";
 import {
-    MaterialWindow,
-    MaterialPalette,
-} from "../material-1.1.0/material.slint";
-// Material 主题全局状态需要链接进二进制, 模板同款写法
-export { MaterialWindowAdapter } from "../material-1.1.0/material.slint";
-import { CallLogEntry, ContactEntry, CameraEntry, DiscoveredEntry, ProfileEntry, AppToast, ErrorBanner } from "components.slint";
+    CallLogEntry,
+    ContactEntry,
+    CameraEntry,
+    DiscoveredEntry,
+    ProfileEntry,
+    AppToast,
+    ErrorBanner,
+} from "components.slint";
 import { OutgoingCallOverlay } from "components/outgoing_call.slint";
 import { IncomingCallOverlay } from "components/incoming_call.slint";
 import { StatusBar } from "status_bar.slint";
@@ -21,7 +23,7 @@ import { SettingsPage } from "settings_page.slint";
 import { MonitorPage } from "monitor_page.slint";
 import { InCallPage } from "in_call_page.slint";
 
-export component MainWindow inherits MaterialWindow {
+export component MainWindow inherits Window {
     in property <int> phase: 0;
     in property <string> peer: "";
     in-out property <string> error-text: "";
@@ -38,8 +40,13 @@ export component MainWindow inherits MaterialWindow {
     in property <int> weekday-index: 0; // 0=周一 .. 6=周日
     // 星期只保留一种形式 (短版), 主页日期与状态栏共用
     property <[string]> weekdays: [
-        @tr("周一"), @tr("周二"), @tr("周三"),
-        @tr("周四"), @tr("周五"), @tr("周六"), @tr("周日")
+        @tr("周一"),
+        @tr("周二"),
+        @tr("周三"),
+        @tr("周四"),
+        @tr("周五"),
+        @tr("周六"),
+        @tr("周日")
     ];
     property <string> weekday: weekdays[weekday-index];
     property <string> clock-text: clock-hour < 0 ? "--:--" :
@@ -93,6 +100,9 @@ export component MainWindow inherits MaterialWindow {
     in property <bool> screen-off: false;
     // 屏幕亮度: 所有平台都显示滑块, 不支持时松手弹 toast
     in-out property <float> screen-brightness: 80;
+    // 自动休眠时间 (秒, 0 = 永不)
+    // 自动休眠: 选项下标 (语义见 GeneralSettingsCard.sleep-timeout-index)
+    in-out property <int> sleep-timeout-index: 2;
     callback dial(string);
     callback accept-call();
     callback reject-call();
@@ -139,6 +149,7 @@ export component MainWindow inherits MaterialWindow {
     callback screen-wake();
     // 屏幕亮度调节 (设置页滑块松手时提交)
     callback set-screen-brightness(float);
+    callback set-sleep-timeout-index(int);
     // 后端通知管线入口 (app.rs Notice): 前端按 kind 解析文案 (i18n),
     // level 决定呈现 (0 info / 1 warn → toast, 2 error → 顶部错误条),
     // detail 可选 (空串 = 无), 用于系统错误原文或后端指定提示
@@ -192,6 +203,7 @@ export component MainWindow inherits MaterialWindow {
     changed kb-delete-field => { KeyboardCtx.delete-field = root.kb-delete-field; }
 
     property <string> displayed-error <=> root.error-text;
+
     error-timer := Timer {
         interval: 2s;
         running: root.displayed-error != "";
@@ -245,7 +257,7 @@ export component MainWindow inherits MaterialWindow {
     // 纯 UI 状态: 子页面与气泡提示, 不进 Rust 状态机
     property <int> page: 0;
     property <string> toast: "";
-    // toast 队列: 当前有气泡在显示时新消息排队, 前一条消失后依次展示 (每条 3 秒)
+    // toast 队列: 当前有气泡在显示时新消息排队, 前一条消失后依次展示 (每条 1 秒)
     property <[string]> toast-queue: [];
     function show-toast(t: string) {
         if (root.toast == "") {
@@ -255,9 +267,10 @@ export component MainWindow inherits MaterialWindow {
             toast-queue.push(t);
         }
     }
+
     toast-timer := Timer {
         interval: 1s;
-        // running 跟随 toast 非空: 队列续杯时保持 true, 计时器连续触发 (每条各 3 秒)
+        // running 跟随 toast 非空: 队列续杯时保持 true, 计时器连续触发 (每条各 1 秒)
         running: root.toast != "";
         triggered => {
             if (root.toast-queue.length > 0) {
@@ -274,6 +287,16 @@ export component MainWindow inherits MaterialWindow {
     preferred-height: 600px;
     min-width: 1024px;
     min-height: 600px;
+
+    // Kit 主题是唯一视觉来源.
+    // 1024x600 触摸屏上默认 14/16/20px 图标偏小, 整体放大一档.
+    init => {
+        KitThemeContext.current = KitThemes.light;
+        KitThemeContext.current.geometry.icon-compact = 16px;
+        KitThemeContext.current.geometry.icon-medium = 20px;
+        KitThemeContext.current.geometry.icon-comfortable = 24px;
+    }
+    background: KitThemeContext.current.canvas;
 
     // ===== 屏幕键盘兜底 (z 序最低, 先于页面内容声明): 全窗背景点击区 +
     // 隐藏焦点汇. 背景 TouchArea 压在页面内容之下, 点按钮/输入框仍由上层
@@ -299,11 +322,12 @@ export component MainWindow inherits MaterialWindow {
     // ===== 根布局: 状态栏 + 主页区域, 靠 spacing 控制间距.
     // 抬升语义: 键盘弹出时整体 y 上移键盘高度 (45%), 底部输入框随界面上抬
     // 露出 (顶部内容暂时让位, 收起即回); 不做逐字段滚动 =====
-    VerticalLayout {
-        spacing: 0;
-        padding: 0;
+    shell := KitAppShell {
         y: root.kb-showing && KeyboardCtx.lift-needed ? - root.height * 45% : 0px;
-        animate y { duration: 150ms; easing: ease-out; }
+        animate y {
+            duration: 150ms;
+            easing: ease-out;
+        }
 
         // 状态栏 (通话视频全屏时隐藏)
         if root.phase != 3: StatusBar {
@@ -318,7 +342,7 @@ export component MainWindow inherits MaterialWindow {
         // 主页内容区: 根据 phase / page 切换子页面,
         // Rectangle 撑满剩余空间, 背景随主题色
         Rectangle {
-            background: MaterialPalette.background;
+            background: KitThemeContext.current.canvas;
 
             // 主页
             if root.phase == 0 && root.page == 0: HomePage {
@@ -343,7 +367,6 @@ export component MainWindow inherits MaterialWindow {
                 add-contact(name, num) => { root.add-contact(name, num); }
                 update-contact(id, name, num) => { root.update-contact(id, name, num); }
                 delete-contact(id) => { root.delete-contact(id); }
-                
             }
 
             // 设置页
@@ -356,6 +379,7 @@ export component MainWindow inherits MaterialWindow {
                 weather-key: root.weather-key;
                 resolved-city: root.weather-resolved-city;
                 screen-brightness <=> root.screen-brightness;
+                sleep-timeout-index <=> root.sleep-timeout-index;
                 // ICE 卡片穿透 (本体在 settings/ice_card.slint, 这里打通属性/回调)
                 ice-sigserver <=> root.ice-sigserver;
                 ice-room <=> root.ice-room;
@@ -397,13 +421,13 @@ export component MainWindow inherits MaterialWindow {
                 set-city(city) => { root.set-city(city); }
                 set-weather-key(key) => { root.set-weather-key(key); }
                 set-screen-brightness(v) => { root.set-screen-brightness(v); }
+                set-sleep-timeout-index(v) => { root.set-sleep-timeout-index(v); }
                 add-camera(n, u, user, p) => { root.add-camera(n, u, user, p); }
                 delete-camera(id) => { root.delete-camera(id); }
                 search-cameras => { root.search-cameras(); }
                 fetch-camera-profiles(x, user, p) => { root.fetch-camera-profiles(x, user, p); }
                 save-discovered-camera(x, n, user, p, t) => { root.save-discovered-camera(x, n, user, p, t); }
                 show-toast(t) => { root.show-toast(t); }
-                
             }
 
             // 监控页

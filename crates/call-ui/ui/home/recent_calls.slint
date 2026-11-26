@@ -1,68 +1,53 @@
 import {
-    FilledCard,
-    ListTile,
-    MaterialText,
-    MaterialTypography,
-    MaterialPalette,
-} from "../../material-1.1.0/material.slint";
-import { ScrollView } from "std-widgets.slint";
+    KitCard,
+    KitCardBody,
+    KitCardHeader,
+    KitMetrics,
+    KitScrollArea,
+    LayoutSpace,
+    TypographyRole,
+} from "@kit";
 import { CallLogEntry } from "../components.slint";
+import { RecentCallRow } from "recent_call_row.slint";
 
-export component RecentCalls inherits FilledCard {
+export component RecentCalls inherits KitCard {
     in property <[CallLogEntry]> call-log;
     callback redial(string);
 
-    // 固定在卡片顶部的标题
-    MaterialText {
-        x: 20px;
-        y: 10px;
-        text: @tr("最近通话");
-        style: MaterialTypography.label_large;
-        color: MaterialPalette.on_surface_variant;
+    inset: LayoutSpace.compact;
+    gap: LayoutSpace.tight;
+    clip: true;
+
+    KitCardHeader {
+        padding: 5px;
+        title: @tr("最近通话");
     }
 
-    if root.call-log.length == 0: MaterialText {
-        y: 36px;
-        width: 100%;
-        height: root.height - 36px;
-        text: @tr("暂无通话记录");
-        style: MaterialTypography.body_medium;
-        color: MaterialPalette.outline;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
+    KitCardBody {
+        if root.call-log.length == 0: Text {
+            width: 100%;
+            text: @tr("暂无通话记录");
+            color: root.theme.text-secondary;
+            font-family: root.theme.typography.family;
+            font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
 
-    // 有记录时 ScrollView 包裹列表，溢出自动滚动
-    if root.call-log.length > 0: ScrollView {
-        x: 0;
-        y: 36px;
-        width: 100%;
-        height: parent.height - 46px;
+        if root.call-log.length > 0: KitScrollArea {
+            // 滚动条改为浮层: 默认布局会给右侧滚动条留一条 gutter,
+            // hover 背景只铺到 gutter 前, 看起来像没盖满整行.
+            overlay-scrollbars: true;
+            // 吃掉卡片剩余高度; 原来固定 108px, 180px 卡片装不下三条两行记录.
+            height: root.height - root.theme.spacing.unit * 14;
 
-        VerticalLayout {
-            padding-left: 4px;
-            padding-right: 4px;
-            spacing: 2px;
+            VerticalLayout {
+                spacing: root.theme.spacing.unit;
 
-            for entry[i] in root.call-log: ListTile {
-                width: 100%;
-                // ListTile.min_height = max(72, layout.min_height)，内部头像盒
-                // width: self.height 回依赖布局高度，高度不定死会成环 panic
-                height: 72px;
-
-                property <string> dur-text: entry.duration-s >= 60
-                    ? @tr("{} 分 {} 秒", Math.floor(entry.duration-s / 60), Math.mod(entry.duration-s, 60))
-                    : @tr("{} 秒", entry.duration-s);
-
-                avatar_icon: entry.outgoing ? @image-url("../icons/arrow-up-right.svg") : @image-url("../icons/arrow-down-left.svg");
-                avatar_background: entry.missed ? MaterialPalette.error_container : MaterialPalette.primary_container;
-                avatar_foreground: entry.missed ? MaterialPalette.on_error_container : MaterialPalette.on_primary_container;
-                text: (entry.missed ? @tr("未接") : entry.outgoing ? @tr("呼出") : @tr("呼入")) + " · " + entry.peer;
-                supporting_text: entry.missed ? entry.time
-                    : entry.connected ? entry.time + " · " + dur-text
-                    : @tr("{} · 未接通", entry.time);
-
-                clicked => { root.redial(entry.peer); }
+                for entry[i] in root.call-log: RecentCallRow {
+                    entry: entry;
+                    redial(num) => { root.redial(num); }
+                }
             }
         }
     }

@@ -1,18 +1,25 @@
-// 屏幕键盘输入框: 内含 material TextField, 经 kb-commit-* 属性拍振上屏.
+// 屏幕键盘输入框: Kit 主题字段壳 + 裸 TextInput, 经 kb-commit-* 属性拍振上屏.
 // 上屏语义 (计划 v1): 提交文本追加到末尾; 退格删末字符 (不跟踪光标位置).
 //
-// 实现说明: slint 1.18 字符串无 substring/char-at (语言内建仅有
-// character-count 等, 见 i-slint-compiler lookup.rs), 无法直接切尾字符;
+// 这是迁移期唯一保留的自定义输入控件: Slint Kit 的文本组件使用原生
+// TextInput, 会弹出我们的屏幕键盘但收不到 KeyboardCtx.commit-seq, 所以
+// 文本输入仍由本组件承接. 视觉使用 KitTheme 令牌, 不引入第二套风格.
+//
+// 实现说明: slint 1.18/1.19 字符串无 substring/char-at, 无法直接切尾字符;
 // 因此退格用"变更快照栈"实现 —— changed text 记录每次变更前的值,
-// 退格拍振弹栈恢复上一个快照, 效果等价于删末字符 (含中文等多字节字符,
-// 快照是完整字符串, 与字符宽度无关).
-import { TextField } from "../material-1.1.0/material.slint";
+// 退格拍振弹栈恢复上一个快照, 效果等价于删末字符 (含中文等多字节字符).
+import {
+    ControlSize,
+    KitMetrics,
+    KitTheme,
+    KitThemeContext,
+    TypographyRole,
+} from "@kit";
 
 // 屏幕键盘全局上下文: 根部 kb-* 属性经此 global 下发到任意层级的
 // KbTextField 实例, 免去逐层透传 (main.slint 根部 changed 处理器镜像).
 // collapsed 为收起闩: "收起/完成"键与点空白置位, 全失焦时复位 — 键盘显隐
-// = slint 官方 TextInputInterface.text-input-focused && !collapsed (方案 D,
-// 见 main.slint). 逐字段 focused-id 登记已随路由布尔化整体移除.
+// = slint 官方 TextInputInterface.text-input-focused && !collapsed (方案 D).
 // 注: slint 元素体内不能绑定 global 属性 (双向/单向绑定仅限本元素属性),
 // 故同步只能走 changed 处理器, global 内也不放回调 (无法在外部接实现)
 export global KeyboardCtx {
@@ -30,7 +37,7 @@ export component KbTextField inherits Rectangle {
     in property <string> label: "";
     in property <string> supporting-text: "";
     in property <InputType> input-type;
-    // 尾部图标 (如密码可见性眼睛), 透传 material TextField 内建支持
+    // 尾部图标 (如密码可见性眼睛), 仍按 image 传入, 外观由 Kit 字段壳承载
     in property <image> trailing-icon;
     callback trailing-icon-clicked();
     // 上屏拍振: seq 每次上屏 +1 (Rust 侧装配, 见 main.slint 根部属性表)
@@ -44,9 +51,10 @@ export component KbTextField inherits Rectangle {
     // slint 官方 text-input-focused 镜像, 不经此回调 — 方案 D 无字段身份)
     callback focus-changed(bool);
 
-    // 内部焦点镜像 (内层 TextField 真实焦点). 方案 D: 键盘显隐由 slint 官方
+    property <KitTheme> theme: KitThemeContext.current;
+    // 内部焦点镜像 (内层 TextInput 真实焦点). 方案 D: 键盘显隐由 slint 官方
     // TextInputInterface.text-input-focused 决定, 此回调只服务 UI 副作用
-    property <bool> priv-focused: field.has-focus;
+    property <bool> priv-focused: input.has-focus;
     // 退格快照栈: text 每次变更前的值; 以及栈底之前的当前值镜像
     property <[string]> text-history: [];
     property <string> text-shadow: "";
@@ -92,28 +100,87 @@ export component KbTextField inherits Rectangle {
         }
         // 程序化改 text 后光标停在原处 (可见性 bug), 显式移到末尾 —
         // 上屏/退格语义本就操作串尾.
-        field.set-cursor-to-end();
+        root.set-cursor-to-end();
         root.edited(root.text);
     }
 
-    field := TextField {
-        width: 100%;
-        label: root.label;
-        supporting-text: root.supporting-text;
-        input-type: root.input-type;
-        trailing_icon: root.trailing-icon;
-        trailing_icon_clicked => {
-            root.trailing-icon-clicked();
-        }
-        text <=> root.text;
-        edited(t) => {
-            root.edited(t);
-        }
-        accepted(t) => {
-            root.accepted(t);
-        }
+    function set-cursor-to-end() {
+        input.set-selection-offsets(
+            root.text.character-count * 4 + 4,
+            root.text.character-count * 4 + 4
+        );
     }
 
-    // 根高度跟随内容 (label + 输入行 + supporting-text), 宽度由布局给
-    height: field.height;
+    height: layout.preferred-height;
+
+    layout := VerticalLayout {
+        spacing: KitMetrics.help-gap(root.theme);
+        alignment: start;
+
+        if root.label != "" : Text {
+            text: root.label;
+            color: root.theme.text-primary;
+            font-family: root.theme.typography.family;
+            font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
+            font-weight: root.theme.typography.weight-medium;
+            wrap: word-wrap;
+        }
+
+        field := Rectangle {
+            height: root.theme.spacing.unit * 12;
+            background: root.theme.surface;
+            border-radius: root.theme.shape.radius-control;
+            border-width: root.theme.shape.border-width;
+            border-color: input.has-focus ? root.theme.accent : root.theme.border-subtle;
+
+            HorizontalLayout {
+                padding-left: root.theme.spacing.unit * 3;
+                padding-right: root.theme.spacing.unit * 2;
+                spacing: root.theme.spacing.unit;
+
+                input := TextInput {
+                    horizontal-stretch: 1;
+                    height: 100%;
+                    text <=> root.text;
+                    input-type: root.input-type;
+                    single-line: true;
+                    font-family: root.theme.typography.family;
+                    font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
+                    color: root.theme.text-primary;
+                    selection-background-color: root.theme.accent;
+                    selection-foreground-color: root.theme.on-accent;
+                    vertical-alignment: center;
+                    edited => {
+                        root.edited(root.text);
+                    }
+                    accepted => {
+                        root.accepted(root.text);
+                    }
+                }
+
+                if root.trailing-icon.width > 0 : TouchArea {
+                    width: root.theme.spacing.unit * 10;
+                    height: 100%;
+                    clicked => { root.trailing-icon-clicked(); }
+
+                    Image {
+                        width: 20px;
+                        height: 20px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        source: root.trailing-icon;
+                        colorize: root.theme.text-secondary;
+                    }
+                }
+            }
+        }
+
+        if root.supporting-text != "" : Text {
+            text: root.supporting-text;
+            color: root.theme.text-secondary;
+            font-family: root.theme.typography.family;
+            font-size: KitMetrics.font-size(root.theme, TypographyRole.caption);
+            wrap: word-wrap;
+        }
+    }
 }

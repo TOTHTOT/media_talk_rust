@@ -1,4 +1,5 @@
 // 主页右侧 4x2 应用网格
+import { KitThemeContext } from "@kit";
 import { AppIcon } from "../components.slint";
 
 export component AppGrid inherits GridLayout {
@@ -6,7 +7,7 @@ export component AppGrid inherits GridLayout {
     callback show-toast(string);
     callback open-page(int); // 1=拨号 2=设置 3=监控
 
-    spacing: 12px;
+    spacing: KitThemeContext.current.spacing.unit * 3;
     Row {
         AppIcon {
             icon: @image-url("../icons/phone.svg");

@@ -1,16 +1,23 @@
-// 设置页通用卡: 语言切换
+// 设置页通用卡: 语言、亮度、休眠时间、天气.
+// 视觉统一走 Slint Kit; 文本字段是唯一例外, 继续用 KbTextField 接屏幕键盘.
 import {
-    FilledCard,
-    TextButton,
-    HorizontalDivider,
-    MaterialText,
-    MaterialTypography,
-    MaterialPalette,
-    Slider,
-} from "../../material-1.1.0/material.slint";
+    KitButton,
+    KitCard,
+    KitCardBody,
+    KitDivider,
+    KitFieldLabel,
+    KitMetrics,
+    KitSelect,
+    KitSlider,
+    KitThemeContext,
+    OptionRow,
+    Ownership,
+    SelectionRef,
+    TypographyRole,
+} from "@kit";
 import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
 
-export component GeneralSettingsCard inherits FilledCard {
+export component GeneralSettingsCard inherits KitCard {
     callback set-language(string); // "zh" | "en"
     // 天气城市: 回车/失焦提交, 留空 = IP 自动定位. in-out: 输入框
     // 可编辑, 初始值由 Rust 启动时从 kv 读入
@@ -24,6 +31,11 @@ export component GeneralSettingsCard inherits FilledCard {
     // 屏幕亮度: 单位百分比. 所有平台都显示滑块, 不支持时由 Rust 侧
     // 在松手回调里弹 toast (滑块本身仍可拖动)
     in-out property <float> brightness: 80;
+    // 自动休眠: 选项下标 (0=永不 1=15s 2=30s 3=60s 4=120s 5=300s),
+    // 秒值映射只在 Rust 一处. 闲置超时自动熄屏, 任意输入/触摸唤醒
+    // (熄屏遮罩点击). in-out: 初值由 Rust 从 kv 换算写入
+    in-out property <int> sleep-timeout-index: 2;
+    callback set-sleep-timeout-index(int);
     // 聚焦字段在卡片内的 y 偏移 (相对卡片根), 设置页抬升门控用;
     // 由 KbTextField focus-changed 在聚焦时写入
     in-out property <length> focus-offset-y: 0px;
@@ -32,82 +44,110 @@ export component GeneralSettingsCard inherits FilledCard {
     // 由 KbTextField focus-changed 在聚焦时写入
     callback set-brightness(float);
 
-    VerticalLayout {
-        padding: 28px;
-        spacing: 20px;
-        MaterialText {
-            text: @tr("设置");
-            style: MaterialTypography.headline_small;
-        }
+    // KitSelect 用 token 保留现有下标语义, Rust 侧秒值映射不变.
+    property <[OptionRow]> sleep-options: [
+        { token: 0, generation: 1, label: @tr("永不"), description: "", disabled: false },
+        { token: 1, generation: 1, label: "15", description: "", disabled: false },
+        { token: 2, generation: 1, label: "30", description: "", disabled: false },
+        { token: 3, generation: 1, label: "60", description: "", disabled: false },
+        { token: 4, generation: 1, label: "120", description: "", disabled: false },
+        { token: 5, generation: 1, label: "300", description: "", disabled: false },
+    ];
+    property <SelectionRef> sleep-selected: {
+        present: root.sleep-timeout-index >= 0,
+        token: root.sleep-timeout-index,
+    };
+    // 拖动中的显示值 (string 是 KitSlider 的公开 value 类型);
+    // brightness 只在松手 chosen 时提交, 保持原硬件写入节奏.
+    property <string> brightness-text: round(root.brightness) + "";
+    changed brightness => {
+        root.brightness-text = round(root.brightness) + "";
+    }
 
-        HorizontalDivider {}
-
+    KitCardBody {
         // 语言切换: 立即生效 (bundled translations), 重启后回系统 locale
         HorizontalLayout {
             spacing: 12px;
             alignment: start;
-            MaterialText {
-                text: @tr("语言");
-                style: MaterialTypography.body_large;
-                color: MaterialPalette.on_surface_variant;
-                vertical-alignment: center;
+            VerticalLayout {
+                alignment: center;
+                KitFieldLabel { text: @tr("语言"); }
             }
 
-            TextButton {
+            KitButton {
                 text: "中文";
-                clicked => { root.set-language("zh"); }
+                activated => { root.set-language("zh"); }
             }
 
-            TextButton {
+            KitButton {
                 text: "English";
-                clicked => { root.set-language("en"); }
+                activated => { root.set-language("en"); }
             }
         }
 
-        HorizontalDivider {}
+        KitDivider { }
 
         // 屏幕亮度: 所有平台都显示且可拖动; 不支持时松手由 Rust 侧弹 toast.
         // 拖动只更新 UI, 松手才写 sysfs 并持久化, 避免拖动期间高频写背光.
         HorizontalLayout {
             spacing: 12px;
 
-            MaterialText {
-                text: @tr("屏幕亮度");
-                style: MaterialTypography.body_large;
-                color: MaterialPalette.on_surface_variant;
-                vertical-alignment: center;
+            VerticalLayout {
+                alignment: center;
+                KitFieldLabel { text: @tr("屏幕亮度"); }
             }
 
-            // Slider 组件的根节点没有自身宽度, 直接放在布局里会塌成
-            // 只有滑块宽度; 套一层 stretch 容器并显式 100% 撑开轨道
-            HorizontalLayout {
+            KitSlider {
                 horizontal-stretch: 1;
                 min-width: 120px;
-
-                Slider {
-                    width: 100%;
-                    minimum: 5;
-                    maximum: 100;
-                    value <=> root.brightness;
-                    released(v) => { root.set-brightness(v); }
-                }
+                label: @tr("屏幕亮度");
+                spec: { minimum: "5", maximum: "100", step: "1" };
+                value <=> root.brightness-text;
+                chosen(v) => { root.set-brightness(v.to-float()); }
             }
 
-            MaterialText {
+            Text {
                 width: 48px;
-                text: round(root.brightness) + "%";
-                style: MaterialTypography.body_medium;
-                color: MaterialPalette.on_surface_variant;
+                text: root.brightness-text + "%";
+                color: KitThemeContext.current.text-secondary;
+                font-family: KitThemeContext.current.typography.family;
+                font-size: KitMetrics.font-size(KitThemeContext.current, TypographyRole.body);
                 horizontal-alignment: right;
                 vertical-alignment: center;
             }
         }
 
-        HorizontalDivider {}
+        KitDivider { }
 
-        // 天气城市: 留空走 IP 自动定位. material TextField 的
-        // placeholder_text 不渲染 (只进 accessibility), 提示走 supporting-text;
-        // 定位成功后提示当前生效城市. edited 每次输入即提交 (不依赖回车),
+        HorizontalLayout {
+            spacing: 16px;
+
+            VerticalLayout {
+                alignment: center;
+                KitFieldLabel { text: @tr("休眠时间: 秒"); }
+            }
+
+            KitSelect {
+                horizontal-stretch: 1;
+                max-width: 320px;
+                label: @tr("休眠时间");
+                options: root.sleep-options;
+                selected: root.sleep-selected;
+                selected-label: root.sleep-timeout-index >= 0
+                    && root.sleep-timeout-index < root.sleep-options.length
+                    ? root.sleep-options[root.sleep-timeout-index].label
+                    : "";
+                ownership: Ownership.controlled;
+                searchable: false;
+                chosen(row) => {
+                    root.set-sleep-timeout-index(row.token);
+                }
+            }
+        }
+
+        KitDivider { }
+
+        // 天气城市: 留空走 IP 自动定位. 输入即提交 (不依赖回车),
         // 退出设置页时输入框的值必然已生效. 聚焦弹屏幕键盘 (KbTextField)
         f1 := KbTextField {
             label: @tr("城市");
@@ -120,7 +160,9 @@ export component GeneralSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(city) => { root.set-city(city); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f1.y; }
+                if focused {
+                    root.focus-offset-y = f1.absolute-position.y - root.absolute-position.y;
+                }
                 root.kb-field-focused(focused);
             }
         }
@@ -136,7 +178,9 @@ export component GeneralSettingsCard inherits FilledCard {
             delete-field: KeyboardCtx.delete-field;
             edited(key) => { root.set-weather-key(key); }
             focus-changed(focused) => {
-                if focused { root.focus-offset-y = f2.y; }
+                if focused {
+                    root.focus-offset-y = f2.absolute-position.y - root.absolute-position.y;
+                }
                 root.kb-field-focused(focused);
             }
         }

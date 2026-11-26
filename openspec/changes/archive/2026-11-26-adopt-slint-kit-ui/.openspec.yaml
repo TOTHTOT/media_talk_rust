@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-26
+goal: Replace hand-written material-1.1.0 controls with a consistent Slint Kit
+  design system; keep text input/OSK compatibility and device performance.

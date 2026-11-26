@@ -1,9 +1,7 @@
-// 设置页摄像头对话框壳: 遮罩 + 开关状态, 内容组件在 search_camera_dialog / manual_camera_dialog
-// (内容组件默认可见, 可单独预览; 本壳默认 mode=0 不可见, 不适合直接预览)
-// 打开方式: 页面调 open-search() / open-manual() 公开函数
-import {
-    FilledCard,
-} from "../../material-1.1.0/material.slint";
+// 设置页摄像头对话框壳: Kit 窗口内模态表面 + 开关状态.
+// 内容组件在 search_camera_dialog / manual_camera_dialog.
+// 用 in-window KitDialogSurface 而不是原生窗口, 屏幕键盘才能盖住输入框.
+import { KitDialogPanel, KitDialogSurface } from "@kit";
 import { DiscoveredEntry, ProfileEntry } from "../components.slint";
 import { SearchCameraDialog } from "search_camera_dialog.slint";
 import { ManualCameraDialog } from "manual_camera_dialog.slint";
@@ -16,7 +14,6 @@ export component CameraDialogs inherits Rectangle {
     callback fetch-camera-profiles(string, string, string);
     callback save-discovered-camera(string, string, string, string, string);
     callback add-camera(string, string, string, string);
-    // 屏幕键盘聚焦登记透传 (ManualCameraDialog KbTextField → 根部 → Rust)
 
     // 对话框: 0=无 1=搜索添加 2=手动添加
     property <int> mode: 0;
@@ -37,21 +34,24 @@ export component CameraDialogs inherits Rectangle {
         root.mode = 2;
     }
 
-    // 隐藏时不占位不吃点击
-    visible: mode != 0;
+    width: 100%;
+    height: 100%;
 
-    // ===== 对话框遮罩 =====
-    Rectangle {
-        width: 100%;
-        height: 100%;
-        background: #00000080;
-        TouchArea {} // 吃掉点击, 不穿透到下层
+    dialog := KitDialogSurface {
+        state: {
+            open: root.mode != 0,
+            topmost: true,
+            busy: false,
+        };
+        modal-layer: 1;
+        dismiss(reason) => { root.mode = 0; }
 
-        FilledCard {
+        KitDialogPanel {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             width: 560px;
             height: 480px;
+            accessible-name: root.mode == 1 ? @tr("搜索添加摄像头") : @tr("手动添加摄像头");
 
             if root.mode == 1: SearchCameraDialog {
                 camera-busy: root.camera-busy;
@@ -80,7 +80,6 @@ export component CameraDialogs inherits Rectangle {
                     root.mode = 0;
                 }
                 cancelled => { root.mode = 0; }
-                
             }
         }
     }

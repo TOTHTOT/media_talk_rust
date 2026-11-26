@@ -1,9 +1,5 @@
 // 呼出中覆盖层: 显示被叫号码, 可取消
-import {
-    MaterialText,
-    MaterialTypography,
-    OutlineButton,
-} from "../../material-1.1.0/material.slint";
+import { ButtonIntent, KitButton, KitMetrics, KitThemeContext, TypographyRole } from "@kit";
 
 export component OutgoingCallOverlay inherits Rectangle {
     in property <string> peer;
@@ -11,18 +7,24 @@ export component OutgoingCallOverlay inherits Rectangle {
 
     VerticalLayout {
         alignment: center;
-        spacing: 24px;
-        MaterialText {
+        spacing: KitThemeContext.current.spacing.unit * 6;
+
+        Text {
             text: @tr("呼叫 {} ...", root.peer);
-            style: MaterialTypography.headline_medium;
+            color: KitThemeContext.current.text-primary;
+            font-family: KitThemeContext.current.typography.family;
+            font-size: KitMetrics.font-size(KitThemeContext.current, TypographyRole.title);
+            font-weight: KitThemeContext.current.typography.weight-semibold;
             horizontal-alignment: center;
         }
 
         HorizontalLayout {
             alignment: center;
-            OutlineButton {
+
+            KitButton {
                 text: @tr("取消");
-                clicked => { root.hangup(); }
+                intent: ButtonIntent.outline;
+                activated => { root.hangup(); }
             }
         }
     }

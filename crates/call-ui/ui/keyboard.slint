@@ -4,15 +4,19 @@
 // 123/,/空格/。/中英/完成(蓝色高亮). 上屏走 main.slint 根部 kb-commit-*
 // 属性拍振, 由聚焦的 KbTextField 消费.
 import {
-    MaterialText,
-    MaterialTypography,
-    ScrollView,
-} from "../material-1.1.0/material.slint";
+    KitMetrics,
+    KitScrollArea,
+    KitTheme,
+    KitThemeContext,
+    ScrollAxes,
+    TypographyRole,
+} from "@kit";
 
 // 单个按键. 三态配色 (iOS 惯例): 默认白底字母键, gray 功能键 (浅灰),
 // accent 高亮键 (完成, 蓝). 小标 sub-label 做数字/符号提示 (纯展示).
 // enabled=false 时置灰且不响应 (如中文不可用时置灰中英键).
 component KbKey inherits Rectangle {
+    property <KitTheme> theme: KitThemeContext.current;
     in property <string> label: "";
     in property <string> sub-label: "";
     in property <image> icon;
@@ -69,13 +73,14 @@ component KbKey inherits Rectangle {
 
     height: 46px;
     horizontal-stretch: 1; // 默认等宽铺满整行, 实例可覆盖 (空格 4 键宽等)
-    background: root.accent ? #0b7cf0 : root.gray ? #b7bcc6 : #ffffff;
-    border-radius: 8px;
+    background: root.accent
+        ? root.theme.accent
+        : root.gray ? root.theme.pressed : root.theme.surface;
+    border-width: root.theme.shape.border-width;
+    border-color: root.theme.border-subtle;
+    border-radius: root.theme.shape.radius-control;
     clip: true;
     opacity: root.enabled ? 1 : 0.45;
-    drop-shadow-color: #0000001f;
-    drop-shadow-blur: 1px;
-    drop-shadow-offset-y: 1px;
 
     touch := TouchArea {
         pointer-event(event) => {
@@ -113,19 +118,21 @@ component KbKey inherits Rectangle {
         height: 100%;
         alignment: center;
 
-        if root.sub-label != "": MaterialText {
+        if root.sub-label != "": Text {
             height: 15px;
             text: root.sub-label;
-            style: MaterialTypography.body_small;
-            color: root.accent ? #ffffffb3 : #8a8f99;
+            color: root.accent ? root.theme.on-accent : root.theme.text-secondary;
+            font-family: root.theme.typography.family;
+            font-size: KitMetrics.font-size(root.theme, TypographyRole.caption);
             horizontal-alignment: center;
             vertical-alignment: center;
         }
 
-        if root.label != "": MaterialText {
+        if root.label != "": Text {
             text: root.label;
-            style: MaterialTypography.body_large;
-            color: root.accent ? #ffffff : #1c1c1e;
+            color: root.accent ? root.theme.on-accent : root.theme.text-primary;
+            font-family: root.theme.typography.family;
+            font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
             horizontal-alignment: center;
             vertical-alignment: center;
         }
@@ -137,12 +144,14 @@ component KbKey inherits Rectangle {
         width: 24px;
         height: 24px;
         source: root.icon;
-        colorize: root.gray ? #1c1c1e : #4a4f59;
+        colorize: root.accent ? root.theme.on-accent : root.theme.text-secondary;
     }
 
     states [
         pressed when touch.pressed: {
-            background: root.accent ? #0a6bd4 : #d7d9de;
+            background: root.accent
+                ? root.theme.accent-pressed
+                : root.gray ? root.theme.border-subtle : root.theme.hover;
         }
     ]
 }
@@ -164,10 +173,11 @@ export component Keyboard inherits Rectangle {
     // 上挡三态 (iOS): 0=小写 1=下一次大写 2=大写锁定; 点按循环.
     // 字母上屏后: 态 1 自动回 0, 态 2 保持. 转换在键盘层做.
     property <int> shift-state: 0;
+    property <KitTheme> theme: KitThemeContext.current;
 
-    background: #d2d5dbe0;
-    border-top-left-radius: 16px;
-    border-top-right-radius: 16px;
+    background: root.theme.canvas;
+    border-top-left-radius: root.theme.shape.radius-container;
+    border-top-right-radius: root.theme.shape.radius-container;
     clip: true;
 
     // 全尺寸吞点击层 (z 最低): 按键缝/候选间隔的点击若不拦截会穿透到
@@ -196,8 +206,8 @@ export component Keyboard inherits Rectangle {
                 horizontal-stretch: 0;
                 min-width: 72px;
                 height: 40px;
-                background: #ffffff;
-                border-radius: 8px;
+                background: root.theme.surface;
+                border-radius: root.theme.shape.radius-control;
 
                 preedit-touch := TouchArea {
                     clicked => {
@@ -205,25 +215,27 @@ export component Keyboard inherits Rectangle {
                     }
                 }
 
-                MaterialText {
-                    x: 10px;
-                    width: parent.width - 20px;
+                Text {
+                    x: root.theme.spacing.unit * 2.5;
+                    width: parent.width - root.theme.spacing.unit * 5;
                     height: parent.height;
                     text: root.kb-preedit;
-                    style: MaterialTypography.body_large;
-                    color: #0b7cf0;
+                    color: root.theme.accent;
+                    font-family: root.theme.typography.family;
+                    font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
                     vertical-alignment: center;
                     overflow: elide;
                 }
             }
 
             // 候选词横向排布, 触摸滑动, 点击上屏 candidate(index)
-            ScrollView {
+            KitScrollArea {
                 horizontal-stretch: 1;
                 min-width: 0px;
                 min-height: 0px;
-                vertical_scrollbar_policy: ScrollBarPolicy.always_off;
-                horizontal_scrollbar_policy: ScrollBarPolicy.always_off;
+                axes: ScrollAxes.horizontal;
+                vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
 
                 HorizontalLayout {
                     spacing: 8px;

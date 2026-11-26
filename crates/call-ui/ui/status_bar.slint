@@ -1,20 +1,15 @@
-// 顶部状态栏: 自定义 HorizontalLayout.
-// 布局: [SIP图标+账号] [时间(居中)] [布防+wifi+电源图标]
-import { IconButton } from "../material-1.1.0/ui/components/icon_button.slint";
+// 顶部状态栏: 左 SIP / 中时间 / 右三个操作, 三段分开.
 import {
-    MaterialStyleMetrics,
-} from "../material-1.1.0/ui/styling/material_style_metrics.slint";
-import {
-    MaterialTypography,
-} from "../material-1.1.0/ui/styling/material_typography.slint";
-import {
-    MaterialPalette,
-} from "../material-1.1.0/ui/styling/material_palette.slint";
-import {
-    MaterialText,
-} from "../material-1.1.0/ui/components/material_text.slint";
+    ControlSize,
+    KitIcon,
+    KitIconButton,
+    KitMetrics,
+    KitThemeContext,
+    TypographyRole,
+} from "@kit";
+import { LucideIcons } from "@kit-icons/all.slint";
 
-export component StatusBar inherits HorizontalLayout {
+export component StatusBar inherits Rectangle {
     in property <bool> sip-registered;
     in property <string> account;
     in property <string> status-time-text;
@@ -23,78 +18,87 @@ export component StatusBar inherits HorizontalLayout {
     callback show-toast(string);
     callback screen-power-pressed();
 
-    padding-left: MaterialStyleMetrics.padding_12;
-    padding-right: MaterialStyleMetrics.padding_12;
-    spacing: MaterialStyleMetrics.spacing_8;
-    height: 40px;
+    background: KitThemeContext.current.surface;
+    width: 100%;
+    height: 7%;
+    horizontal-stretch: 1;
 
-    // 左区: SIP 图标 + 账号
-    VerticalLayout {
-        alignment: center;
-        spacing: 4px;
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: KitThemeContext.current.spacing.unit * 3;
+        padding-right: KitThemeContext.current.spacing.unit * 3;
+        spacing: KitThemeContext.current.spacing.unit * 2;
+        // 主轴保持默认 stretch: 左/右按内容宽, 中间吃掉剩余空间;
+        // 垂直居中用 cross-axis-alignment, 不是 alignment.
+        cross-axis-alignment: center;
 
+        // 左: SIP 图标 + 账号
         HorizontalLayout {
-            spacing: 4px;
+            cross-axis-alignment: center;
+            spacing: KitThemeContext.current.spacing.unit;
 
-            Image {
-                width: 16px;
-                height: 16px;
-                source: root.sip-registered
-                    ? @image-url("icons/phone.svg")
-                    : @image-url("icons/phone-off.svg");
-                colorize: root.sip-registered
-                    ? MaterialPalette.primary
-                    : MaterialPalette.error;
+            KitIcon {
+                control-size: ControlSize.compact;
+                glyph: root.sip-registered
+                    ? LucideIcons.phone()
+                    : LucideIcons.phone-off();
+                ink: root.sip-registered
+                    ? KitThemeContext.current.accent
+                    : KitThemeContext.current.danger;
             }
 
-            MaterialText {
+            Text {
                 text: root.account;
-                style: MaterialTypography.label_small;
-                color: MaterialPalette.on_surface_variant;
+                color: KitThemeContext.current.text-secondary;
+                font-family: KitThemeContext.current.typography.family;
+                font-size: KitMetrics.font-size(KitThemeContext.current, TypographyRole.caption);
                 vertical-alignment: center;
             }
         }
-    }
 
-    // 中区: 时间 (stretch 撑满，中间对齐)
-    VerticalLayout {
-        horizontal-stretch: 1;
-        alignment: center;
-        padding-left: MaterialStyleMetrics.spacing_16;
-        padding-right: MaterialStyleMetrics.spacing_16;
+        // 中: 时间占满剩余空间, 居中
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            cross-axis-alignment: center;
 
-        MaterialText {
-            text: root.status-time-text;
-            style: MaterialTypography.title_large;
-            color: MaterialPalette.on_surface;
-            horizontal-alignment: center;
-        }
-    }
-
-    // 右区: 布防 + wifi + 电源 (熄屏) 图标
-    HorizontalLayout {
-        spacing: MaterialStyleMetrics.spacing_4;
-
-        IconButton {
-            icon: @image-url("icons/shield-check.svg");
-            tooltip: @tr("布防");
-            clicked => { root.show-toast(@tr("安防功能开发中")); }
+            Text {
+                text: root.status-time-text;
+                color: KitThemeContext.current.text-primary;
+                font-family: KitThemeContext.current.typography.family;
+                font-size: KitMetrics.font-size(KitThemeContext.current, TypographyRole.subtitle);
+                font-weight: KitThemeContext.current.typography.weight-semibold;
+                horizontal-alignment: center;
+            }
         }
 
-        IconButton {
-            icon: @image-url("icons/wifi.svg");
-            tooltip: @tr("网络");
-            clicked => { root.show-toast(@tr("网络状态")); }
-        }
+        // 右: 布防 + wifi + 电源
+        HorizontalLayout {
+            cross-axis-alignment: center;
+            spacing: KitThemeContext.current.spacing.unit / 2;
 
-        IconButton {
-            icon: @image-url("icons/power.svg");
-            tooltip: @tr("关闭屏幕");
-            clicked => {
-                if (root.screen-control-available) {
-                    root.screen-power-pressed();
-                } else {
-                    root.show-toast(@tr("当前平台不支持关闭屏幕"));
+            KitIconButton {
+                glyph: LucideIcons.shield-check();
+                accessible-name: @tr("布防");
+                activated => { root.show-toast(@tr("安防功能开发中")); }
+            }
+
+            KitIconButton {
+                glyph: LucideIcons.wifi();
+                accessible-name: @tr("网络");
+                activated => { root.show-toast(@tr("网络状态")); }
+            }
+
+            KitIconButton {
+                glyph: LucideIcons.power();
+                accessible-name: @tr("关闭屏幕");
+                activated => {
+                    if (root.screen-control-available) {
+                        root.screen-power-pressed();
+                    } else {
+                        root.show-toast(@tr("当前平台不支持关闭屏幕"));
+                    }
                 }
             }
         }

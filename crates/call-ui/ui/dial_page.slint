@@ -1,12 +1,13 @@
 // 拨号页: 组装左侧通讯录卡 + 右侧拨号盘
 // 子组件在 dial/ 目录: ContactsCard / Dialpad
-import { MaterialPalette, TextButton } from "../material-1.1.0/material.slint";
+import { KitThemeContext } from "@kit";
 import { ContactEntry } from "components.slint";
+import { PageHeader } from "components/page_header.slint";
 import { ContactsCard } from "dial/contacts_card.slint";
 import { Dialpad } from "dial/dialpad.slint";
 
 export component DialPage inherits Rectangle {
-    background: MaterialPalette.background;
+    background: KitThemeContext.current.canvas;
     in property <[ContactEntry]> contacts: [];
     callback back();
     callback dial(string);
@@ -17,24 +18,23 @@ export component DialPage inherits Rectangle {
     callback delete-contact(int);
 
     VerticalLayout {
-        padding-left: 16px;
-        padding-bottom: 16px;
-        padding-right: 16px;
-        spacing: 12px;
-        HorizontalLayout {
-            alignment: start;
-            TextButton {
-                icon: @image-url("icons/arrow-left.svg");
-                text: @tr("返回");
-                clicked => { root.back(); }
-            }
+        padding-top: 5px;
+        padding-bottom: 10px;
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 5px;
+
+        PageHeader {
+            title: @tr("拨号");
+            back => { root.back(); }
         }
 
         HorizontalLayout {
             vertical-stretch: 1;
-            spacing: 16px;
+            spacing: 10px;
+
             ContactsCard {
-                horizontal-stretch: 2;
+                horizontal-stretch: 1;
                 contacts: root.contacts;
                 add-contact(name, num) => { root.add-contact(name, num); }
                 update-contact(id, name, num) => { root.update-contact(id, name, num); }

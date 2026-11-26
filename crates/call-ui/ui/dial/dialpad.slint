@@ -1,146 +1,160 @@
 // 拨号盘: 号码展示 + 3x4 键盘 + 清除/拨打
 // 按钮不写死尺寸, 用 stretch 随可用空间放大 (触屏好按)
 import {
-    MaterialText,
-    MaterialTypography,
-    TonalButton,
-    OutlineButton,
-    FilledButton,
-} from "../../material-1.1.0/material.slint";
+    ButtonIntent,
+    ControlWidth,
+    KitButton,
+    KitCard,
+    KitMetrics,
+    KitSurface,
+    KitThemeContext,
+    LayoutSpace,
+    SurfaceBorder,
+    SurfaceLevel,
+    TypographyRole,
+} from "@kit";
 
-export component Dialpad inherits Rectangle {
+export component Dialpad inherits KitCard {
     // 号码双向透出: 通讯录点行填号走这里
     in-out property <string> number-text: "";
 
     callback dial(string);
 
+    inset: LayoutSpace.roomy;
+    gap: LayoutSpace.regular;
+    vertical-stretch: 1;
+
     VerticalLayout {
-        spacing: 16px;
+        spacing: KitThemeContext.current.spacing.unit * 4;
 
         // 号码展示 (非输入框): 拨号盘自带数字键盘, 做成可聚焦输入框反而会
         // 唤起屏幕键盘遮挡拨号盘 (方案 D 下任何 TextInput 聚焦都弹键盘).
         // 视觉上照旧: 下划线 + 占位提示, 内容由下方按键写入.
-        Rectangle {
+        KitSurface {
             vertical-stretch: 0;
             height: 56px;
+            level: SurfaceLevel.inset;
+            inset: LayoutSpace.compact;
+            border: SurfaceBorder.subtle;
 
-            MaterialText {
-                x: 12px;
-                width: parent.width - 24px;
-                height: parent.height - 1px;
+            Text {
+                width: 100%;
+                height: 100%;
                 text: root.number-text != "" ? root.number-text : @tr("输入号码");
-                style: MaterialTypography.body_large;
-                color: root.number-text != "" ? #1c1c1e : #8a8f99;
+                color: root.number-text != ""
+                    ? KitThemeContext.current.text-primary
+                    : KitThemeContext.current.placeholder;
+                font-family: KitThemeContext.current.typography.family;
+                font-size: KitMetrics.font-size(KitThemeContext.current, TypographyRole.control);
                 vertical-alignment: center;
                 overflow: elide;
             }
-
-            // 下划线 (仿 TextField 底边)
-            Rectangle {
-                y: parent.height - 1px;
-                width: 100%;
-                height: 1px;
-                background: #7a7f89;
-            }
         }
 
         HorizontalLayout {
-            spacing: 12px;
-            TonalButton {
+            spacing: KitThemeContext.current.spacing.unit * 3;
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "1";
-                clicked => { root.number-text += "1"; }
+                activated => { root.number-text += "1"; }
             }
-
-            TonalButton {
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "2";
-                clicked => { root.number-text += "2"; }
+                activated => { root.number-text += "2"; }
             }
-
-            TonalButton {
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "3";
-                clicked => { root.number-text += "3"; }
+                activated => { root.number-text += "3"; }
             }
         }
 
         HorizontalLayout {
-            spacing: 12px;
-            TonalButton {
+            spacing: KitThemeContext.current.spacing.unit * 3;
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "4";
-                clicked => { root.number-text += "4"; }
+                activated => { root.number-text += "4"; }
             }
-
-            TonalButton {
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "5";
-                clicked => { root.number-text += "5"; }
+                activated => { root.number-text += "5"; }
             }
-
-            TonalButton {
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "6";
-                clicked => { root.number-text += "6"; }
+                activated => { root.number-text += "6"; }
             }
         }
 
         HorizontalLayout {
-            spacing: 12px;
-            TonalButton {
+            spacing: KitThemeContext.current.spacing.unit * 3;
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "7";
-                clicked => { root.number-text += "7"; }
+                activated => { root.number-text += "7"; }
             }
-
-            TonalButton {
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "8";
-                clicked => { root.number-text += "8"; }
+                activated => { root.number-text += "8"; }
             }
-
-            TonalButton {
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "9";
-                clicked => { root.number-text += "9"; }
+                activated => { root.number-text += "9"; }
             }
         }
 
         HorizontalLayout {
-            spacing: 12px;
-            TonalButton {
+            spacing: KitThemeContext.current.spacing.unit * 3;
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "*";
-                clicked => { root.number-text += "*"; }
+                activated => { root.number-text += "*"; }
             }
-
-            TonalButton {
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "0";
-                clicked => { root.number-text += "0"; }
+                activated => { root.number-text += "0"; }
             }
-
-            TonalButton {
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
                 text: "#";
-                clicked => { root.number-text += "#"; }
+                activated => { root.number-text += "#"; }
             }
         }
 
         HorizontalLayout {
-            spacing: 16px;
-            OutlineButton {
+            spacing: KitThemeContext.current.spacing.unit * 4;
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
+                intent: ButtonIntent.outline;
                 text: @tr("清除");
-                clicked => { root.number-text = ""; }
+                activated => { root.number-text = ""; }
             }
-
-            FilledButton {
+            KitButton {
                 horizontal-stretch: 1;
+                control-width: ControlWidth.fill;
+                intent: ButtonIntent.primary;
                 text: @tr("拨打");
-                enabled: root.number-text != "";
-                clicked => { root.dial(root.number-text); }
+                disabled: root.number-text == "";
+                activated => { root.dial(root.number-text); }
             }
         }
     }

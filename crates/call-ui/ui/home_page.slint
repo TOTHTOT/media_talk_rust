@@ -1,13 +1,13 @@
 // 主页: 组装左侧时钟卡片 + 右侧 4x2 应用网格 + 底部最近通话
 // 子组件在 home/ 目录: ClockCard / AppGrid / RecentCalls
-import { MaterialPalette } from "../material-1.1.0/material.slint";
+import { KitThemeContext } from "@kit";
 import { CallLogEntry } from "components.slint";
 import { ClockCard } from "home/clock_card.slint";
 import { AppGrid } from "home/app_grid.slint";
 import { RecentCalls } from "home/recent_calls.slint";
 
 export component HomePage inherits Rectangle {
-    background: MaterialPalette.background;
+    background: KitThemeContext.current.canvas;
     in property <bool> sip-registered;
     in property <string> clock-text;
     in property <string> date-text;
@@ -21,13 +21,11 @@ export component HomePage inherits Rectangle {
     callback redial(string); // 最近通话点击回拨
 
     HorizontalLayout {
-        padding-left: 16px;
-        padding-bottom: 16px;
-        padding-right: 16px;
-        spacing: 16px;
-        // 左侧时钟卡片 (3:17 比例)
+        padding: 10px;
+        spacing: 10px;
+        // 左侧时钟卡片 (10:16 比例)
         ClockCard {
-            horizontal-stretch: 3;
+            horizontal-stretch: 1;
             sip-registered: root.sip-registered;
             clock-text: root.clock-text;
             date-text: root.date-text;
@@ -41,8 +39,9 @@ export component HomePage inherits Rectangle {
 
         // 右侧: 应用网格 + 最近通话
         VerticalLayout {
-            horizontal-stretch: 17;
+            horizontal-stretch: 2;
             spacing: 12px;
+
             AppGrid {
                 vertical-stretch: 1;
                 unread-messages: root.unread-messages;
@@ -50,10 +49,9 @@ export component HomePage inherits Rectangle {
                 open-page(p) => { root.open-page(p); }
             }
 
-            // 固定高度 (头部 36 + 两条 ListTile 72x2), 有无记录都不挤压上网格
+            // 固定高度: 头部 + 三条两行通话记录; 更多记录在卡片内滚动.
             RecentCalls {
-                height: 180px;
-                vertical-stretch: 0;
+                height: 220px;
                 call-log: root.call-log;
                 redial(num) => { root.redial(num); }
             }

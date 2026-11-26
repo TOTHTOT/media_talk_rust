@@ -1,0 +1,67 @@
+// 最近通话单行: 方向图标 + 号码/状态 + 时间/时长.
+// 列表容器 (RecentCalls) 只负责滚动和 for, 行内容放这里.
+import {
+    AvatarSize,
+    ButtonIntent,
+    ControlWidth,
+    KitAvatar,
+    KitMetrics,
+    KitPressable,
+    Tone,
+    TypographyRole,
+} from "@kit";
+import { LucideIcons } from "@kit-icons/all.slint";
+import { CallLogEntry } from "../components.slint";
+
+export component RecentCallRow inherits KitPressable {
+    in property <CallLogEntry> entry;
+    callback redial(string);
+
+    width: 100%;
+    // 两行内容比 KitPressable 的默认按钮高, 行高跟随内容;
+    // 否则第二行会溢出 pressable, hover 背景只盖住第一行.
+    min-height: content.preferred-height + 2 * root.padding-block;
+    preferred-height: self.min-height;
+    max-height: self.min-height;
+    intent: ButtonIntent.quiet;
+    control-width: ControlWidth.fill;
+    accessible-name: (root.entry.missed ? @tr("未接") : root.entry.outgoing ? @tr("呼出") : @tr("呼入")) + " · " + root.entry.peer;
+    activated => { root.redial(root.entry.peer); }
+
+    content := HorizontalLayout {
+        spacing: root.theme.spacing.unit * 3;
+        cross-axis-alignment: center;
+
+        KitAvatar {
+            avatar-size: AvatarSize.compact;
+            fallback-icon: root.entry.outgoing ? LucideIcons.arrow-up-right() : LucideIcons.arrow-down-left();
+            tone: root.entry.missed ? Tone.danger : Tone.accent;
+        }
+
+        VerticalLayout {
+            spacing: root.theme.spacing.unit / 2;
+
+            Text {
+                text: (root.entry.missed ? @tr("未接") : root.entry.outgoing ? @tr("呼出") : @tr("呼入")) + " · " + root.entry.peer;
+                color: root.theme.text-primary;
+                font-family: root.theme.typography.family;
+                font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
+                font-weight: root.theme.typography.weight-medium;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.entry.missed ? root.entry.time
+                    : root.entry.connected ? root.entry.time + " · " + (
+                    root.entry.duration-s >= 60
+                    ? @tr("{} 分 {} 秒", Math.floor(root.entry.duration-s / 60), Math.mod(root.entry.duration-s, 60))
+                    : @tr("{} 秒", root.entry.duration-s))
+                    : @tr("{} · 未接通", root.entry.time);
+                color: root.theme.text-secondary;
+                font-family: root.theme.typography.family;
+                font-size: KitMetrics.font-size(root.theme, TypographyRole.caption);
+                overflow: elide;
+            }
+        }
+    }
+}

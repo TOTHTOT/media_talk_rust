@@ -1,15 +1,16 @@
 // 主页左侧时钟卡片: 时钟/日期 + 状态点列表 + 一键开锁
 import {
-    FilledCard,
-    FilledButton,
-    HorizontalDivider,
-    MaterialText,
-    MaterialTypography,
-    MaterialPalette, Horizontal,
-} from "../../material-1.1.0/material.slint";
+    KitCard,
+    KitDivider,
+    KitMetrics,
+    LayoutSpace,
+    TypographyRole,
+} from "@kit";
 import { Dot } from "../components.slint";
+import { IconTextButton } from "../components/icon_text_button.slint";
+import { LucideIcons } from "@kit-icons/all.slint";
 
-export component ClockCard inherits FilledCard {
+export component ClockCard inherits KitCard {
     in property <bool> sip-registered;
     in property <string> clock-text;
     in property <string> date-text;
@@ -22,47 +23,57 @@ export component ClockCard inherits FilledCard {
     in property <length> page-width;
     callback show-toast(string);
 
+    gap: LayoutSpace.none;
+
     // 天气图标表: 顺序必须与 Rust weather.rs 的 ICON_* 常量一一对应
     property <[image]> weather-icons: [
-        @image-url("../icons/sun.svg"), @image-url("../icons/moon-star.svg"),
-        @image-url("../icons/cloud-sun.svg"), @image-url("../icons/cloud-moon.svg"),
-        @image-url("../icons/cloud.svg"), @image-url("../icons/cloud-drizzle.svg"),
-        @image-url("../icons/cloud-rain.svg"), @image-url("../icons/cloud-rain-wind.svg"),
-        @image-url("../icons/cloud-snow.svg"), @image-url("../icons/cloud-lightning.svg"),
-        @image-url("../icons/cloud-hail.svg"), @image-url("../icons/cloud-fog.svg"),
-        @image-url("../icons/haze.svg"), @image-url("../icons/wind.svg"),
+        @image-url("../icons/sun.svg"),
+        @image-url("../icons/moon-star.svg"),
+        @image-url("../icons/cloud-sun.svg"),
+        @image-url("../icons/cloud-moon.svg"),
+        @image-url("../icons/cloud.svg"),
+        @image-url("../icons/cloud-drizzle.svg"),
+        @image-url("../icons/cloud-rain.svg"),
+        @image-url("../icons/cloud-rain-wind.svg"),
+        @image-url("../icons/cloud-snow.svg"),
+        @image-url("../icons/cloud-lightning.svg"),
+        @image-url("../icons/cloud-hail.svg"),
+        @image-url("../icons/cloud-fog.svg"),
+        @image-url("../icons/haze.svg"),
+        @image-url("../icons/wind.svg"),
     ];
 
     VerticalLayout {
-        // 靠上布局: 父级不再整体居中, 顶部留少量内边距,
-        // 避免上半部分空一大片; 各段间距放宽, 避免挤成一团
+        // 靠上布局: 各段间距放宽, 避免挤成一团
         alignment: start;
-        padding-top: 40px;
-        padding-left: 28px;
-        padding-right: 28px;
-        spacing: 20px;
-        MaterialText {
+        spacing: root.theme.spacing.unit * 5;
+
+        Text {
             text: root.clock-text;
-            style: MaterialTypography.display_large;
+            color: root.theme.text-primary;
+            font-family: root.theme.typography.family;
             // 窗口变窄时缩字号, 避免时钟溢出卡片
-            font-size: min(100px, root.page-width / 10);
+            font-size: min(80px, root.page-width / 24);
+            font-weight: root.theme.typography.weight-bold;
             horizontal-alignment: center;
+            overflow: elide;
         }
 
         // 日期 + 天气同一排, 水平居中, 间距收紧; 无数据时占位提示
         HorizontalLayout {
-            spacing: 8px;
+            spacing: root.theme.spacing.unit * 2;
             alignment: center;
 
-            MaterialText {
+            Text {
                 text: root.date-text;
-                style: MaterialTypography.title_medium;
-                color: MaterialPalette.on_surface_variant;
+                color: root.theme.text-secondary;
+                font-family: root.theme.typography.family;
+                font-size: KitMetrics.font-size(root.theme, TypographyRole.subtitle);
                 vertical-alignment: center;
             }
 
             if root.weather-icon >= 0: HorizontalLayout {
-                spacing: 4px;
+                spacing: root.theme.spacing.unit;
                 alignment: start;
 
                 Image {
@@ -72,109 +83,109 @@ export component ClockCard inherits FilledCard {
                     source: root.weather-icon < root.weather-icons.length
                         ? root.weather-icons[root.weather-icon]
                         : @image-url("../icons/cloud.svg");
-                    colorize: MaterialPalette.on_surface_variant;
+                    colorize: root.theme.text-secondary;
                 }
 
-                MaterialText {
+                Text {
                     text: root.weather-temp;
-                    style: MaterialTypography.title_medium;
-                    color: MaterialPalette.on_surface;
+                    color: root.theme.text-primary;
+                    font-family: root.theme.typography.family;
+                    font-size: KitMetrics.font-size(root.theme, TypographyRole.subtitle);
                     vertical-alignment: center;
                 }
             }
 
             // 无天气数据: 占位图标 + 提示, 不然日期行右侧空一片
             if root.weather-icon < 0: HorizontalLayout {
-                spacing: 4px;
+                spacing: root.theme.spacing.unit;
                 alignment: start;
 
                 Image {
                     width: 20px;
                     height: 20px;
                     source: @image-url("../icons/cloud-off.svg");
-                    colorize: MaterialPalette.on_surface_variant;
+                    colorize: root.theme.text-secondary;
                 }
 
-                MaterialText {
+                Text {
                     text: @tr("暂无天气");
-                    style: MaterialTypography.title_medium;
-                    color: MaterialPalette.on_surface_variant;
+                    color: root.theme.text-secondary;
+                    font-family: root.theme.typography.family;
+                    font-size: KitMetrics.font-size(root.theme, TypographyRole.subtitle);
                     vertical-alignment: center;
                 }
             }
         }
 
-        Rectangle {
-            height: 12px;
-        }
-
-        HorizontalDivider { }
-
-        Rectangle {
-            height: 12px;
-        }
+        KitDivider { }
 
         HorizontalLayout {
-            spacing: 16px;
+            spacing: root.theme.spacing.unit * 4;
+
             Dot {
-                tint: root.sip-registered ? #4ade80 : MaterialPalette.error;
+                tint: root.sip-registered ? root.theme.success : root.theme.danger;
                 width: 12px;
                 height: 12px;
                 border-radius: 6px;
             }
 
-            MaterialText {
-                style: MaterialTypography.body_large;
-                color: MaterialPalette.on_surface_variant;
+            Text {
+                color: root.theme.text-secondary;
+                font-family: root.theme.typography.family;
+                font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
                 vertical-alignment: center;
                 text: root.sip-registered ? @tr("通话服务正常") : @tr("通话服务未注册");
             }
         }
 
         HorizontalLayout {
-            spacing: 12px;
+            spacing: root.theme.spacing.unit * 3;
+
             Dot {
-                tint: #fab43c;
+                tint: root.theme.warning;
                 width: 12px;
                 height: 12px;
                 border-radius: 6px;
             }
 
-            MaterialText {
-                style: MaterialTypography.body_large;
-                color: MaterialPalette.on_surface_variant;
+            Text {
+                color: root.theme.text-secondary;
+                font-family: root.theme.typography.family;
+                font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
                 vertical-alignment: center;
                 text: @tr("未读消息 {} 条", root.unread-messages);
             }
         }
 
         HorizontalLayout {
-            spacing: 12px;
+            spacing: root.theme.spacing.unit * 3;
+
             Dot {
-                tint: #60c8ff;
+                tint: root.theme.information;
                 width: 12px;
                 height: 12px;
                 border-radius: 6px;
             }
 
-            MaterialText {
-                style: MaterialTypography.body_large;
-                color: MaterialPalette.on_surface_variant;
+            Text {
+                color: root.theme.text-secondary;
+                font-family: root.theme.typography.family;
+                font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
                 vertical-alignment: center;
                 text: @tr("今日访客 {} 人", root.today-visitors);
             }
         }
 
-        Rectangle {
-            height: 20px;
-        }
         // 一键开锁 (DTMF 未接入, 气泡提示); 居中不满宽
         HorizontalLayout {
+            // width: 100%;
             alignment: center;
-            FilledButton {
-                horizontal-stretch: 0;
+            padding-top: 20px;
+
+            IconTextButton {
+                icon: LucideIcons.lock-open();
                 text: @tr("一键开锁");
-                clicked => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); }
+                activated => { root.show-toast(@tr("开锁功能开发中 (需 DTMF 支持)")); }
             }
         }
     }

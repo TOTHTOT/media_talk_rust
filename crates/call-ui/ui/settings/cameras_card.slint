@@ -1,65 +1,87 @@
 // 设置页摄像头管理卡: 已保存列表 (增删; 查看在监控页)
 import {
-    FilledCard,
-    FilledButton,
-    TextButton,
-    IconButton,
-    ListTile,
-    HorizontalDivider,
-    MaterialText,
-    MaterialTypography,
-    MaterialPalette,
-} from "../../material-1.1.0/material.slint";
+    KitCard,
+    KitCardBody,
+    KitCardHeader,
+    KitIconButton,
+    KitMetrics,
+    LayoutSpace,
+    TypographyRole,
+    KitButton,
+} from "@kit";
+import { LucideIcons } from "@kit-icons/all.slint";
 import { CameraEntry } from "../components.slint";
+import { IconTextButton } from "../components/icon_text_button.slint";
 
-export component CamerasCard inherits FilledCard {
+export component CamerasCard inherits KitCard {
     in property <[CameraEntry]> cameras: [];
     callback delete-camera(int);
     // 弹对话框由页面统一编排 (对话框覆盖层挂在页面根部)
     callback search-clicked();
     callback manual-clicked();
 
-    VerticalLayout {
-        padding: 28px;
-        spacing: 16px;
-        MaterialText {
-            text: @tr("摄像头");
-            style: MaterialTypography.headline_small;
-        }
+    inset: LayoutSpace.roomy;
+    gap: LayoutSpace.regular;
 
-        HorizontalDivider {}
+    KitCardHeader {
+        title: @tr("摄像头");
+    }
 
-        if root.cameras.length == 0: MaterialText {
+    KitCardBody {
+        if root.cameras.length == 0: Text {
             text: @tr("暂无已保存的摄像头");
-            style: MaterialTypography.body_large;
-            color: MaterialPalette.on_surface_variant;
+            color: root.theme.text-secondary;
+            font-family: root.theme.typography.family;
+            font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
         }
 
-        for cam in root.cameras: ListTile {
+        for cam in root.cameras: HorizontalLayout {
             width: 100%;
-            // 必须显式定高: ListTile 内部 min_height 与头像盒互为依赖, 不定死成环 panic
-            // 56px: 摄像头列表行距紧凑 (通讯录用 72px 因为有头像)
-            height: 56px;
-            text: cam.name;
-            supporting-text: cam.kind == "" ? cam.uri : cam.kind + " · " + cam.uri;
-            IconButton {
-                inline: true;
-                icon: @image-url("../icons/trash-2.svg");
-                clicked => { root.delete-camera(cam.id); }
+            spacing: root.theme.spacing.unit * 3;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: root.theme.spacing.unit / 2;
+
+                Text {
+                    text: cam.name;
+                    color: root.theme.text-primary;
+                    font-family: root.theme.typography.family;
+                    font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
+                    font-weight: root.theme.typography.weight-medium;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: cam.kind == "" ? cam.uri : cam.kind + " · " + cam.uri;
+                    color: root.theme.text-secondary;
+                    font-family: root.theme.typography.family;
+                    font-size: KitMetrics.font-size(root.theme, TypographyRole.caption);
+                    overflow: elide;
+                }
+            }
+
+            KitIconButton {
+                glyph: LucideIcons.trash();
+                accessible-name: @tr("删除") + " " + cam.name;
+                activated => { root.delete-camera(cam.id); }
             }
         }
 
         HorizontalLayout {
-            spacing: 12px;
+            spacing: root.theme.spacing.unit * 3;
             alignment: start;
-            FilledButton {
+
+            IconTextButton {
+                icon: LucideIcons.search();
                 text: @tr("搜索添加");
-                clicked => { root.search-clicked(); }
+                activated => { root.search-clicked(); }
             }
 
-            TextButton {
+            IconTextButton {
+                icon: LucideIcons.plus();
                 text: @tr("手动添加");
-                clicked => { root.manual-clicked(); }
+                activated => { root.manual-clicked(); }
             }
         }
     }

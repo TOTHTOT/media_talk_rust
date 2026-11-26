@@ -1,26 +1,38 @@
 // 拨号页左侧通讯录卡: 添加/编辑表单 + 联系人列表 (数据落 SQLite, 回调透传 Rust)
+// 卡片用 Kit 主题令牌; 列表行用 KitPressable/KitAvatar/KitIconButton.
 import {
-    TextButton,
-    FilledButton,
-    FilledCard,
-    IconButton,
-    ListTile,
-    HorizontalDivider,
-    MaterialText,
-    MaterialTypography,
-    MaterialPalette,
-} from "../../material-1.1.0/material.slint";
-import { ScrollView } from "std-widgets.slint";
+    AvatarSize,
+    ButtonIntent,
+    ControlWidth,
+    KitAvatar,
+    KitButton,
+    KitDivider,
+    KitIconButton,
+    KitMetrics,
+    KitPressable,
+    KitScrollArea,
+    KitTheme,
+    KitThemeContext,
+    Tone,
+    TypographyRole,
+} from "@kit";
+import { LucideIcons } from "@kit-icons/all.slint";
 import { ContactEntry } from "../components.slint";
 import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
 
-export component ContactsCard inherits FilledCard {
+export component ContactsCard inherits Rectangle {
+    property <KitTheme> theme: KitThemeContext.current;
     in property <[ContactEntry]> contacts: [];
     callback add-contact(string, string); // name, number
     callback update-contact(int, string, string); // id, name, number
     callback delete-contact(int); // id
     callback pick-number(string); // 点列表行, 把号码交给拨号盘
     callback dial(string); // 行内电话图标快捷拨打
+
+    background: root.theme.surface;
+    border-width: root.theme.shape.border-width;
+    border-color: root.theme.border-subtle;
+    border-radius: root.theme.shape.radius-container;
 
     // 编辑态: -1=新增, 否则为正在编辑的联系人 id
     property <int> editing-id: -1;
@@ -31,14 +43,16 @@ export component ContactsCard inherits FilledCard {
     }
 
     VerticalLayout {
-        padding: 20px;
-        spacing: 12px;
-        // 表单区各行 vertical-stretch: 0 钉死内容高度, 弹性空间只给列表区,
-        // 否则卡片拉高时输入框会被分摊撑高、间距变大
-        MaterialText {
+        padding: root.theme.spacing.unit * 5;
+        spacing: root.theme.spacing.unit * 3;
+
+        Text {
             vertical-stretch: 0;
             text: @tr("通讯录");
-            style: MaterialTypography.title_large;
+            color: root.theme.text-primary;
+            font-family: root.theme.typography.family;
+            font-size: KitMetrics.font-size(root.theme, TypographyRole.subtitle);
+            font-weight: root.theme.typography.weight-semibold;
         }
 
         // 添加/编辑表单 (编辑时点列表行的铅笔载入). KbTextField 聚焦弹屏幕键盘
@@ -48,7 +62,6 @@ export component ContactsCard inherits FilledCard {
             commit-seq: KeyboardCtx.commit-seq;
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
-
         }
 
         number-input := KbTextField {
@@ -57,17 +70,17 @@ export component ContactsCard inherits FilledCard {
             commit-seq: KeyboardCtx.commit-seq;
             commit-text: KeyboardCtx.commit-text;
             delete-field: KeyboardCtx.delete-field;
-
         }
 
         HorizontalLayout {
             vertical-stretch: 0;
-            spacing: 8px;
+            spacing: root.theme.spacing.unit * 2;
             alignment: start;
-            FilledButton {
+            KitButton {
                 text: root.editing-id < 0 ? @tr("添加") : @tr("保存");
-                enabled: name-input.text != "" && number-input.text != "";
-                clicked => {
+                intent: ButtonIntent.primary;
+                disabled: name-input.text == "" || number-input.text == "";
+                activated => {
                     if (root.editing-id < 0) {
                         root.add-contact(name-input.text, number-input.text);
                     } else {
@@ -77,56 +90,92 @@ export component ContactsCard inherits FilledCard {
                 }
             }
 
-            if root.editing-id >= 0: TextButton {
+            if root.editing-id >= 0: KitButton {
                 text: @tr("取消");
-                clicked => { root.clear-form(); }
+                intent: ButtonIntent.outline;
+                activated => { root.clear-form(); }
             }
         }
 
-        HorizontalDivider {
+        KitDivider {
             vertical-stretch: 0;
         }
 
-        if root.contacts.length == 0: MaterialText {
+        if root.contacts.length == 0: Text {
             vertical-stretch: 1;
             text: @tr("暂无联系人");
-            style: MaterialTypography.body_medium;
-            color: MaterialPalette.outline;
+            color: root.theme.text-secondary;
+            font-family: root.theme.typography.family;
+            font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
             horizontal-alignment: center;
             vertical-alignment: center;
         }
-        if root.contacts.length > 0: ScrollView {
+
+        if root.contacts.length > 0: KitScrollArea {
             vertical-stretch: 1;
+
             VerticalLayout {
-                spacing: 2px;
-                for c in root.contacts: ListTile {
+                spacing: root.theme.spacing.unit;
+
+                for c in root.contacts: KitPressable {
                     width: 100%;
-                    // 必须显式定高: ListTile 内部 min_height 与头像盒互为依赖, 不定死成环 panic
-                    height: 72px;
-                    text: c.name;
-                    supporting_text: c.number;
-                    clicked => { root.pick-number(c.number); }
-                    // 快捷拨打/编辑/删除: inline 小号按钮 (18px), 标准 40px 三个太挤
-                    IconButton {
-                        inline: true;
-                        icon: @image-url("../icons/phone.svg");
-                        clicked => { root.dial(c.number); }
-                    }
+                    intent: ButtonIntent.quiet;
+                    control-width: ControlWidth.fill;
+                    accessible-name: c.name + " " + c.number;
+                    activated => { root.pick-number(c.number); }
 
-                    IconButton {
-                        inline: true;
-                        icon: @image-url("../icons/pencil.svg");
-                        clicked => {
-                            root.editing-id = c.id;
-                            name-input.text = c.name;
-                            number-input.text = c.number;
+                    HorizontalLayout {
+                        spacing: root.theme.spacing.unit * 2;
+
+                        KitAvatar {
+                            avatar-size: AvatarSize.compact;
+                            initials: "";
+                            fallback-icon: LucideIcons.user();
+                            tone: Tone.accent;
                         }
-                    }
 
-                    IconButton {
-                        inline: true;
-                        icon: @image-url("../icons/trash-2.svg");
-                        clicked => { root.delete-contact(c.id); }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: root.theme.spacing.unit / 2;
+
+                            Text {
+                                text: c.name;
+                                color: root.theme.text-primary;
+                                font-family: root.theme.typography.family;
+                                font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
+                                overflow: elide;
+                            }
+
+                            Text {
+                                text: c.number;
+                                color: root.theme.text-secondary;
+                                font-family: root.theme.typography.family;
+                                font-size: KitMetrics.font-size(root.theme, TypographyRole.caption);
+                                overflow: elide;
+                            }
+                        }
+
+                        KitIconButton {
+                            glyph: LucideIcons.phone();
+                            accessible-name: @tr("拨打") + " " + c.name;
+                            activated => { root.dial(c.number); }
+                        }
+
+                        KitIconButton {
+                            glyph: LucideIcons.pencil();
+                            accessible-name: @tr("编辑") + " " + c.name;
+                            activated => {
+                                root.editing-id = c.id;
+                                name-input.text = c.name;
+                                number-input.text = c.number;
+                            }
+                        }
+
+                        KitIconButton {
+                            glyph: LucideIcons.trash();
+                            accessible-name: @tr("删除") + " " + c.name;
+                            activated => { root.delete-contact(c.id); }
+                        }
                     }
                 }
             }
