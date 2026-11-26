@@ -25,6 +25,16 @@ pub use app::Phase;
 pub use session::{GuiSipConfig, GuiSipOverrides};
 use tracing::info;
 
+/// 屏幕键盘退格: Slint 字符串没有 substring/char-at, 由 Rust 删除最后一个
+/// Unicode 标量. 每个窗口注册一次, 所有 KbTextField 共用.
+fn install_keyboard_trim(ui: &MainWindow) {
+    ui.global::<KeyboardCtx>().on_trim_last(|text| {
+        let mut text = text.to_string();
+        text.pop();
+        text.into()
+    });
+}
+
 /// 启动通话 GUI: 主线程跑 slint 事件循环, SIP worker 在后台线程.
 /// 窗口关闭后命令通道断开, worker 收到后 client.stop() 优雅退出.
 ///
@@ -45,6 +55,7 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
     let ui = MainWindow::new()?;
     // Kit 服务必须在窗口显示前安装 (弹层定位/选择/焦点/主题全局)
     slint_kit::install(&ui);
+    install_keyboard_trim(&ui);
     let _clock_timer = props::start_clock_timer(&ui); // 保活到 ui.run() 返回
 
     let app: bridge::SharedApp =
@@ -241,6 +252,7 @@ fn kb_flush(weak: &slint::Weak<MainWindow>, kb: &mut keyboard::KeyboardControlle
 pub fn smoke() -> anyhow::Result<()> {
     let ui = MainWindow::new()?;
     slint_kit::install(&ui);
+    install_keyboard_trim(&ui);
     let weak = ui.as_weak();
     ui.on_dial(move |number| {
         // 回调触发时窗口必然存活; 万一已销毁则忽略本次拨号

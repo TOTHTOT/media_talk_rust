@@ -17,6 +17,8 @@ import { IncomingCallOverlay } from "components/incoming_call.slint";
 import { StatusBar } from "status_bar.slint";
 import { Keyboard } from "keyboard.slint";
 import { KeyboardCtx } from "kb_text_field.slint";
+// Rust 侧实现 KbTextField 的退格 trim-last 回调
+export { KeyboardCtx } from "kb_text_field.slint";
 import { HomePage } from "home_page.slint";
 import { DialPage } from "dial_page.slint";
 import { SettingsPage } from "settings_page.slint";

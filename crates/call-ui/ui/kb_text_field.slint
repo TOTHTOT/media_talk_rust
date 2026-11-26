@@ -5,9 +5,9 @@
 // TextInput, 会弹出我们的屏幕键盘但收不到 KeyboardCtx.commit-seq, 所以
 // 文本输入仍由本组件承接. 视觉使用 KitTheme 令牌, 不引入第二套风格.
 //
-// 实现说明: slint 1.18/1.19 字符串无 substring/char-at, 无法直接切尾字符;
-// 因此退格用"变更快照栈"实现 —— changed text 记录每次变更前的值,
-// 退格拍振弹栈恢复上一个快照, 效果等价于删末字符 (含中文等多字节字符).
+// 退格: Slint 字符串没有 substring/char-at, 经 KeyboardCtx.trim-last 回调
+// 交给 Rust 删除最后一个 Unicode 字符; 不再依赖字段内的文本历史栈
+// (历史栈对带默认值的初始种子没有记录, 首次退格会清空整个输入框).
 import {
     ControlSize,
     KitMetrics,
@@ -30,6 +30,8 @@ export global KeyboardCtx {
     in-out property <int> commit-seq: 0;
     in-out property <string> commit-text: "";
     in-out property <bool> delete-field: false;
+    // 由 Rust 侧实现: 删除字符串最后一个 Unicode 字符 (退格用)
+    callback trim-last(string) -> string;
 }
 
 export component KbTextField inherits Rectangle {
@@ -55,11 +57,6 @@ export component KbTextField inherits Rectangle {
     // 内部焦点镜像 (内层 TextInput 真实焦点). 方案 D: 键盘显隐由 slint 官方
     // TextInputInterface.text-input-focused 决定, 此回调只服务 UI 副作用
     property <bool> priv-focused: input.has-focus;
-    // 退格快照栈: text 每次变更前的值; 以及栈底之前的当前值镜像
-    property <[string]> text-history: [];
-    property <string> text-shadow: "";
-    // 退格恢复期间置位, 禁止 changed text 把恢复动作本身再记入历史
-    property <bool> restoring: false;
 
     // 聚焦/失焦原样冒泡 (守卫已随字段身份一并移除 — Rust 门控读官方
     // text-input-focused 镜像, 不存在乱序消费问题)
@@ -67,34 +64,12 @@ export component KbTextField inherits Rectangle {
         root.focus-changed(root.priv-focused);
     }
 
-    changed text => {
-        if root.restoring {
-            return;
-        }
-        // 起步/首次外部种子同步只建立镜像不入栈; 此时 text 必为 "", 弹栈
-        // 兜底同样回到 "", 与不记录等价
-        if root.text-shadow == "" && root.text-history.length == 0 {
-            root.text-shadow = root.text;
-            return;
-        }
-        root.text-history.push(root.text-shadow);
-        root.text-shadow = root.text;
-    }
-
     changed commit-seq => {
         if !root.priv-focused {
             return;
         }
         if root.delete-field {
-            root.restoring = true;
-            if root.text-history.length > 0 {
-                root.text = root.text-history[root.text-history.length - 1];
-                root.text-history.remove(root.text-history.length - 1);
-            } else {
-                root.text = "";
-            }
-            root.text-shadow = root.text;
-            root.restoring = false;
+            root.text = KeyboardCtx.trim-last(root.text);
         } else if root.commit-text != "" {
             root.text = root.text + root.commit-text;
         }
