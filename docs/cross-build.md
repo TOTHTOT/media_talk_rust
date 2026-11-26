@@ -218,13 +218,66 @@ ssh root@<泰山派> '
 `C:/Program Files/Git/Users/yyy/file`, 服务端报 ENOENT. 绕法: 把路径写进
 Python 脚本字符串里 (不参与参数转换), 或给命令加 `MSYS_NO_PATHCONV=1` 前缀.
 
-## GitHub Actions (推荐长期方案)
+## 发布打包: 自包含运行环境 (客户机零安装)
 
-同一套 Dockerfile 可以直接搬进 CI, 见
-[rk3566.yml](../.github/workflows/rk3566.yml): 跑在 `ubuntu-24.04-arm`
-**原生 ARM64 runner** 上 (公开仓库免费), 容器编译 + 导出 + 传 Artifacts,
-手动触发或打 `v*` tag 时运行. 打 tag 触发时会额外用 `gh release create`
-把二进制挂到同名 Release 上; 手动触发只留 Artifacts.
+上面是"把二进制弄出来"的开发流程; 对外发布用**自包含包**: 运行库
+(gstreamer/glib/librime/libav + kms 栈)、gst 插件白名单、拼音词库、
+中文字体全打进包, 客户机不需要 apt 装任何东西.
+
+### 设备端 (scripts/package-rk3566.sh + install-rk3566.sh)
+
+打包脚本**在构建容器里跑** (所有 .so 的原产地), ldd 递归收集二进制 +
+每个 gst 插件的依赖闭包, 板子系统自带的 glibc 族跳过; 插件按白名单
+拷 (名单与代码里 `ElementFactory::make` 的元件清单同步维护, 见脚本
+头注释), 装不到的gst版本自动按存在性过滤 (1.16 的 videoconvert/
+videoscale 与 1.20+ 的 videoconvertscale 都列着, 谁存在拷谁):
+
+```bash
+docker build -f Dockerfile.rk3566 -t media-talk-rk3566 .
+mkdir -p dist
+docker run --rm -e RELEASE_VERSION=1.2.3 -v "$PWD/dist:/out" \
+    media-talk-rk3566 bash /src/scripts/package-rk3566.sh
+```
+
+板端安装 (root, 幂等可重复执行 = 覆盖升级):
+
+```bash
+tar xzf media_talk_rust-1.2.3-rk3566-aarch64-glibc2.31.tar.gz
+cd media_talk_rust-1.2.3-rk3566-aarch64-glibc2.31
+sudo sh install.sh        # 库进 /opt/mediatalk, ldconfig, 装 service
+```
+
+包内 service 副本已注入 `GST_PLUGIN_PATH` /
+`GST_PLUGIN_SCANNER` / `GST_REGISTRY` 三个环境变量 (仓库原文件
+保持手装场景不变, 打包时用 sed 改副本). 拼音词库合并到
+`/usr/share/rime-data` (rime.rs 默认路径), 字体合并到
+`/usr/local/share/fonts` 后 `fc-cache`.
+
+注意: **glibc 下限 2.31** (容器是 ubuntu 20.04, 包名里已标), 客户
+rootfs glibc 更低会起不来; 已知 focal 的 gst 是 1.16, 没有 webrtcsink
+(web 显示功能), 板端若要用需换 gst >= 1.20 的 rootfs 或另行处理.
+
+### Windows (scripts/package-windows.ps1)
+
+官方 MSI 装 runtime+devel 后 `cargo build --release`
+(`RUSTFLAGS="-C target-feature=+crt-static"` 静态链 CRT, 免 vcredist),
+脚本拷 bin 下全部 gstreamer DLL (宁可多带不可漏) + 同一份插件白名单
++ `gst-plugin-scanner.exe` + `run.bat` (设好 GST_PLUGIN_PATH) +
+LGPL 归属声明, 打成 zip:
+
+```powershell
+powershell -File scripts/package-windows.ps1 -Version 1.2.3
+```
+
+### GitHub Actions (推荐长期方案)
+
+打包流在 [release.yml](../.github/workflows/release.yml): 手动触发
+(可填版本号) 或打 `v*` tag, 两个 job 并行 —— rk3566 走上面同一套
+Docker + 容器内打包脚本, windows 装官方 MSI (版本号在工作流 env
+`GST_WINDOWS_VERSION`) 后打包. 产物名带平台和版本:
+`media_talk_rust-<ver>-rk3566-aarch64-glibc2.31.tar.gz` 与
+`media_talk_rust-<ver>-windows-x86_64.zip`, 进 Artifacts; 打 tag
+时由 release job 统一挂到同名 GitHub Release.
 
 和 Mac 构建的差异:
 
@@ -233,4 +286,5 @@ Python 脚本字符串里 (不参与参数转换), 或给命令加 `MSYS_NO_PATH
 - glibc 版本由容器里的 ubuntu:20.04 保证, 与 runner 宿主 (24.04,
   glibc 2.39) 无关 — 这正是用容器而不是直接在 runner 上 cargo build
   的原因
-- 私有仓库的 arm runner 计费, 届时退回 Mac 构建即可
+- 私有仓库的 arm runner 计费, 届时退回 Mac 构建即可 (本机跑的
+  打包脚本与 CI 是同一个, 无差异)

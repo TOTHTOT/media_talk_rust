@@ -1,0 +1,126 @@
+name: release
+
+# 统一发布流: 手动触发 (workflow_dispatch, 可填版本号) 或打 v* tag.
+# 产物: Windows 自包含 zip + RK3566 设备端自包含 tar.gz (均带运行库),
+# 包名带平台信息; tag 触发时额外挂到 GitHub Release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号 (tag 触发时自动取 tag 名去掉 v 前缀, 此处仅手动触发生效)"
+        required: false
+        default: "dev"
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # GStreamer Windows 版本, 升级只改这里; 文件名格式
+  # gstreamer-1.0[-devel]-msvc-x86_64-<ver>.msi, 404 时去
+  # https://gstreamer.freedesktop.org/data/pkg/windows/ 核对
+  GST_WINDOWS_VERSION: "1.24.13"
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  rk3566:
+    name: 设备端包 (rk3566 aarch64, glibc 2.31)
+    needs: version
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker build (native aarch64, glibc 2.31)
+        run: docker build -f Dockerfile.rk3566 -t media-talk-rk3566 .
+
+      - name: Package (binary + 运行库 + gst 插件 + rime + 字体)
+        run: |
+          mkdir -p dist
+          docker run --rm \
+            -e RELEASE_VERSION="${{ needs.version.outputs.version }}" \
+            -v "$PWD/dist:/out" \
+            media-talk-rk3566 bash /src/scripts/package-rk3566.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media_talk_rust-${{ needs.version.outputs.version }}-rk3566-aarch64-glibc2.31
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows 包 (x86_64)
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GStreamer MSVC (runtime + devel)
+        shell: pwsh
+        run: |
+          $v = "${{ env.GST_WINDOWS_VERSION }}"
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc"
+          Invoke-WebRequest "$base/gstreamer-1.0-msvc-x86_64-$v.msi" -OutFile gst.msi
+          Invoke-WebRequest "$base/gstreamer-1.0-devel-msvc-x86_64-$v.msi" -OutFile gst-devel.msi
+          Start-Process msiexec.exe -ArgumentList "/i","gst.msi","/qn","/norestart" -Wait
+          Start-Process msiexec.exe -ArgumentList "/i","gst-devel.msi","/qn","/norestart" -Wait
+
+      - name: Configure GStreamer path
+        shell: pwsh
+        run: |
+          "C:\gstreamer\1.0\msvc_x86_64\bin" | Out-File -Append $env:GITHUB_PATH
+          "PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" | Out-File -Append $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/*
+
+      # crt-static: 静态链 MSVC CRT, 客户机免装 vcredist
+      - name: Build
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release -p media_talk_rust --locked
+
+      - name: Package (exe + GStreamer 运行库 + 插件白名单)
+        shell: pwsh
+        run: scripts/package-windows.ps1 -Version "${{ needs.version.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media_talk_rust-${{ needs.version.outputs.version }}-windows-x86_64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: 发布到 GitHub Release (仅 tag)
+    needs: [version, rk3566, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: media_talk_rust-${{ needs.version.outputs.version }}-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" --generate-notes
