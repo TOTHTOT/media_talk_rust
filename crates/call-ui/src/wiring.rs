@@ -1,9 +1,12 @@
 //! UI 回调装配: 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性.
 
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use slint::ComponentHandle;
-use tracing::error;
+use tracing::{error, info, warn};
 
 use crate::MainWindow;
 use crate::bridge;
@@ -172,6 +175,11 @@ pub(crate) fn wire_screen(
 ) {
     ui.set_screen_control_available(screen.borrow().supported());
 
+    // 自动熄屏计时用单调时钟: NTP 校时/手动改时间不会把空闲时间算成几小时.
+    // evdev 线程只更新原子活动时间; 是否到点、是否允许熄屏都在 UI 线程判断.
+    let epoch = Instant::now();
+    let activity = Arc::new(AtomicU64::new(0));
+
     // 亮度: 所有平台都显示滑块; 仅在检测到可写背光时应用.
     // 启动时优先恢复 kv 中的用户值, 没有记录就沿用当前硬件亮度.
     let brightness_available = screen.borrow().brightness_available();
@@ -237,13 +245,19 @@ pub(crate) fn wire_screen(
     }
 
     {
-        let (screen, weak) = (screen.clone(), ui.as_weak());
+        let (screen, weak, activity) = (screen.clone(), ui.as_weak(), activity.clone());
         ui.on_screen_power_pressed(move || {
             let target = !screen.borrow().is_off();
             let result = screen.borrow_mut().set_off(target);
             let Some(ui) = weak.upgrade() else { return };
             match result {
-                Ok(()) => ui.set_screen_off(target),
+                Ok(()) => {
+                    ui.set_screen_off(target);
+                    if !target {
+                        // 手动开屏后重新计时, 否则可能马上又被自动熄屏.
+                        activity.store(elapsed_secs(epoch), Ordering::SeqCst);
+                    }
+                }
                 Err(e) => {
                     error!(err = %e, "screen power toggle failed");
                     ui.set_screen_off(screen.borrow().is_off());
@@ -257,10 +271,12 @@ pub(crate) fn wire_screen(
         });
     }
     {
-        let (screen, weak) = (screen.clone(), ui.as_weak());
+        let (screen, weak, activity) = (screen.clone(), ui.as_weak(), activity.clone());
         ui.on_screen_wake(move || {
             match screen.borrow_mut().set_off(false) {
                 Ok(()) => {
+                    // 唤醒即算活动, 不依赖 evdev 是否及时读到这次触摸.
+                    activity.store(elapsed_secs(epoch), Ordering::SeqCst);
                     if let Some(ui) = weak.upgrade() {
                         ui.set_screen_off(false);
                     }
@@ -279,6 +295,181 @@ pub(crate) fn wire_screen(
             }
         });
     }
+
+    // ===== 自动熄屏: kv 存秒值 (0 = 永不), UI 侧走选项下标; 秒值 ↔
+    // 下标的唯一映射在 SLEEP_CHOICES (slint 只认下标, 加选项改它 + items) =====
+    let saved_secs = store
+        .kv_get(crate::screen::KV_SLEEP_TIMEOUT)
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(SLEEP_CHOICES[DEFAULT_SLEEP_INDEX]);
+    let init_index = sleep_index_for(saved_secs);
+    let init_secs = SLEEP_CHOICES[init_index];
+    ui.set_sleep_timeout_index(init_index as i32);
+    if saved_secs != init_secs {
+        // 旧版本/手改的 kv 值可能不在选项表里; 回写规范化值, 保证 UI 与定时器一致.
+        if let Err(e) = store.kv_set(crate::screen::KV_SLEEP_TIMEOUT, &init_secs.to_string()) {
+            error!(err = %e, secs = init_secs, "normalize sleep timeout failed");
+        }
+    }
+    let sleep_timeout = Arc::new(AtomicU64::new(init_secs));
+    {
+        let (store, weak, sleep_timeout, activity) = (
+            store.clone(),
+            ui.as_weak(),
+            sleep_timeout.clone(),
+            activity.clone(),
+        );
+        ui.on_set_sleep_timeout_index(move |index| {
+            let index = (index.max(0) as usize).min(SLEEP_CHOICES.len() - 1);
+            let secs = SLEEP_CHOICES[index];
+            let Some(ui) = weak.upgrade() else { return };
+            let previous = ui.get_sleep_timeout_index();
+            // 先落盘再改内存/UI; 失败时把下拉恢复原选项.
+            if let Err(e) = store.kv_set(crate::screen::KV_SLEEP_TIMEOUT, &secs.to_string()) {
+                error!(err = %e, secs, "save sleep timeout failed");
+                ui.set_sleep_timeout_index(previous);
+                return;
+            }
+            sleep_timeout.store(secs, Ordering::Relaxed);
+            activity.store(elapsed_secs(epoch), Ordering::SeqCst);
+            ui.set_sleep_timeout_index(index as i32);
+            ui.invoke_notify(
+                crate::app::NoticeLevel::Info as i32,
+                crate::app::NoticeKind::Raw as i32,
+                "已保存".into(),
+            );
+        });
+    }
+
+    // 心跳由 main.slint 的 Timer 每秒触发一次 (UI 线程); 这里只判断, 不开线程.
+    {
+        let (weak, screen, sleep_timeout, activity) = (
+            ui.as_weak(),
+            screen.clone(),
+            sleep_timeout.clone(),
+            activity.clone(),
+        );
+        ui.on_sleep_tick(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let secs = sleep_timeout.load(Ordering::Relaxed);
+            if secs == 0 || ui.get_screen_off() {
+                return;
+            }
+            // 通话中/来电/去电/监控页保持亮屏; 同时刷新活动时间, 避免退出这些
+            // 页面后因为屏幕保持期间没触摸而立刻熄屏.
+            if ui.get_phase() != 0 || ui.get_page() == 3 {
+                activity.store(elapsed_secs(epoch), Ordering::SeqCst);
+                return;
+            }
+            let idle = elapsed_secs(epoch).saturating_sub(activity.load(Ordering::SeqCst));
+            if idle < secs {
+                return;
+            }
+            match screen.borrow_mut().set_off(true) {
+                Ok(()) => {
+                    ui.set_screen_off(true);
+                    info!(idle_s = idle, "auto screen off");
+                }
+                Err(e) => {
+                    error!(err = %e, idle_s = idle, "auto screen off failed");
+                    // 失败后重新计时, 避免每秒重试刷屏; 下一个超时周期再试.
+                    activity.store(elapsed_secs(epoch), Ordering::SeqCst);
+                    ui.invoke_notify(
+                        crate::app::NoticeLevel::Warn as i32,
+                        crate::app::NoticeKind::ScreenFailed as i32,
+                        e.to_string().into(),
+                    );
+                }
+            }
+        });
+    }
+
+    if screen.borrow().supported() {
+        spawn_activity_tracker(activity, epoch);
+    }
+}
+
+// 选项表: 秒值 ↔ UI 下标. 0 = 永不.
+const SLEEP_CHOICES: [u64; 6] = [0, 15, 30, 60, 120, 300];
+const DEFAULT_SLEEP_INDEX: usize = 2;
+
+fn sleep_index_for(secs: u64) -> usize {
+    SLEEP_CHOICES
+        .iter()
+        .position(|&v| v == secs)
+        .unwrap_or(DEFAULT_SLEEP_INDEX)
+}
+
+/// 活动追踪: 轮询 /dev/input/event* 的 evdev 事件流, 只把键/相对/绝对轴事件
+/// 算作用户活动; 每设备一线程阻塞读. 非 Linux 平台没有 /dev/input, 自然空跑
+/// (自动熄屏只在 screen.supported() 时启用).
+fn spawn_activity_tracker(activity: Arc<AtomicU64>, epoch: Instant) {
+    use std::io::Read as _;
+    let Ok(entries) = std::fs::read_dir("/dev/input") else {
+        warn!("evdev input unavailable; idle detection will ignore input");
+        return;
+    };
+    let mut opened = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("event") {
+            continue;
+        }
+        let Ok(file) = std::fs::OpenOptions::new().read(true).open(entry.path()) else {
+            continue;
+        };
+        opened += 1;
+        let act = activity.clone();
+        std::thread::Builder::new()
+            .name(format!("evdev-{name}"))
+            .spawn(move || {
+                let mut buf = [0u8; EVENT_SIZE * 16];
+                loop {
+                    match (&file).read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if has_user_input(&buf[..n]) {
+                                act.store(elapsed_secs(epoch), Ordering::SeqCst);
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+            })
+            .ok();
+    }
+    if opened == 0 {
+        warn!("no evdev event devices opened; idle detection will ignore input");
+    }
+}
+
+const EV_KEY: u16 = 0x01;
+const EV_REL: u16 = 0x02;
+const EV_ABS: u16 = 0x03;
+
+#[cfg(target_pointer_width = "64")]
+const EVENT_SIZE: usize = 24;
+#[cfg(target_pointer_width = "64")]
+const EVENT_TYPE_OFFSET: usize = 16;
+#[cfg(not(target_pointer_width = "64"))]
+const EVENT_SIZE: usize = 16;
+#[cfg(not(target_pointer_width = "64"))]
+const EVENT_TYPE_OFFSET: usize = 8;
+
+/// evdev 的 input_event: timeval + type + code + value. 只看 event type,
+/// 过滤 EV_SYN/EV_MSC 等非用户操作, 避免设备心跳事件让屏幕永不熄灭.
+fn has_user_input(buf: &[u8]) -> bool {
+    buf.chunks_exact(EVENT_SIZE).any(|event| {
+        let ty = u16::from_ne_bytes([event[EVENT_TYPE_OFFSET], event[EVENT_TYPE_OFFSET + 1]]);
+        ty == EV_KEY || ty == EV_REL || ty == EV_ABS
+    })
+}
+
+fn elapsed_secs(epoch: Instant) -> u64 {
+    epoch.elapsed().as_secs()
 }
 
 /// 清空 Open-Meteo (weather_geo) 与和风 (weather_loc) 两份定位缓存
@@ -287,5 +478,30 @@ fn clear_geo_caches(store: &crate::store::Store) {
         if let Err(e) = store.kv_set(k, "") {
             error!(err = %e, key = k, "clear geo cache failed");
         }
+    }
+}
+
+#[cfg(test)]
+mod sleep_tests {
+    use super::*;
+
+    #[test]
+    fn sleep_index_normalizes_unknown_values() {
+        assert_eq!(sleep_index_for(45), DEFAULT_SLEEP_INDEX);
+        assert_eq!(SLEEP_CHOICES[sleep_index_for(45)], 30);
+        assert_eq!(sleep_index_for(120), 4);
+    }
+
+    #[test]
+    fn evdev_filters_non_input_events() {
+        let event = |ty: u16| {
+            let mut bytes = [0u8; EVENT_SIZE];
+            bytes[EVENT_TYPE_OFFSET..EVENT_TYPE_OFFSET + 2].copy_from_slice(&ty.to_ne_bytes());
+            bytes
+        };
+        assert!(!has_user_input(&event(0x00))); // EV_SYN
+        assert!(has_user_input(&event(EV_KEY)));
+        assert!(has_user_input(&event(EV_REL)));
+        assert!(has_user_input(&event(EV_ABS)));
     }
 }

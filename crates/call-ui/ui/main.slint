@@ -147,6 +147,8 @@ export component MainWindow inherits Window {
     // 熄屏开关: 状态栏电源键 / 熄屏遮罩任意点击唤醒
     callback screen-power-pressed();
     callback screen-wake();
+    // 自动熄屏心跳: Slint Timer 每秒在 UI 线程触发, Rust 侧判断空闲
+    callback sleep-tick();
     // 屏幕亮度调节 (设置页滑块松手时提交)
     callback set-screen-brightness(float);
     callback set-sleep-timeout-index(int);
@@ -255,7 +257,8 @@ export component MainWindow inherits Window {
     }
 
     // 纯 UI 状态: 子页面与气泡提示, 不进 Rust 状态机
-    property <int> page: 0;
+    // out: Rust 侧自动熄屏需要读当前页面 (监控页保持亮屏)
+    out property <int> page: 0;
     property <string> toast: "";
     // toast 队列: 当前有气泡在显示时新消息排队, 前一条消失后依次展示 (每条 1 秒)
     property <[string]> toast-queue: [];
@@ -517,6 +520,13 @@ export component MainWindow inherits Window {
             fs.focus();
             root.kb-dismiss();
         }
+    }
+
+    // ===== 自动熄屏心跳: 1s 一次, 在 UI 线程判断; 无屏幕控制/永不/已熄屏时不跑 =====
+    Timer {
+        interval: 1s;
+        running: root.screen-control-available && root.sleep-timeout-index > 0 && !root.screen-off;
+        triggered => { root.sleep-tick(); }
     }
 
     // ===== 熄屏遮罩: 最顶层, 拦截业务点击; 任意触摸唤醒屏幕 =====

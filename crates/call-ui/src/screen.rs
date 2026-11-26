@@ -17,6 +17,8 @@ const FB_BLANK: &str = "/sys/class/graphics/fb0/blank";
 
 /// 用户设置亮度在 kv 表中的键 (百分比 5..100)
 pub(crate) const KV_BRIGHTNESS: &str = "screen_brightness";
+/// 自动休眠时间在 kv 表中的键 (秒, 0 = 永不)
+pub(crate) const KV_SLEEP_TIMEOUT: &str = "screen_sleep_timeout";
 /// 亮度下限: 0 会让屏幕全黑, 与熄屏键语义冲突, 设置页保底 5%
 pub(crate) const BRIGHTNESS_MIN_PERCENT: u32 = 5;
 
