@@ -17,6 +17,7 @@ RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirrors.tuna.tsinghua.
     build-essential \
     ca-certificates \
     curl \
+    fonts-wqy-zenhei \
     git \
     libasound2-dev \
     libfontconfig-dev \
