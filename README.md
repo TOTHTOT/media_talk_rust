@@ -121,8 +121,23 @@ docker build --network host -f Dockerfile.rk3566 -t media_talk_rust:rk3566 .
 所以 `gui` 要以 **root** 跑 (`serve` 不需要, 默认 unit 仍以 mediatalk 用户
 跑 serve)。
 
-`call-ui/build.rs` 会在构建时联网下载 lucide 图标和 material 组件, 所以
-构建机必须能出网 (容器内如走不通, 就是上面代理那个问题)。
+`call-ui/build.rs` 会在构建时联网下载 lucide 图标, 所以构建机必须能出网
+(容器内如走不通, 就是上面代理那个问题)。UI 组件来自 crates.io 的
+`slint-kit`, 不再在构建时下载 material 组件。
+
+Slint 编辑器插件不会读取 `build.rs`, 所以预览 `@kit` 前需要先执行
+`cargo vendor --locked target/slint-editor/vendor`, 并在 VS Code 的
+`.vscode/settings.json` 配置 `slint.libraryPaths`，或在 Zed 的
+`.zed/settings.json` 给 Slint LSP 加 `-L kit=...` 参数；`kit` /
+`kit-icons` / `kit-fonts` 三个别名都指向
+`target/slint-editor/vendor/slint-kit-slint/ui/...`。修改 `Cargo.lock` 或
+`cargo clean` 后需要重新 vendor。
+
+Zed 的 Slint 扩展目前内置 1.18.1，无法解析 Kit 的 Slint 1.19 库；需要下载
+1.19.0 的 `slint-lsp`，并在 `.zed/settings.json` 的 `lsp.slint.binary.path`
+用项目相对路径指向它（本仓库放在
+`target/slint-editor/bin/slint-lsp.exe`）。`cargo clean` 会删掉 `target/`，
+需要重新放回 LSP 和重新 vendor；扩展更新到 1.19 后可以删掉这个覆盖。
 
 #### 3.3 取出并验证二进制
 
@@ -347,6 +362,8 @@ file dist/media_talk_rust   # ARM aarch64
 11. ui框架和gui的启动命令参数需要整合，有参数传入优先参数否则使用配置
 12. **通话接收端音画同步** — `rtp_recv` 的视频/音频两路完全独立，各自从 udpsrc 经 depay/decode 到 autovideosink/autoaudiosdk，无 jitter buffer / PTS 对齐机制；网络抖动时可能出现音画错位。发送侧 `udpsink sync=true` 按 PTS 限速，录像（mpegtsmux）可保证 TS 流内 PTS 正确。接收侧如需顽健同步，应引入 `rtpbin` 替代裸 udpsrc（额外引入 ~150-200ms 延迟，换来 jitter buffer + RTCP Remb）。
 13. ICE 与 Linphone 互通：PBX 要 SDP 透传必须关 `[recording]`；桌面音频已通，视频（BUNDLE/双 agent）和手机（component 2/NAT）仍待解决，见 `docs/pitfalls.md` 的 “SIP + ICE 互通”。
+14. 优化i18n 目前都是`@tr("中文")` 这种不太好
+15. 实现 component 2 以及rtcp命令解析
 ## 代码索引 (repowise)
 
 本仓库用 [repowise](https://github.com/repowise-dev/repowise) 建代码索引:
