@@ -78,17 +78,21 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i","gst.msi","/qn","/norestart" -Wait
           Start-Process msiexec.exe -ArgumentList "/i","gst-devel.msi","/qn","/norestart" -Wait
 
+      - name: Install pkg-config
+        run: choco install pkgconfiglite --yes --no-progress
+
       - name: Configure GStreamer path
         shell: pwsh
         run: |
           "C:\gstreamer\1.0\msvc_x86_64\bin" | Out-File -Append $env:GITHUB_PATH
           "PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" | Out-File -Append $env:GITHUB_ENV
 
+      - name: Check build tools
+        run: pkg-config --modversion glib-2.0 gstreamer-1.0
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: crates/*
 
       # crt-static: 静态链 MSVC CRT, 客户机免装 vcredist
       - name: Build

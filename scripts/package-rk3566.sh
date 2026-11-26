@@ -82,12 +82,9 @@ for p in $PLUGINS; do
 done
 echo "plugins bundled:$found"
 
-# gst-plugin-scanner: Debian 系在 multiarch 插件目录下, 其他发行版在 libexec
-scanner=""
-for c in "$GST_PLUGIN_DIR/gst-plugin-scanner" \
-         "/usr/libexec/gstreamer-1.0/gst-plugin-scanner"; do
-    [ -f "$c" ] && scanner="$c" && break
-done
+# gst-plugin-scanner: Debian multiarch 目录会多一层 gstreamer-1.0,
+# 其他发行版常在 libexec; 按实际文件查找, 避免绑定某个发行版路径
+scanner="$(find /usr/lib /usr/libexec -name gst-plugin-scanner -type f 2>/dev/null | head -1 || true)"
 [ -n "$scanner" ] || { echo "gst-plugin-scanner not found" >&2; exit 1; }
 cp -L "$scanner" "$ROOT/$PKG_NAME/opt/mediatalk/libexec/gstreamer-1.0/"
 
