@@ -326,24 +326,44 @@ fn glib_thread_main(
     }
     let gobj: glib::Object = unsafe { glib::translate::from_glib_none(agent.cast()) };
     gobj.set_property("controlling-mode", cfg.controlling);
-    if let Some(stun) = cfg.stun {
-        // libnice 的 stun-server 属性只接受主机名/IP, 端口单独走
-        // stun-port; 这里兼容 stun://host:port 与 host:port.
-        let (server, port) = match parse_stun_uri(&stun) {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                let _ = ready_inner.send(Err(e));
-                return;
-            }
-        };
-        // 诊断可见性: srflx 缺失排查时先确认属性真的落在了 agent 上.
-        tracing::info!(stun_server = %server, stun_port = port, "ICE STUN configured");
-        gobj.set_property("stun-server", server);
-        gobj.set_property("stun-server-port", port as u32);
+    if !configure_stun(&gobj, cfg.stun, &ready_inner) {
+        return;
     }
-    let state_cb = state_tx;
-    // SAFETY: agent 存活; 信号回调只发 watch (无锁单写), 符合线程纪律
-    // (业务不进 glib 线程).
+    install_state_callback(agent, state_tx);
+    // SAFETY: add_stream 在 ctx 线程内调用, agent 存活.
+    let stream = unsafe { sys::nice_agent_add_stream(agent, cfg.components) };
+    if stream == 0 {
+        let _ = ready_inner.send(Err(IceError::CreateStream));
+        return;
+    }
+    attach_components(agent, stream, cfg.components, &thread_ctx);
+    // 关停把手随就绪信号传出; 线程自持本体跑到 Drop quit.
+    let _ = ready_inner.send(Ok((stream, SendPtr(agent), mainloop.clone())));
+    // 驱动 ctx 上排队的 invoke / 信号回调, 至 Drop quit.
+    mainloop.run();
+}
+
+/// libnice 的 stun-server 属性只接受主机名/IP, 端口单独走 stun-port;
+/// 这里兼容 stun://host:port 与 host:port. 解析失败经 ready 上报.
+fn configure_stun(gobj: &glib::Object, stun: Option<String>, ready: &ReadyTx) -> bool {
+    let Some(stun) = stun else { return true };
+    let (server, port) = match parse_stun_uri(&stun) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            let _ = ready.send(Err(e));
+            return false;
+        }
+    };
+    // 诊断可见性: srflx 缺失排查时先确认属性真的落在了 agent 上.
+    tracing::info!(stun_server = %server, stun_port = port, "ICE STUN configured");
+    gobj.set_property("stun-server", server);
+    gobj.set_property("stun-server-port", port as u32);
+    true
+}
+
+/// 连接状态信号: 回调只发 watch (无锁单写), 业务不进 glib 线程.
+fn install_state_callback(agent: *mut sys::NiceAgent, state_tx: watch::Sender<IceState>) {
+    // SAFETY: agent 存活; 回调只持有 watch 发送端.
     unsafe {
         sys::connect_state_changed(agent, move |_stream, _component, raw| {
             let mapped = match raw {
@@ -354,36 +374,34 @@ fn glib_thread_main(
                 _ => None,
             };
             if let Some(s) = mapped {
-                let _ = state_cb.send_replace(s);
+                let _ = state_tx.send_replace(s);
             }
         });
     }
-    // SAFETY: add_stream 在 ctx 线程内调用, agent 存活.
-    let stream = unsafe { sys::nice_agent_add_stream(agent, cfg.components) };
-    if stream == 0 {
-        let _ = ready_inner.send(Err(IceError::CreateStream));
-        return;
-    }
-    // 路由锚定 (本版 libnice 收包依赖 attach_recv, 见 route_recv_trampoline
-    // 注释): 为每个 component 挂空回调, 把 socket I/O 锚定到本 ctx.
-    for component in 1..=cfg.components {
-        // SAFETY: ctx 线程; agent/stream 存活; 空 trampoline 无状态, data
-        // 传 NULL 且回调不触碰.
+}
+
+/// 路由锚定 (本版 libnice 收包依赖 attach_recv, 见 route_recv_trampoline
+/// 注释): 为每个 component 挂空回调, 把 socket I/O 锚定到本 ctx.
+fn attach_components(
+    agent: *mut sys::NiceAgent,
+    stream: u32,
+    components: u32,
+    ctx: &glib::MainContext,
+) {
+    for component in 1..=components {
+        // SAFETY: ctx 线程; agent/stream 存活; 空 trampoline 无状态,
+        // data 传 NULL 且回调不触碰.
         unsafe {
             sys::nice_agent_attach_recv(
                 agent,
                 stream,
                 component,
-                thread_ctx.to_glib_none().0,
+                ctx.to_glib_none().0,
                 Some(route_recv_trampoline),
                 std::ptr::null_mut(),
             )
         };
     }
-    // 关停把手随就绪信号传出; 线程自持本体跑到 Drop quit.
-    let _ = ready_inner.send(Ok((stream, SendPtr(agent), mainloop.clone())));
-    // 驱动 ctx 上排队的 invoke / 信号回调, 至 Drop quit.
-    mainloop.run();
 }
 
 impl IceAgent {

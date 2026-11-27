@@ -130,7 +130,11 @@
         // Pipeline restart (reconnect) drops the producer; the matching
         // producerAdded re-attaches automatically.
         if (p.meta && p.meta.name === sessionId && entry.consumer) {
-          try { entry.consumer.close(); } catch (e) { /* ignore */ }
+          try {
+            entry.consumer.close();
+          } catch (e) {
+            console.warn("closing stale consumer failed", e);
+          }
           entry.consumer = null;
         }
       },

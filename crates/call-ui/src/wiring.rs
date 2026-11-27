@@ -448,7 +448,6 @@ fn sleep_index_for(secs: u64) -> usize {
 /// 算作用户活动; 每设备一线程阻塞读. 非 Linux 平台没有 /dev/input, 自然空跑
 /// (自动熄屏只在 screen.supported() 时启用).
 fn spawn_activity_tracker(activity: Arc<AtomicU64>, epoch: Instant) {
-    use std::io::Read as _;
     let Ok(entries) = std::fs::read_dir("/dev/input") else {
         warn!("evdev input unavailable; idle detection will ignore input");
         return;
@@ -463,29 +462,34 @@ fn spawn_activity_tracker(activity: Arc<AtomicU64>, epoch: Instant) {
             continue;
         };
         opened += 1;
-        let act = activity.clone();
-        std::thread::Builder::new()
-            .name(format!("evdev-{name}"))
-            .spawn(move || {
-                let mut buf = [0u8; EVENT_SIZE * 16];
-                loop {
-                    match (&file).read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if has_user_input(&buf[..n]) {
-                                act.store(elapsed_secs(epoch), Ordering::SeqCst);
-                            }
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(_) => break,
-                    }
-                }
-            })
-            .ok();
+        spawn_evdev_reader(name, file, activity.clone(), epoch);
     }
     if opened == 0 {
         warn!("no evdev event devices opened; idle detection will ignore input");
     }
+}
+
+/// 单设备阻塞读线程: 只把用户输入事件刷新到共享活动时间.
+fn spawn_evdev_reader(name: String, file: std::fs::File, activity: Arc<AtomicU64>, epoch: Instant) {
+    use std::io::Read as _;
+    std::thread::Builder::new()
+        .name(format!("evdev-{name}"))
+        .spawn(move || {
+            let mut buf = [0u8; EVENT_SIZE * 16];
+            loop {
+                match (&file).read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if has_user_input(&buf[..n]) {
+                            activity.store(elapsed_secs(epoch), Ordering::SeqCst);
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        })
+        .ok();
 }
 
 const EV_KEY: u16 = 0x01;
