@@ -108,30 +108,55 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stats = Arc::new(crate::PktStats::default());
 
-    // 存盘出口: mpegtsmux → filesink; 纯播放 (path=None) 不建.
-    // 用 TS 不用 mp4: mp4mux 是 aggregator, 要等齐所有 pad 才输出,
-    // 一路媒体静默就整体卡死 (实测录像 0 字节 + 播放黑屏), 而且 moov
-    // 依赖 EOS, 进程被杀整个文件作废. TS 流式写出, 来什么录什么
-    let mux = match &cfg.path {
-        Some(path) => {
-            let mux = make("mpegtsmux")?;
-            let filesink = make("filesink")?;
-            filesink.set_property("location", path.to_string_lossy().as_ref());
-            // 不等 preroll: 播放分支的 sink 可能永远拿不到数据 (对端
-            // 静默), async sink 会把整条管线拖在 PAUSED
-            filesink.set_property("async", false);
-            add_and_sync(&pipeline, &[&mux, &filesink])?;
-            link_chain(&[&mux, &filesink], "mux to filesink")?;
-            Some(mux)
-        }
-        None => None,
-    };
+    let mux = build_record_mux(&pipeline, cfg.path.as_deref())?;
+    let src_pads = build_media_tracks(&pipeline, mux.as_ref(), &cfg, stats.clone())?;
+    spawn_bus_watchdog(&pipeline, stop_flag.clone())?;
+    spawn_stats_reporter(stats.clone(), stop_flag.clone());
 
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|e| GstStreamError::Init(format!("pipeline set Playing: {e}")))?;
+
+    Ok(RtpReceiver {
+        pipeline,
+        stop_flag,
+        src_pads: Arc::new(src_pads),
+        stats,
+    })
+}
+
+/// 存盘出口: mpegtsmux → filesink; 纯播放 (path=None) 不建.
+/// 用 TS 不用 mp4: mp4mux 是 aggregator, 要等齐所有 pad 才输出,
+/// 一路媒体静默就整体卡死 (实测录像 0 字节 + 播放黑屏), 而且 moov
+/// 依赖 EOS, 进程被杀整个文件作废. TS 流式写出, 来什么录什么.
+fn build_record_mux(
+    pipeline: &gst::Pipeline,
+    path: Option<&std::path::Path>,
+) -> Result<Option<gst::Element>, GstStreamError> {
+    let Some(path) = path else { return Ok(None) };
+    let mux = make("mpegtsmux")?;
+    let filesink = make("filesink")?;
+    filesink.set_property("location", path.to_string_lossy().as_ref());
+    // 不等 preroll: 播放分支的 sink 可能永远拿不到数据 (对端
+    // 静默), async sink 会把整条管线拖在 PAUSED
+    filesink.set_property("async", false);
+    add_and_sync(pipeline, &[&mux, &filesink])?;
+    link_chain(&[&mux, &filesink], "mux to filesink")?;
+    Ok(Some(mux))
+}
+
+/// 按配置建立视频/音频接收轨, 返回各 udpsrc 的 src pad (stop 时注入 EOS).
+fn build_media_tracks(
+    pipeline: &gst::Pipeline,
+    mux: Option<&gst::Element>,
+    cfg: &RtpRecvConfig,
+    stats: Arc<crate::PktStats>,
+) -> Result<Vec<gst::Pad>, GstStreamError> {
     let mut src_pads = Vec::new();
     if let Some((port, codec)) = cfg.video {
         src_pads.push(build_video_track(
-            &pipeline,
-            mux.as_ref(),
+            pipeline,
+            mux,
             cfg.playback,
             cfg.video_tap.as_ref(),
             cfg.tap_max_width,
@@ -143,23 +168,29 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
     }
     if let Some((port, codec)) = cfg.audio {
         src_pads.push(build_audio_track(
-            &pipeline,
-            mux.as_ref(),
+            pipeline,
+            mux,
             cfg.playback,
             cfg.audio_socket.as_ref(),
             port,
             codec,
-            stats.clone(),
+            stats,
         )?);
     }
+    Ok(src_pads)
+}
 
+/// 后台读 bus, 遇到 EOS/Error 或 stop 置位后退出.
+fn spawn_bus_watchdog(
+    pipeline: &gst::Pipeline,
+    stop_flag: Arc<AtomicBool>,
+) -> Result<(), GstStreamError> {
     let bus = pipeline
         .bus()
         .ok_or_else(|| GstStreamError::Init("pipeline has no bus".into()))?;
-    let stop_flag_for_bus = stop_flag.clone();
     std::thread::spawn(move || {
         for msg in bus.iter() {
-            if stop_flag_for_bus.load(Ordering::SeqCst) {
+            if stop_flag.load(Ordering::SeqCst) {
                 break;
             }
             match msg.view() {
@@ -176,31 +207,21 @@ pub fn start_rtp_receiver(cfg: RtpRecvConfig) -> Result<RtpReceiver, GstStreamEr
         }
         debug!("rtp receiver: bus thread exiting");
     });
+    Ok(())
+}
 
-    // 每 2s 报一次收包数: 视频约 fps 个包, 音频 ptime=20ms 即 50 包/s,
-    // 看到数字涨就证明数据确实进来了, 问题在对端或网络
-    let stats_for_tick = stats.clone();
-    let stop_for_tick = stop_flag.clone();
+/// 每 2s 报一次收包数: 视频约 fps 个包, 音频 ptime=20ms 即 50 包/s,
+/// 看到数字涨就证明数据确实进来了, 问题在对端或网络.
+fn spawn_stats_reporter(stats: Arc<crate::PktStats>, stop_flag: Arc<AtomicBool>) {
     std::thread::spawn(move || {
-        while !stop_for_tick.load(Ordering::Relaxed) {
+        while !stop_flag.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_secs(2));
-            let vp = stats_for_tick.video_pkts.load(Ordering::Relaxed);
-            let ap = stats_for_tick.audio_pkts.load(Ordering::Relaxed);
+            let vp = stats.video_pkts.load(Ordering::Relaxed);
+            let ap = stats.audio_pkts.load(Ordering::Relaxed);
             info!("rtp receiver stats video_pkts={} audio_pkts={}", vp, ap);
         }
         debug!("rtp receiver stats task exiting");
     });
-
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|e| GstStreamError::Init(format!("pipeline set Playing: {e}")))?;
-
-    Ok(RtpReceiver {
-        pipeline,
-        stop_flag,
-        src_pads: Arc::new(src_pads),
-        stats,
-    })
 }
 
 /// udpsrc 的 socket 来源: Some 复用外部共享 socket (对称 RTP, 忽略
@@ -332,140 +353,16 @@ fn build_video_track(
     codec: VideoCodec,
     stats: Arc<crate::PktStats>,
 ) -> Result<gst::Pad, GstStreamError> {
-    let (depay_name, parse_name, decode_name, encoding_name, media_type) = match codec {
-        VideoCodec::H264 => (
-            "rtph264depay",
-            "h264parse",
-            "avdec_h264",
-            "H264",
-            "video/x-h264",
-        ),
-        VideoCodec::H265 => (
-            "rtph265depay",
-            "h265parse",
-            "avdec_h265",
-            "H265",
-            "video/x-h265",
-        ),
-        other => {
-            return Err(GstStreamError::InvalidConfig(format!(
-                "unsupported video codec for receive: {other:?}"
-            )));
-        }
-    };
-
-    let udpsrc = make("udpsrc")?;
-    // udpsrc 绑定 caps, 让后续 depay 能正常工作
-    let caps = gst::Caps::builder_full()
-        .structure(
-            gst::Structure::builder("application/x-rtp")
-                .field("media", "video")
-                .field("payload", 96i32)
-                .field("encoding-name", encoding_name)
-                .build(),
-        )
-        .build();
-    udpsrc.set_property("caps", &caps);
-    apply_shared_socket(&udpsrc, socket, port);
-
-    let depay = make(depay_name)?;
-    let parse = make(parse_name)?;
-    // 强制 byte-stream: tee 分叉后 parse 可能选 avc (avdec 优先),
-    // 而 mpegtsmux 只收 byte-stream, 协商失败存盘链静默断流 (实测 0 字节)
-    let bs = make("capsfilter")?;
-    bs.set_property(
-        "caps",
-        gst::Caps::builder(media_type)
-            .field("stream-format", "byte-stream")
-            .build(),
-    );
-
-    // 在 udpsrc src pad 上装 probe 统计收包数. 不能装在 depay 后面:
-    // depay 会把多个连续 RTP 包合并成一个大 buffer 输出, 计数会缩水
-    let stats_for_probe = stats.clone();
-    if let Some(src_pad) = udpsrc.static_pad("src") {
-        src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
-            stats_for_probe.video_pkts.fetch_add(1, Ordering::Relaxed);
-            gst::PadProbeReturn::Ok
-        });
-    }
+    let names = video_codec_names(codec)?;
+    let head = build_video_head(socket, port, &names, stats)?;
 
     // tap 优先于 autovideosink: tap=Some 时即使 playback=true 视频也走
     // appsink 回调分支, 不弹独立窗口 (GUI 嵌不进 autovideosink)
     match (mux, playback || tap.is_some()) {
-        (Some(mux), false) => {
-            // mux 前挂 queue 解耦: mux 的消费节奏不能卡住网络收包线程
-            let queue = make("queue")?;
-            let elems = [&udpsrc, &depay, &parse, &bs, &queue];
-            add_and_sync(pipeline, &elems)?;
-            link_chain(&elems, "video recv chain")?;
-            link_mux(&queue, mux, "sink_%d")?;
-        }
-        (None, true) => match tap {
-            Some(tap) => {
-                let branch = build_video_tap_branch(decode_name, tap, tap_max_width)?;
-                let mut elems: Vec<&gst::Element> = vec![&udpsrc, &depay, &parse, &bs];
-                elems.extend(branch.iter());
-                add_and_sync(pipeline, &elems)?;
-                link_chain(&elems, "video tap chain")?;
-            }
-            None => {
-                let decode = make(decode_name)?;
-                let convert = make("videoconvert")?;
-                let sink = make("autovideosink")?;
-                disable_sink_async(&sink);
-                let elems = [&udpsrc, &depay, &parse, &bs, &decode, &convert, &sink];
-                add_and_sync(pipeline, &elems)?;
-                link_chain(&elems, "video play chain")?;
-            }
-        },
+        (Some(mux), false) => link_video_record_only(pipeline, &head, mux)?,
+        (None, true) => link_video_play_only(pipeline, &head, names.decode, tap, tap_max_width)?,
         (Some(mux), true) => {
-            let tee = make("tee")?;
-            // tee 分支必须用 leaky queue: 任一分支停滞 (比如 mux 或
-            // 播放 sink 卡住) 时普通 queue 会填满反压 tee, 把另一条分支
-            // 和整条管线一起拖死 (实测: 音频缺失时视频冻结在 ~27 帧)
-            let rec_queue = leaky_queue()?;
-            let play_queue = leaky_queue()?;
-            match tap {
-                Some(tap) => {
-                    let branch = build_video_tap_branch(decode_name, tap, tap_max_width)?;
-                    let mut elems: Vec<&gst::Element> =
-                        vec![&udpsrc, &depay, &parse, &bs, &tee, &rec_queue, &play_queue];
-                    elems.extend(branch.iter());
-                    add_and_sync(pipeline, &elems)?;
-                    link_chain(&[&udpsrc, &depay, &parse, &bs, &tee], "video recv head")?;
-                    let mut play_elems: Vec<&gst::Element> = vec![&play_queue];
-                    play_elems.extend(branch.iter());
-                    link_chain(&play_elems, "video tap branch")?;
-                }
-                None => {
-                    let decode = make(decode_name)?;
-                    let convert = make("videoconvert")?;
-                    let sink = make("autovideosink")?;
-                    disable_sink_async(&sink);
-                    let elems = [
-                        &udpsrc,
-                        &depay,
-                        &parse,
-                        &bs,
-                        &tee,
-                        &rec_queue,
-                        &play_queue,
-                        &decode,
-                        &convert,
-                        &sink,
-                    ];
-                    add_and_sync(pipeline, &elems)?;
-                    link_chain(&[&udpsrc, &depay, &parse, &bs, &tee], "video recv head")?;
-                    link_chain(
-                        &[&play_queue, &decode, &convert, &sink],
-                        "video play branch",
-                    )?;
-                }
-            }
-            link_tee_branch(&tee, &rec_queue)?;
-            link_tee_branch(&tee, &play_queue)?;
-            link_mux(&rec_queue, mux, "sink_%d")?;
+            link_video_tee(pipeline, &head, mux, names.decode, tap, tap_max_width)?
         }
         (None, false) => {
             return Err(GstStreamError::InvalidConfig(
@@ -475,7 +372,228 @@ fn build_video_track(
     }
 
     info!(port, codec = ?codec, record = mux.is_some(), playback, tap = tap.is_some(), "video receive track linked");
-    static_pad(&udpsrc, "src")
+    Ok(head.src_pad)
+}
+
+struct VideoCodecNames {
+    depay: &'static str,
+    parse: &'static str,
+    decode: &'static str,
+    encoding: &'static str,
+    media_type: &'static str,
+}
+
+fn video_codec_names(codec: VideoCodec) -> Result<VideoCodecNames, GstStreamError> {
+    match codec {
+        VideoCodec::H264 => Ok(VideoCodecNames {
+            depay: "rtph264depay",
+            parse: "h264parse",
+            decode: "avdec_h264",
+            encoding: "H264",
+            media_type: "video/x-h264",
+        }),
+        VideoCodec::H265 => Ok(VideoCodecNames {
+            depay: "rtph265depay",
+            parse: "h265parse",
+            decode: "avdec_h265",
+            encoding: "H265",
+            media_type: "video/x-h265",
+        }),
+        other => Err(GstStreamError::InvalidConfig(format!(
+            "unsupported video codec for receive: {other:?}"
+        ))),
+    }
+}
+
+struct VideoHead {
+    udpsrc: gst::Element,
+    depay: gst::Element,
+    parse: gst::Element,
+    bs: gst::Element,
+    src_pad: gst::Pad,
+}
+
+fn build_video_head(
+    socket: Option<&crate::SharedUdpSocket>,
+    port: u16,
+    names: &VideoCodecNames,
+    stats: Arc<crate::PktStats>,
+) -> Result<VideoHead, GstStreamError> {
+    let udpsrc = make("udpsrc")?;
+    // udpsrc 绑定 caps, 让后续 depay 能正常工作
+    let caps = gst::Caps::builder_full()
+        .structure(
+            gst::Structure::builder("application/x-rtp")
+                .field("media", "video")
+                .field("payload", 96i32)
+                .field("encoding-name", names.encoding)
+                .build(),
+        )
+        .build();
+    udpsrc.set_property("caps", &caps);
+    apply_shared_socket(&udpsrc, socket, port);
+
+    let depay = make(names.depay)?;
+    let parse = make(names.parse)?;
+    // 强制 byte-stream: tee 分叉后 parse 可能选 avc (avdec 优先),
+    // 而 mpegtsmux 只收 byte-stream, 协商失败存盘链静默断流 (实测 0 字节)
+    let bs = make("capsfilter")?;
+    bs.set_property(
+        "caps",
+        gst::Caps::builder(names.media_type)
+            .field("stream-format", "byte-stream")
+            .build(),
+    );
+
+    // 在 udpsrc src pad 上装 probe 统计收包数. 不能装在 depay 后面:
+    // depay 会把多个连续 RTP 包合并成一个大 buffer 输出, 计数会缩水
+    let src_pad = static_pad(&udpsrc, "src")?;
+    src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
+        stats.video_pkts.fetch_add(1, Ordering::Relaxed);
+        gst::PadProbeReturn::Ok
+    });
+
+    Ok(VideoHead {
+        udpsrc,
+        depay,
+        parse,
+        bs,
+        src_pad,
+    })
+}
+
+/// 只存盘: 视频头 → queue → mpegtsmux.
+fn link_video_record_only(
+    pipeline: &gst::Pipeline,
+    head: &VideoHead,
+    mux: &gst::Element,
+) -> Result<(), GstStreamError> {
+    // mux 前挂 queue 解耦: mux 的消费节奏不能卡住网络收包线程
+    let queue = make("queue")?;
+    let elems = [&head.udpsrc, &head.depay, &head.parse, &head.bs, &queue];
+    add_and_sync(pipeline, &elems)?;
+    link_chain(&elems, "video recv chain")?;
+    link_mux(&queue, mux, "sink_%d")
+}
+
+/// 只播放/只看 tap: 视频头直接接播放链.
+fn link_video_play_only(
+    pipeline: &gst::Pipeline,
+    head: &VideoHead,
+    decode_name: &str,
+    tap: Option<&crate::VideoFrameSink>,
+    tap_max_width: Option<u32>,
+) -> Result<(), GstStreamError> {
+    match tap {
+        Some(tap) => link_video_tap_chain(pipeline, head, decode_name, tap, tap_max_width),
+        None => link_video_sink_chain(pipeline, head, decode_name),
+    }
+}
+
+fn link_video_tap_chain(
+    pipeline: &gst::Pipeline,
+    head: &VideoHead,
+    decode_name: &str,
+    tap: &crate::VideoFrameSink,
+    tap_max_width: Option<u32>,
+) -> Result<(), GstStreamError> {
+    let branch = build_video_tap_branch(decode_name, tap, tap_max_width)?;
+    let mut elems: Vec<&gst::Element> = vec![&head.udpsrc, &head.depay, &head.parse, &head.bs];
+    elems.extend(branch.iter());
+    add_and_sync(pipeline, &elems)?;
+    link_chain(&elems, "video tap chain")
+}
+
+fn link_video_sink_chain(
+    pipeline: &gst::Pipeline,
+    head: &VideoHead,
+    decode_name: &str,
+) -> Result<(), GstStreamError> {
+    let decode = make(decode_name)?;
+    let convert = make("videoconvert")?;
+    let sink = make("autovideosink")?;
+    disable_sink_async(&sink);
+    let elems = [
+        &head.udpsrc,
+        &head.depay,
+        &head.parse,
+        &head.bs,
+        &decode,
+        &convert,
+        &sink,
+    ];
+    add_and_sync(pipeline, &elems)?;
+    link_chain(&elems, "video play chain")
+}
+
+/// 存盘 + 播放/tap: tee 分叉, 两路都用 leaky queue 防互相反压.
+fn link_video_tee(
+    pipeline: &gst::Pipeline,
+    head: &VideoHead,
+    mux: &gst::Element,
+    decode_name: &str,
+    tap: Option<&crate::VideoFrameSink>,
+    tap_max_width: Option<u32>,
+) -> Result<(), GstStreamError> {
+    let tee = make("tee")?;
+    // tee 分支必须用 leaky queue: 任一分支停滞 (比如 mux 或
+    // 播放 sink 卡住) 时普通 queue 会填满反压 tee, 把另一条分支
+    // 和整条管线一起拖死 (实测: 音频缺失时视频冻结在 ~27 帧)
+    let rec_queue = leaky_queue()?;
+    let play_queue = leaky_queue()?;
+    match tap {
+        Some(tap) => {
+            let branch = build_video_tap_branch(decode_name, tap, tap_max_width)?;
+            let mut elems: Vec<&gst::Element> = vec![
+                &head.udpsrc,
+                &head.depay,
+                &head.parse,
+                &head.bs,
+                &tee,
+                &rec_queue,
+                &play_queue,
+            ];
+            elems.extend(branch.iter());
+            add_and_sync(pipeline, &elems)?;
+            link_chain(
+                &[&head.udpsrc, &head.depay, &head.parse, &head.bs, &tee],
+                "video recv head",
+            )?;
+            let mut play_elems: Vec<&gst::Element> = vec![&play_queue];
+            play_elems.extend(branch.iter());
+            link_chain(&play_elems, "video tap branch")?;
+        }
+        None => {
+            let decode = make(decode_name)?;
+            let convert = make("videoconvert")?;
+            let sink = make("autovideosink")?;
+            disable_sink_async(&sink);
+            let elems = [
+                &head.udpsrc,
+                &head.depay,
+                &head.parse,
+                &head.bs,
+                &tee,
+                &rec_queue,
+                &play_queue,
+                &decode,
+                &convert,
+                &sink,
+            ];
+            add_and_sync(pipeline, &elems)?;
+            link_chain(
+                &[&head.udpsrc, &head.depay, &head.parse, &head.bs, &tee],
+                "video recv head",
+            )?;
+            link_chain(
+                &[&play_queue, &decode, &convert, &sink],
+                "video play branch",
+            )?;
+        }
+    }
+    link_tee_branch(&tee, &rec_queue)?;
+    link_tee_branch(&tee, &play_queue)?;
+    link_mux(&rec_queue, mux, "sink_%d")
 }
 
 /// 音频接收轨: udpsrc → depay → G.711 解码, 之后按出口分: 存盘 (convert

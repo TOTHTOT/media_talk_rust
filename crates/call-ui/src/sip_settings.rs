@@ -303,195 +303,159 @@ pub(crate) fn ui_strings(cfg: &GuiSipConfig) -> SipUiStrings {
 /// * `ui`: 主窗口
 /// * `store`: kv 持久化
 pub(crate) fn wire_sip_settings(ui: &MainWindow, store: &Rc<Store>) {
-    /// 设置保存成功的 toast.
-    fn toast_saved(ui: &MainWindow) {
+    wire_sip_server(ui, store);
+    wire_sip_username(ui, store);
+    wire_sip_password(ui, store);
+    wire_sip_expires(ui, store);
+    wire_sip_stun(ui, store);
+    wire_sip_local_ip(ui, store);
+    wire_sip_video_src(ui, store);
+    wire_sip_audio_src(ui, store);
+    wire_sip_max_width(ui, store);
+    wire_sip_ice(ui, store);
+    wire_sip_rtp_audio(ui, store);
+    wire_sip_rtp_video(ui, store);
+}
+
+fn save_text(store: &Store, key: &str, value: &str, label: &str) -> bool {
+    if let Err(e) = store.kv_set(key, value.trim()) {
+        error!(err = %e, key, label, "save sip setting failed");
+        false
+    } else {
+        true
+    }
+}
+
+fn save_parsed<T>(store: &Store, key: &str, raw: &str, label: &str) -> bool
+where
+    T: std::str::FromStr + ToString,
+{
+    let Ok(n) = raw.trim().parse::<T>() else {
+        return false;
+    };
+    save_text(store, key, &n.to_string(), label)
+}
+
+fn save_flag(store: &Store, key: &str, value: bool, label: &str) -> bool {
+    save_text(store, key, if value { "1" } else { "0" }, label)
+}
+
+fn notify_saved(weak: &slint::Weak<MainWindow>) {
+    if let Some(ui) = weak.upgrade() {
         ui.invoke_notify(
             NoticeLevel::Info as i32,
             NoticeKind::Raw as i32,
             "已保存, 下次呼叫生效".into(),
         );
     }
+}
 
-    // 服务器地址
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_server(move |v| {
-            if let Err(e) = store.kv_set(KV_SIP_SERVER, v.trim()) {
-                error!(err = %e, "save sip server failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // 账号
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_username(move |v| {
-            if let Err(e) = store.kv_set(KV_SIP_USERNAME, v.trim()) {
-                error!(err = %e, "save sip username failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // 密码
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_password(move |v| {
-            if let Err(e) = store.kv_set(KV_SIP_PASSWORD, v.trim()) {
-                error!(err = %e, "save sip password failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // 注册有效期 (秒): 非法输入静默保留旧值
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_expires(move |v| {
-            let Ok(n) = v.trim().parse::<u32>() else {
-                return;
-            };
-            if let Err(e) = store.kv_set(KV_SIP_EXPIRES, &n.to_string()) {
-                error!(err = %e, "save sip expires failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // STUN URI (留空 = 仅 host 候选)
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_stun(move |v| {
-            if let Err(e) = store.kv_set(KV_SIP_STUN, v.trim()) {
-                error!(err = %e, "save sip stun failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // 本机 IP (留空 = 自动选择网卡)
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_local_ip(move |v| {
-            if let Err(e) = store.kv_set(KV_SIP_LOCAL_IP, v.trim()) {
-                error!(err = %e, "save sip local ip failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // 视频源
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_video_src(move |v| {
-            if let Err(e) = store.kv_set(KV_SIP_VIDEO_SRC, v.trim()) {
-                error!(err = %e, "save sip video src failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // 音频源
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_audio_src(move |v| {
-            if let Err(e) = store.kv_set(KV_SIP_AUDIO_SRC, v.trim()) {
-                error!(err = %e, "save sip audio src failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // 视频限宽: 非法输入静默保留旧值
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_max_width(move |v| {
-            let Ok(n) = v.trim().parse::<u32>() else {
-                return;
-            };
-            if let Err(e) = store.kv_set(KV_SIP_MAX_WIDTH, &n.to_string()) {
-                error!(err = %e, "save sip max width failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // ICE 开关
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_ice(move |v| {
-            if let Err(e) = store.kv_set(KV_SIP_ICE, if v { "1" } else { "0" }) {
-                error!(err = %e, "save sip ice failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // 音频 RTP 端口: 非法输入静默保留旧值
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_rtp_audio(move |v| {
-            let Ok(n) = v.trim().parse::<u16>() else {
-                return;
-            };
-            if let Err(e) = store.kv_set(KV_SIP_RTP_AUDIO, &n.to_string()) {
-                error!(err = %e, "save sip rtp audio port failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
-    // 视频 RTP 端口: 非法输入静默保留旧值
-    {
-        let store = store.clone();
-        let weak = ui.as_weak();
-        ui.on_set_sip_rtp_video(move |v| {
-            let Ok(n) = v.trim().parse::<u16>() else {
-                return;
-            };
-            if let Err(e) = store.kv_set(KV_SIP_RTP_VIDEO, &n.to_string()) {
-                error!(err = %e, "save sip rtp video port failed");
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                toast_saved(&ui);
-            }
-        });
-    }
+fn wire_sip_server(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_server(move |v| {
+        if save_text(&store, KV_SIP_SERVER, v.as_str(), "server") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_username(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_username(move |v| {
+        if save_text(&store, KV_SIP_USERNAME, v.as_str(), "username") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_password(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_password(move |v| {
+        if save_text(&store, KV_SIP_PASSWORD, v.as_str(), "password") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_expires(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_expires(move |v| {
+        if save_parsed::<u32>(&store, KV_SIP_EXPIRES, v.as_str(), "expires") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_stun(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_stun(move |v| {
+        if save_text(&store, KV_SIP_STUN, v.as_str(), "stun") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_local_ip(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_local_ip(move |v| {
+        if save_text(&store, KV_SIP_LOCAL_IP, v.as_str(), "local ip") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_video_src(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_video_src(move |v| {
+        if save_text(&store, KV_SIP_VIDEO_SRC, v.as_str(), "video src") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_audio_src(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_audio_src(move |v| {
+        if save_text(&store, KV_SIP_AUDIO_SRC, v.as_str(), "audio src") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_max_width(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_max_width(move |v| {
+        if save_parsed::<u32>(&store, KV_SIP_MAX_WIDTH, v.as_str(), "max width") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_ice(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_ice(move |v| {
+        if save_flag(&store, KV_SIP_ICE, v, "ice") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_rtp_audio(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_rtp_audio(move |v| {
+        if save_parsed::<u16>(&store, KV_SIP_RTP_AUDIO, v.as_str(), "rtp audio") {
+            notify_saved(&weak);
+        }
+    });
+}
+
+fn wire_sip_rtp_video(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_set_sip_rtp_video(move |v| {
+        if save_parsed::<u16>(&store, KV_SIP_RTP_VIDEO, v.as_str(), "rtp video") {
+            notify_saved(&weak);
+        }
+    });
 }
 
 #[cfg(test)]

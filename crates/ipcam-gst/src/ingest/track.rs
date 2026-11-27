@@ -501,66 +501,24 @@ pub(super) fn link_audio(
 
     let chain = build_decode_elements(depay_name, decode_names)?;
     let tee = chain.last().expect("chain always ends with tee").clone();
-
-    let web = match ws {
-        Some(_) => Some(build_web_audio_elements()?),
-        None => None,
-    };
-    let alsa = match audio_output {
-        AudioOutput::Alsa { device } => Some(build_alsa_elements(device)?),
-        AudioOutput::Disabled => None,
-    };
-    let tap_chain = match tap {
-        Some(sink) => {
-            let mut elems = build_elements(&["audioconvert", "audioresample"])?;
-            let mut full = vec![leaky_queue()?];
-            full.append(&mut elems);
-            full.push(build_audio_appsink(sink.clone()));
-            Some(full)
-        }
-        None => None,
-    };
+    let web = build_audio_web_branch(ws)?;
+    let alsa = build_audio_alsa_branch(audio_output)?;
+    let tap_chain = build_audio_tap_branch(tap)?;
 
     let mut all: Vec<&gst::Element> = chain.iter().collect();
-    if let Some(web) = &web {
-        all.extend(web.iter());
-    }
-    if let Some(alsa_elems) = &alsa {
-        all.extend(alsa_elems.iter());
-    }
-    if let Some(tap_elems) = &tap_chain {
-        all.extend(tap_elems.iter());
+    for branch in [web.as_deref(), alsa.as_deref(), tap_chain.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        all.extend(branch.iter());
     }
     add_and_sync(pipeline, &all)?;
 
     let chain_refs: Vec<&gst::Element> = chain.iter().collect();
     link_chain(&chain_refs, "audio decode chain")?;
-    if let Some(web) = &web {
-        let web_refs: Vec<&gst::Element> = web.iter().collect();
-        link_chain(&web_refs, "web audio branch")?;
-        let Some(ws) = ws else {
-            // web 支路只在 ws=Some 时构建, 这里不可达; 库代码禁 expect,
-            // 用防御性返回代替
-            return Err(GstStreamError::Link("web branch without webrtcsink".into()));
-        };
-        let ws_pad = request_ws_pad(ws, "audio_%u")?;
-        static_pad(web.last().expect("branch is non-empty"), "src")?
-            .link(&ws_pad)
-            .map_err(|e| {
-                GstStreamError::Link(format!("failed to link opusenc to webrtcsink: {e}"))
-            })?;
-        link_tee_branch(&tee, &web[0])?;
-    }
-    if let Some(alsa_elems) = &alsa {
-        let alsa_refs: Vec<&gst::Element> = alsa_elems.iter().collect();
-        link_chain(&alsa_refs, "audio playback chain")?;
-        link_tee_branch(&tee, &alsa_elems[0])?;
-    }
-    if let Some(tap_elems) = &tap_chain {
-        let tap_refs: Vec<&gst::Element> = tap_elems.iter().collect();
-        link_chain(&tap_refs, "audio tap branch")?;
-        link_tee_branch(&tee, &tap_elems[0])?;
-    }
+    link_audio_web_branch(&tee, ws, web.as_deref())?;
+    link_audio_alsa_branch(&tee, alsa.as_deref())?;
+    link_audio_tap_branch(&tee, tap_chain.as_deref())?;
     link_rtsp_pad(pad, &chain[0])?;
 
     if let Some(depay_src) = chain[0].static_pad("src") {
@@ -568,6 +526,73 @@ pub(super) fn link_audio(
     }
     info!(depay = depay_name, codec = ?codec, alsa = alsa.is_some(), tap = tap_chain.is_some(), "audio track linked (opus → webrtcsink)");
     Ok(())
+}
+
+/// WebRTC 分支只在有 webrtcsink 时构建.
+fn build_audio_web_branch(
+    ws: Option<&gst::Element>,
+) -> Result<Option<Vec<gst::Element>>, GstStreamError> {
+    if ws.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(build_web_audio_elements()?))
+}
+
+fn build_audio_alsa_branch(
+    audio_output: &AudioOutput,
+) -> Result<Option<Vec<gst::Element>>, GstStreamError> {
+    match audio_output {
+        AudioOutput::Alsa { device } => Ok(Some(build_alsa_elements(device)?)),
+        AudioOutput::Disabled => Ok(None),
+    }
+}
+
+fn build_audio_tap_branch(
+    tap: &Option<AudioChunkSink>,
+) -> Result<Option<Vec<gst::Element>>, GstStreamError> {
+    let Some(sink) = tap else { return Ok(None) };
+    let mut elems = build_elements(&["audioconvert", "audioresample"])?;
+    let mut full = vec![leaky_queue()?];
+    full.append(&mut elems);
+    full.push(build_audio_appsink(sink.clone()));
+    Ok(Some(full))
+}
+
+fn link_audio_web_branch(
+    tee: &gst::Element,
+    ws: Option<&gst::Element>,
+    web: Option<&[gst::Element]>,
+) -> Result<(), GstStreamError> {
+    let (Some(ws), Some(web)) = (ws, web) else {
+        return Ok(());
+    };
+    let web_refs: Vec<&gst::Element> = web.iter().collect();
+    link_chain(&web_refs, "web audio branch")?;
+    let ws_pad = request_ws_pad(ws, "audio_%u")?;
+    static_pad(web.last().expect("branch is non-empty"), "src")?
+        .link(&ws_pad)
+        .map_err(|e| GstStreamError::Link(format!("failed to link opusenc to webrtcsink: {e}")))?;
+    link_tee_branch(tee, &web[0])
+}
+
+fn link_audio_alsa_branch(
+    tee: &gst::Element,
+    alsa: Option<&[gst::Element]>,
+) -> Result<(), GstStreamError> {
+    let Some(alsa) = alsa else { return Ok(()) };
+    let refs: Vec<&gst::Element> = alsa.iter().collect();
+    link_chain(&refs, "audio playback chain")?;
+    link_tee_branch(tee, &alsa[0])
+}
+
+fn link_audio_tap_branch(
+    tee: &gst::Element,
+    tap: Option<&[gst::Element]>,
+) -> Result<(), GstStreamError> {
+    let Some(tap) = tap else { return Ok(()) };
+    let refs: Vec<&gst::Element> = tap.iter().collect();
+    link_chain(&refs, "audio tap branch")?;
+    link_tee_branch(tee, &tap[0])
 }
 
 /// Build a list of elements by factory name.

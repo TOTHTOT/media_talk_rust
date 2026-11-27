@@ -45,154 +45,160 @@ fn creds_or_default(user: &str, pass: &str) -> (String, String) {
 /// 设置页摄像头管理: CRUD 全量重刷 (通讯录模式) + ONVIF 搜索线程桥
 pub(crate) fn wire_settings(ui: &MainWindow, store: &Rc<Store>) {
     props::refresh_cameras(ui, store);
+    wire_add_camera(ui, store);
+    wire_delete_camera(ui, store);
+    wire_search_cameras(ui);
+    wire_fetch_profiles(ui);
+    wire_save_discovered(ui);
+}
 
-    // 手动添加 (无 profile 信息, kind 记未知 "")
-    {
-        let (store, weak) = (store.clone(), ui.as_weak());
-        ui.on_add_camera(move |name, uri, user, pass| {
-            let (user, pass) = creds_or_default(&user, &pass);
-            let r = store.add_camera(&name, &uri, &user, &pass, "");
-            if let Some(ui) = weak.upgrade() {
-                match r {
-                    Ok(outcome) => {
-                        props::refresh_cameras(&ui, &store);
+/// 手动添加 (无 profile 信息, kind 记未知 "").
+fn wire_add_camera(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_add_camera(move |name, uri, user, pass| {
+        let (user, pass) = creds_or_default(&user, &pass);
+        let r = store.add_camera(&name, &uri, &user, &pass, "");
+        if let Some(ui) = weak.upgrade() {
+            match r {
+                Ok(outcome) => {
+                    props::refresh_cameras(&ui, &store);
+                    toast_save_outcome(&ui, outcome);
+                }
+                Err(e) => {
+                    error!(err = %e, "add camera failed");
+                    ui.invoke_notify(
+                        NoticeLevel::Warn as i32,
+                        NoticeKind::CameraSaveFailed as i32,
+                        e.to_string().into(),
+                    );
+                }
+            }
+        }
+    });
+}
+
+fn wire_delete_camera(ui: &MainWindow, store: &Rc<Store>) {
+    let (store, weak) = (store.clone(), ui.as_weak());
+    ui.on_delete_camera(move |id| {
+        if let Err(e) = store.delete_camera(id as i64) {
+            error!(err = %e, "delete camera failed");
+        }
+        if let Some(ui) = weak.upgrade() {
+            props::refresh_cameras(&ui, &store);
+        }
+    });
+}
+
+/// ONVIF 搜索: busy 置位 → 线程搜索 → 回刷设备列表.
+fn wire_search_cameras(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.on_search_cameras(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        ui.set_camera_busy(true);
+        // 清空上次搜索结果, 重进搜索框/重新扫描时不残留旧设备
+        // (与 fetch_camera_profiles 的"清空上次结果"同惯例)
+        let empty: Vec<crate::DiscoveredEntry> = Vec::new();
+        ui.set_discovered_devices(slint::ModelRc::new(slint::VecModel::from(empty)));
+        let weak = weak.clone();
+        std::thread::spawn(move || {
+            let devices = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map(|rt| {
+                    rt.block_on(ipcam_discovery::probe_all_with_config(
+                        ipcam_discovery::DiscoveryConfig::default(),
+                    ))
+                })
+                .unwrap_or_default();
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = weak.upgrade() else { return };
+                let entries: Vec<crate::DiscoveredEntry> = devices
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| crate::DiscoveredEntry {
+                        index: i as i32,
+                        label: device_label(d).into(),
+                        xaddr: d.xaddr.clone().unwrap_or_default().into(),
+                    })
+                    .collect();
+                ui.set_discovered_devices(slint::ModelRc::new(slint::VecModel::from(entries)));
+                ui.set_camera_busy(false);
+            });
+        });
+    });
+}
+
+/// 拉 profile: 选中设备 + 凭据 → DeviceManagementClient.
+fn wire_fetch_profiles(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.on_fetch_camera_profiles(move |xaddr, user, pass| {
+        let (user, pass) = creds_or_default(&user, &pass);
+        let Some(ui) = weak.upgrade() else { return };
+        ui.set_camera_busy(true);
+        // 清空上次结果, busy 期间步骤 2 显示"正在读取"
+        let empty: Vec<crate::ProfileEntry> = Vec::new();
+        ui.set_camera_profiles(slint::ModelRc::new(slint::VecModel::from(empty)));
+        let weak = weak.clone();
+        std::thread::spawn(move || {
+            let profiles = fetch_profiles_blocking(&xaddr, &user, &pass);
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = weak.upgrade() else { return };
+                match profiles {
+                    Ok(list) => {
+                        let entries: Vec<crate::ProfileEntry> = list
+                            .iter()
+                            .map(|p| crate::ProfileEntry {
+                                token: p.profile_id.clone().into(),
+                                label: profile_label(p).into(),
+                            })
+                            .collect();
+                        ui.set_camera_profiles(slint::ModelRc::new(slint::VecModel::from(entries)));
+                    }
+                    Err(e) => warn!(error = %e, "fetch camera profiles failed"),
+                }
+                ui.set_camera_busy(false);
+            });
+        });
+    });
+}
+
+/// 保存搜索到的设备: 取 profile 的 RTSP URI (profile 自带 uri 优先,
+/// 否则 get_stream_uri 现取) → 入库 (同 IP 合并) → 重刷列表 + toast.
+/// Rc<Store> 不能跨线程 (invoke_from_event_loop 要求 Send), worker
+/// 线程自开一条连接写库, 只把最新列表 (纯数据) 带回 UI 线程.
+fn wire_save_discovered(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.on_save_discovered_camera(move |xaddr, name, user, pass, token| {
+        let (user, pass) = creds_or_default(&user, &pass);
+        let weak = weak.clone();
+        std::thread::spawn(move || {
+            let saved: anyhow::Result<(Vec<crate::store::CameraRow>, _)> =
+                save_discovered_blocking(&xaddr, &user, &pass, &token)
+                    .map_err(|e| anyhow::anyhow!(e))
+                    .and_then(|(uri, kind)| {
+                        let store = Store::open()?;
+                        let outcome = store.add_camera(&name, &uri, &user, &pass, &kind)?;
+                        store.cameras().map(|list| (list, outcome))
+                    });
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = weak.upgrade() else { return };
+                match saved {
+                    Ok((list, outcome)) => {
+                        props::set_camera_entries(&ui, &list);
                         toast_save_outcome(&ui, outcome);
                     }
                     Err(e) => {
-                        error!(err = %e, "add camera failed");
+                        warn!(error = %e, "save discovered camera failed");
                         ui.invoke_notify(
                             NoticeLevel::Warn as i32,
                             NoticeKind::CameraSaveFailed as i32,
-                            e.to_string().into(),
+                            slint::SharedString::from(e.to_string()),
                         );
                     }
                 }
-            }
-        });
-    }
-    // 删除
-    {
-        let (store, weak) = (store.clone(), ui.as_weak());
-        ui.on_delete_camera(move |id| {
-            if let Err(e) = store.delete_camera(id as i64) {
-                error!(err = %e, "delete camera failed");
-            }
-            if let Some(ui) = weak.upgrade() {
-                props::refresh_cameras(&ui, &store);
-            }
-        });
-    }
-    // ONVIF 搜索: busy 置位 → 线程搜索 → 回刷设备列表
-    {
-        let weak = ui.as_weak();
-        ui.on_search_cameras(move || {
-            let Some(ui) = weak.upgrade() else { return };
-            ui.set_camera_busy(true);
-            // 清空上次搜索结果, 重进搜索框/重新扫描时不残留旧设备
-            // (与 fetch_camera_profiles 的"清空上次结果"同惯例)
-            let empty: Vec<crate::DiscoveredEntry> = Vec::new();
-            ui.set_discovered_devices(slint::ModelRc::new(slint::VecModel::from(empty)));
-            let weak = weak.clone();
-            std::thread::spawn(move || {
-                let devices = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map(|rt| {
-                        rt.block_on(ipcam_discovery::probe_all_with_config(
-                            ipcam_discovery::DiscoveryConfig::default(),
-                        ))
-                    })
-                    .unwrap_or_default();
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(ui) = weak.upgrade() else { return };
-                    let entries: Vec<crate::DiscoveredEntry> = devices
-                        .iter()
-                        .enumerate()
-                        .map(|(i, d)| crate::DiscoveredEntry {
-                            index: i as i32,
-                            label: device_label(d).into(),
-                            xaddr: d.xaddr.clone().unwrap_or_default().into(),
-                        })
-                        .collect();
-                    ui.set_discovered_devices(slint::ModelRc::new(slint::VecModel::from(entries)));
-                    ui.set_camera_busy(false);
-                });
             });
         });
-    }
-    // 拉 profile: 选中设备 + 凭据 → DeviceManagementClient
-    {
-        let weak = ui.as_weak();
-        ui.on_fetch_camera_profiles(move |xaddr, user, pass| {
-            let (user, pass) = creds_or_default(&user, &pass);
-            let Some(ui) = weak.upgrade() else { return };
-            ui.set_camera_busy(true);
-            // 清空上次结果, busy 期间步骤 2 显示"正在读取"
-            let empty: Vec<crate::ProfileEntry> = Vec::new();
-            ui.set_camera_profiles(slint::ModelRc::new(slint::VecModel::from(empty)));
-            let weak = weak.clone();
-            std::thread::spawn(move || {
-                let profiles = fetch_profiles_blocking(&xaddr, &user, &pass);
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(ui) = weak.upgrade() else { return };
-                    match profiles {
-                        Ok(list) => {
-                            let entries: Vec<crate::ProfileEntry> = list
-                                .iter()
-                                .map(|p| crate::ProfileEntry {
-                                    token: p.profile_id.clone().into(),
-                                    label: profile_label(p).into(),
-                                })
-                                .collect();
-                            ui.set_camera_profiles(slint::ModelRc::new(slint::VecModel::from(
-                                entries,
-                            )));
-                        }
-                        Err(e) => warn!(error = %e, "fetch camera profiles failed"),
-                    }
-                    ui.set_camera_busy(false);
-                });
-            });
-        });
-    }
-    // 保存搜索到的设备: 取 profile 的 RTSP URI (profile 自带 uri 优先,
-    // 否则 get_stream_uri 现取) → 入库 (同 IP 合并) → 重刷列表 + toast.
-    // Rc<Store> 不能跨线程 (invoke_from_event_loop 要求 Send), worker
-    // 线程自开一条连接写库, 只把最新列表 (纯数据) 带回 UI 线程
-    {
-        let weak = ui.as_weak();
-        ui.on_save_discovered_camera(move |xaddr, name, user, pass, token| {
-            let (user, pass) = creds_or_default(&user, &pass);
-            let weak = weak.clone();
-            std::thread::spawn(move || {
-                let saved: anyhow::Result<(Vec<crate::store::CameraRow>, _)> =
-                    save_discovered_blocking(&xaddr, &user, &pass, &token)
-                        .map_err(|e| anyhow::anyhow!(e))
-                        .and_then(|(uri, kind)| {
-                            let store = Store::open()?;
-                            let outcome = store.add_camera(&name, &uri, &user, &pass, &kind)?;
-                            store.cameras().map(|list| (list, outcome))
-                        });
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(ui) = weak.upgrade() else { return };
-                    match saved {
-                        Ok((list, outcome)) => {
-                            props::set_camera_entries(&ui, &list);
-                            toast_save_outcome(&ui, outcome);
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "save discovered camera failed");
-                            ui.invoke_notify(
-                                NoticeLevel::Warn as i32,
-                                NoticeKind::CameraSaveFailed as i32,
-                                slint::SharedString::from(e.to_string()),
-                            );
-                        }
-                    }
-                });
-            });
-        });
-    }
+    });
 }
 
 /// add_camera 合并结果 → toast: 插入/覆盖更新都报已保存, 跳过提示设备已存在

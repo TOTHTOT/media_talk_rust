@@ -180,124 +180,156 @@ pub(crate) fn wire_screen(
     let epoch = Instant::now();
     let activity = Arc::new(AtomicU64::new(0));
 
-    // 亮度: 所有平台都显示滑块; 仅在检测到可写背光时应用.
-    // 启动时优先恢复 kv 中的用户值, 没有记录就沿用当前硬件亮度.
-    let brightness_available = screen.borrow().brightness_available();
-    if brightness_available {
-        let current = screen.borrow().brightness_percent().unwrap_or(80);
-        let saved = store
-            .kv_get(crate::screen::KV_BRIGHTNESS)
-            .ok()
-            .flatten()
-            .and_then(|s| s.parse::<u32>().ok());
-        match saved {
-            Some(saved) => {
-                let target = saved.clamp(crate::screen::BRIGHTNESS_MIN_PERCENT, 100);
-                match screen.borrow_mut().set_brightness_percent(target) {
-                    Ok(()) => ui.set_screen_brightness(target as f32),
-                    Err(e) => {
-                        error!(err = %e, target, "apply saved brightness failed");
-                        ui.set_screen_brightness(current as f32);
-                    }
+    apply_saved_brightness(ui, screen, store);
+    wire_brightness(ui, screen, store, screen.borrow().brightness_available());
+    wire_power_button(ui, screen, &activity, epoch);
+    wire_screen_wake(ui, screen, &activity, epoch);
+
+    let sleep_timeout = load_sleep_timeout(ui, store);
+    wire_sleep_timeout(ui, store, &sleep_timeout, &activity, epoch);
+    wire_sleep_tick(ui, screen, &sleep_timeout, &activity, epoch);
+
+    if screen.borrow().supported() {
+        spawn_activity_tracker(activity, epoch);
+    }
+}
+
+/// 启动时恢复 kv 中的亮度; 没有记录或平台不支持时只回显当前硬件值.
+fn apply_saved_brightness(
+    ui: &MainWindow,
+    screen: &Rc<std::cell::RefCell<crate::screen::ScreenController>>,
+    store: &Rc<crate::store::Store>,
+) {
+    if !screen.borrow().brightness_available() {
+        return;
+    }
+    let current = screen.borrow().brightness_percent().unwrap_or(80);
+    let saved = store
+        .kv_get(crate::screen::KV_BRIGHTNESS)
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<u32>().ok());
+    match saved {
+        Some(saved) => {
+            let target = saved.clamp(crate::screen::BRIGHTNESS_MIN_PERCENT, 100);
+            match screen.borrow_mut().set_brightness_percent(target) {
+                Ok(()) => ui.set_screen_brightness(target as f32),
+                Err(e) => {
+                    error!(err = %e, target, "apply saved brightness failed");
+                    ui.set_screen_brightness(current as f32);
                 }
             }
-            // 没有用户记录时沿用系统当前亮度, 不主动写硬件
-            None => ui.set_screen_brightness(current as f32),
         }
+        // 没有用户记录时沿用系统当前亮度, 不主动写硬件
+        None => ui.set_screen_brightness(current as f32),
     }
-    // 不支持亮度的平台: 滑块仍可拖动, 松手时提示, 不写硬件
-    {
-        let (screen, store, weak) = (screen.clone(), store.clone(), ui.as_weak());
-        ui.on_set_screen_brightness(move |value| {
-            let Some(ui) = weak.upgrade() else { return };
-            if !brightness_available {
+}
+
+/// 亮度滑块: 仅平台支持时写硬件; 不支持时松手提示, 不写.
+fn wire_brightness(
+    ui: &MainWindow,
+    screen: &Rc<std::cell::RefCell<crate::screen::ScreenController>>,
+    store: &Rc<crate::store::Store>,
+    brightness_available: bool,
+) {
+    let (screen, store, weak) = (screen.clone(), store.clone(), ui.as_weak());
+    ui.on_set_screen_brightness(move |value| {
+        let Some(ui) = weak.upgrade() else { return };
+        if !brightness_available {
+            ui.invoke_notify(
+                crate::app::NoticeLevel::Warn as i32,
+                crate::app::NoticeKind::BrightnessUnsupported as i32,
+                "".into(),
+            );
+            return;
+        }
+        let percent = value
+            .clamp(crate::screen::BRIGHTNESS_MIN_PERCENT as f32, 100.0)
+            .round() as u32;
+        match screen.borrow_mut().set_brightness_percent(percent) {
+            Ok(()) => {
+                ui.set_screen_brightness(percent as f32);
+                if let Err(e) = store.kv_set(crate::screen::KV_BRIGHTNESS, &percent.to_string()) {
+                    error!(err = %e, percent, "save brightness failed");
+                }
+            }
+            Err(e) => {
+                error!(err = %e, percent, "set brightness failed");
+                let current = screen.borrow().brightness_percent().unwrap_or(percent);
+                ui.set_screen_brightness(current as f32);
                 ui.invoke_notify(
                     crate::app::NoticeLevel::Warn as i32,
-                    crate::app::NoticeKind::BrightnessUnsupported as i32,
-                    "".into(),
+                    crate::app::NoticeKind::ScreenFailed as i32,
+                    e.to_string().into(),
                 );
-                return;
             }
-            let percent = value
-                .clamp(crate::screen::BRIGHTNESS_MIN_PERCENT as f32, 100.0)
-                .round() as u32;
-            let result = screen.borrow_mut().set_brightness_percent(percent);
-            match result {
-                Ok(()) => {
-                    ui.set_screen_brightness(percent as f32);
-                    if let Err(e) = store.kv_set(crate::screen::KV_BRIGHTNESS, &percent.to_string())
-                    {
-                        error!(err = %e, percent, "save brightness failed");
-                    }
-                }
-                Err(e) => {
-                    error!(err = %e, percent, "set brightness failed");
-                    let current = screen.borrow().brightness_percent().unwrap_or(percent);
-                    ui.set_screen_brightness(current as f32);
-                    ui.invoke_notify(
-                        crate::app::NoticeLevel::Warn as i32,
-                        crate::app::NoticeKind::ScreenFailed as i32,
-                        e.to_string().into(),
-                    );
-                }
-            }
-        });
-    }
+        }
+    });
+}
 
-    {
-        let (screen, weak, activity) = (screen.clone(), ui.as_weak(), activity.clone());
-        ui.on_screen_power_pressed(move || {
-            let target = !screen.borrow().is_off();
-            let result = screen.borrow_mut().set_off(target);
-            let Some(ui) = weak.upgrade() else { return };
-            match result {
-                Ok(()) => {
-                    ui.set_screen_off(target);
-                    if !target {
-                        // 手动开屏后重新计时, 否则可能马上又被自动熄屏.
-                        activity.store(elapsed_secs(epoch), Ordering::SeqCst);
-                    }
-                }
-                Err(e) => {
-                    error!(err = %e, "screen power toggle failed");
-                    ui.set_screen_off(screen.borrow().is_off());
-                    ui.invoke_notify(
-                        crate::app::NoticeLevel::Warn as i32,
-                        crate::app::NoticeKind::ScreenFailed as i32,
-                        e.to_string().into(),
-                    );
-                }
-            }
-        });
-    }
-    {
-        let (screen, weak, activity) = (screen.clone(), ui.as_weak(), activity.clone());
-        ui.on_screen_wake(move || {
-            match screen.borrow_mut().set_off(false) {
-                Ok(()) => {
-                    // 唤醒即算活动, 不依赖 evdev 是否及时读到这次触摸.
+fn wire_power_button(
+    ui: &MainWindow,
+    screen: &Rc<std::cell::RefCell<crate::screen::ScreenController>>,
+    activity: &Arc<AtomicU64>,
+    epoch: Instant,
+) {
+    let (screen, weak, activity) = (screen.clone(), ui.as_weak(), activity.clone());
+    ui.on_screen_power_pressed(move || {
+        let target = !screen.borrow().is_off();
+        let result = screen.borrow_mut().set_off(target);
+        let Some(ui) = weak.upgrade() else { return };
+        match result {
+            Ok(()) => {
+                ui.set_screen_off(target);
+                if !target {
+                    // 手动开屏后重新计时, 否则可能马上又被自动熄屏.
                     activity.store(elapsed_secs(epoch), Ordering::SeqCst);
-                    if let Some(ui) = weak.upgrade() {
-                        ui.set_screen_off(false);
-                    }
-                }
-                Err(e) => {
-                    // 保持遮罩, 用户可继续点击重试; 提示走通知管线
-                    error!(err = %e, "screen wake failed");
-                    if let Some(ui) = weak.upgrade() {
-                        ui.invoke_notify(
-                            crate::app::NoticeLevel::Warn as i32,
-                            crate::app::NoticeKind::ScreenFailed as i32,
-                            e.to_string().into(),
-                        );
-                    }
                 }
             }
-        });
-    }
+            Err(e) => {
+                error!(err = %e, "screen power toggle failed");
+                ui.set_screen_off(screen.borrow().is_off());
+                ui.invoke_notify(
+                    crate::app::NoticeLevel::Warn as i32,
+                    crate::app::NoticeKind::ScreenFailed as i32,
+                    e.to_string().into(),
+                );
+            }
+        }
+    });
+}
 
-    // ===== 自动熄屏: kv 存秒值 (0 = 永不), UI 侧走选项下标; 秒值 ↔
-    // 下标的唯一映射在 SLEEP_CHOICES (slint 只认下标, 加选项改它 + items) =====
+fn wire_screen_wake(
+    ui: &MainWindow,
+    screen: &Rc<std::cell::RefCell<crate::screen::ScreenController>>,
+    activity: &Arc<AtomicU64>,
+    epoch: Instant,
+) {
+    let (screen, weak, activity) = (screen.clone(), ui.as_weak(), activity.clone());
+    ui.on_screen_wake(move || match screen.borrow_mut().set_off(false) {
+        Ok(()) => {
+            // 唤醒即算活动, 不依赖 evdev 是否及时读到这次触摸.
+            activity.store(elapsed_secs(epoch), Ordering::SeqCst);
+            if let Some(ui) = weak.upgrade() {
+                ui.set_screen_off(false);
+            }
+        }
+        Err(e) => {
+            // 保持遮罩, 用户可继续点击重试; 提示走通知管线
+            error!(err = %e, "screen wake failed");
+            if let Some(ui) = weak.upgrade() {
+                ui.invoke_notify(
+                    crate::app::NoticeLevel::Warn as i32,
+                    crate::app::NoticeKind::ScreenFailed as i32,
+                    e.to_string().into(),
+                );
+            }
+        }
+    });
+}
+
+/// 读 kv 超时秒值并规范化到选项表, 返回供心跳回调共享的原子值.
+fn load_sleep_timeout(ui: &MainWindow, store: &Rc<crate::store::Store>) -> Arc<AtomicU64> {
     let saved_secs = store
         .kv_get(crate::screen::KV_SLEEP_TIMEOUT)
         .ok()
@@ -313,82 +345,92 @@ pub(crate) fn wire_screen(
             error!(err = %e, secs = init_secs, "normalize sleep timeout failed");
         }
     }
-    let sleep_timeout = Arc::new(AtomicU64::new(init_secs));
-    {
-        let (store, weak, sleep_timeout, activity) = (
-            store.clone(),
-            ui.as_weak(),
-            sleep_timeout.clone(),
-            activity.clone(),
+    Arc::new(AtomicU64::new(init_secs))
+}
+
+/// 设置页下拉: 先落盘再改内存/UI; 失败恢复原选项并重新计时.
+fn wire_sleep_timeout(
+    ui: &MainWindow,
+    store: &Rc<crate::store::Store>,
+    sleep_timeout: &Arc<AtomicU64>,
+    activity: &Arc<AtomicU64>,
+    epoch: Instant,
+) {
+    let (store, weak, sleep_timeout, activity) = (
+        store.clone(),
+        ui.as_weak(),
+        sleep_timeout.clone(),
+        activity.clone(),
+    );
+    ui.on_set_sleep_timeout_index(move |index| {
+        let index = (index.max(0) as usize).min(SLEEP_CHOICES.len() - 1);
+        let secs = SLEEP_CHOICES[index];
+        let Some(ui) = weak.upgrade() else { return };
+        let previous = ui.get_sleep_timeout_index();
+        // 先落盘再改内存/UI; 失败时把下拉恢复原选项.
+        if let Err(e) = store.kv_set(crate::screen::KV_SLEEP_TIMEOUT, &secs.to_string()) {
+            error!(err = %e, secs, "save sleep timeout failed");
+            ui.set_sleep_timeout_index(previous);
+            return;
+        }
+        sleep_timeout.store(secs, Ordering::Relaxed);
+        activity.store(elapsed_secs(epoch), Ordering::SeqCst);
+        ui.set_sleep_timeout_index(index as i32);
+        ui.invoke_notify(
+            crate::app::NoticeLevel::Info as i32,
+            crate::app::NoticeKind::Raw as i32,
+            "已保存".into(),
         );
-        ui.on_set_sleep_timeout_index(move |index| {
-            let index = (index.max(0) as usize).min(SLEEP_CHOICES.len() - 1);
-            let secs = SLEEP_CHOICES[index];
-            let Some(ui) = weak.upgrade() else { return };
-            let previous = ui.get_sleep_timeout_index();
-            // 先落盘再改内存/UI; 失败时把下拉恢复原选项.
-            if let Err(e) = store.kv_set(crate::screen::KV_SLEEP_TIMEOUT, &secs.to_string()) {
-                error!(err = %e, secs, "save sleep timeout failed");
-                ui.set_sleep_timeout_index(previous);
-                return;
-            }
-            sleep_timeout.store(secs, Ordering::Relaxed);
+    });
+}
+
+/// UI 线程 1s 心跳: 空闲到点才熄屏; 通话/来电/去电/监控页保持亮屏.
+fn wire_sleep_tick(
+    ui: &MainWindow,
+    screen: &Rc<std::cell::RefCell<crate::screen::ScreenController>>,
+    sleep_timeout: &Arc<AtomicU64>,
+    activity: &Arc<AtomicU64>,
+    epoch: Instant,
+) {
+    let (weak, screen, sleep_timeout, activity) = (
+        ui.as_weak(),
+        screen.clone(),
+        sleep_timeout.clone(),
+        activity.clone(),
+    );
+    ui.on_sleep_tick(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let secs = sleep_timeout.load(Ordering::Relaxed);
+        if secs == 0 || ui.get_screen_off() {
+            return;
+        }
+        // 通话中/来电/去电/监控页保持亮屏; 同时刷新活动时间, 避免退出这些
+        // 页面后因为屏幕保持期间没触摸而立刻熄屏.
+        if ui.get_phase() != 0 || ui.get_page() == 3 {
             activity.store(elapsed_secs(epoch), Ordering::SeqCst);
-            ui.set_sleep_timeout_index(index as i32);
-            ui.invoke_notify(
-                crate::app::NoticeLevel::Info as i32,
-                crate::app::NoticeKind::Raw as i32,
-                "已保存".into(),
-            );
-        });
-    }
-
-    // 心跳由 main.slint 的 Timer 每秒触发一次 (UI 线程); 这里只判断, 不开线程.
-    {
-        let (weak, screen, sleep_timeout, activity) = (
-            ui.as_weak(),
-            screen.clone(),
-            sleep_timeout.clone(),
-            activity.clone(),
-        );
-        ui.on_sleep_tick(move || {
-            let Some(ui) = weak.upgrade() else { return };
-            let secs = sleep_timeout.load(Ordering::Relaxed);
-            if secs == 0 || ui.get_screen_off() {
-                return;
+            return;
+        }
+        let idle = elapsed_secs(epoch).saturating_sub(activity.load(Ordering::SeqCst));
+        if idle < secs {
+            return;
+        }
+        match screen.borrow_mut().set_off(true) {
+            Ok(()) => {
+                ui.set_screen_off(true);
+                info!(idle_s = idle, "auto screen off");
             }
-            // 通话中/来电/去电/监控页保持亮屏; 同时刷新活动时间, 避免退出这些
-            // 页面后因为屏幕保持期间没触摸而立刻熄屏.
-            if ui.get_phase() != 0 || ui.get_page() == 3 {
+            Err(e) => {
+                error!(err = %e, idle_s = idle, "auto screen off failed");
+                // 失败后重新计时, 避免每秒重试刷屏; 下一个超时周期再试.
                 activity.store(elapsed_secs(epoch), Ordering::SeqCst);
-                return;
+                ui.invoke_notify(
+                    crate::app::NoticeLevel::Warn as i32,
+                    crate::app::NoticeKind::ScreenFailed as i32,
+                    e.to_string().into(),
+                );
             }
-            let idle = elapsed_secs(epoch).saturating_sub(activity.load(Ordering::SeqCst));
-            if idle < secs {
-                return;
-            }
-            match screen.borrow_mut().set_off(true) {
-                Ok(()) => {
-                    ui.set_screen_off(true);
-                    info!(idle_s = idle, "auto screen off");
-                }
-                Err(e) => {
-                    error!(err = %e, idle_s = idle, "auto screen off failed");
-                    // 失败后重新计时, 避免每秒重试刷屏; 下一个超时周期再试.
-                    activity.store(elapsed_secs(epoch), Ordering::SeqCst);
-                    ui.invoke_notify(
-                        crate::app::NoticeLevel::Warn as i32,
-                        crate::app::NoticeKind::ScreenFailed as i32,
-                        e.to_string().into(),
-                    );
-                }
-            }
-        });
-    }
-
-    if screen.borrow().supported() {
-        spawn_activity_tracker(activity, epoch);
-    }
+        }
+    });
 }
 
 // 选项表: 秒值 ↔ UI 下标. 0 = 永不.

@@ -16,7 +16,9 @@ use tracing::{info, warn};
 use super::call_loop::{call_loop, finish_call};
 use super::ice::{self, LocalIce};
 use super::types::INCOMING_TIMEOUT;
-use super::types::{CallBase, CallCtlTx, CallRoutes, WorkerCmd, caller_from_request};
+use super::types::{
+    CallBase, CallCtlTx, CallRoutes, RecvSockets, RtpPorts, WorkerCmd, caller_from_request,
+};
 use crate::app::UiEvent;
 use crate::bridge::UiHandle;
 use crate::media;
@@ -228,78 +230,18 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<Str
     let caller = caller_from_request(&dialog.initial_request());
     info!(%caller, "incoming call");
 
-    let decision =
-        wait_user_decision(dialog, &ctx.ui, &caller, &mut ctx.call_answer_ctl_rx).await?;
-    info!(decision_result = ?decision);
-    match decision {
-        Decision::PeerCancelled => return Ok("peer cancelled".into()),
-        Decision::Reject(code) => {
-            if let Err(e) = dialog.reject(Some(code), None) {
-                warn!(error = %e, "reject failed");
-            }
-            return Ok("local rejected".into());
-        }
-        Decision::Accept => {}
+    if let Some(reason) = resolve_incoming(dialog, ctx, &caller).await? {
+        return Ok(reason);
     }
 
-    let request = dialog.initial_request();
-    let offer_body = request.body().to_vec();
+    let offer_body = dialog.initial_request().body().to_vec();
     let offer = parse_offer_or_reject(dialog)?;
     info!(?offer, "incoming offer");
 
-    // 先尝试 ICE (offer 有 ICE 且编码/端口可用), 失败回退普通 RTP.
-    let (rtp_ports, sockets, local_ice, answer) =
-        if let Some((local, answer, codecs)) = try_ice_answer(ctx, &offer, &offer_body).await {
-            (local.ports(), None, Some((local, codecs)), answer)
-        } else {
-            // 被叫优先用配置端口, 被占 (同机另一个通话进程) 回退临时端口;
-            // 端口要写进 answer SDP, socket 从 accept 前绑好活到通话结束:
-            // udpsrc/udpsink 共享 (对称 RTP), 过媒体锚定服务器的互通前提
-            let (ports, sockets) =
-                match super::types::bind_recv_sockets(ctx.local, Some(ctx.cfg.rtp_ports)) {
-                    Ok(ok) => ok,
-                    Err(e) => {
-                        let _ = dialog.reject(Some(rsip::StatusCode::TemporarilyUnavailable), None);
-                        return Err(e.into());
-                    }
-                };
-            let (audio, video, answer) = negotiate::build_answer(
-                &offer,
-                IpAddr::V4(ctx.local),
-                ports.audio,
-                ports.video,
-                media::audio_pred,
-                media::video_pred,
-            );
-            if audio.is_none() && video.is_none() {
-                warn!("no supported media in offer, call kept up without media");
-            }
-            (ports, Some(sockets), None, answer)
-        };
-    accept_with_answer(dialog, &caller, &ctx.ui, answer)?;
-
-    let mut media = if let Some((local, codecs)) = local_ice {
-        let offer_text = String::from_utf8_lossy(&offer_body);
-        match ice::activate(local, offer_text.as_ref(), &ctx.cfg, &ctx.tap, codecs).await {
-            Ok(media) => Some(media::CallMedia::Ice(media)),
-            Err(e) => {
-                // answer 已经宣称 ICE, 无法再回退普通 RTP; 先 BYE 再报错,
-                // 避免对端停留在已接通状态.
-                if let Err(bye) = dialog.bye_with_headers(None).await {
-                    warn!(error = %bye, "failed to send BYE after ICE setup failure");
-                }
-                return Err(e);
-            }
-        }
-    } else {
-        media::start_incoming(
-            &offer,
-            rtp_ports,
-            sockets.expect("plain RTP path bound sockets"),
-            &ctx.cfg,
-            &ctx.tap,
-        )
-    };
+    let plan = plan_incoming_media(dialog, ctx, &offer, &offer_body).await?;
+    let rtp_ports = plan.rtp_ports;
+    accept_with_answer(dialog, &caller, &ctx.ui, plan.answer.clone())?;
+    let mut media = start_incoming_media(dialog, ctx, &offer, &offer_body, plan).await?;
 
     let reason = call_loop(
         dialog,
@@ -314,4 +256,126 @@ async fn incoming_inner(dialog: &InviteDialog, ctx: &mut CallBase) -> Result<Str
         m.stop();
     }
     Ok(reason)
+}
+
+/// 等用户接听/拒接/对端取消; Some(reason) = 通话在起媒体前已正常结束.
+async fn resolve_incoming(
+    dialog: &InviteDialog,
+    ctx: &mut CallBase,
+    caller: &str,
+) -> Result<Option<String>> {
+    let decision = wait_user_decision(dialog, &ctx.ui, caller, &mut ctx.call_answer_ctl_rx).await?;
+    info!(decision_result = ?decision);
+    match decision {
+        Decision::Accept => Ok(None),
+        Decision::PeerCancelled => Ok(Some("peer cancelled".into())),
+        Decision::Reject(code) => {
+            if let Err(e) = dialog.reject(Some(code), None) {
+                warn!(error = %e, "reject failed");
+            }
+            Ok(Some("local rejected".into()))
+        }
+    }
+}
+
+/// accept 前要写进 answer 的接收计划; sockets 只在普通 RTP 路径存在.
+struct IncomingMediaPlan {
+    rtp_ports: RtpPorts,
+    sockets: Option<RecvSockets>,
+    local_ice: Option<(LocalIce, media::IceCodecs)>,
+    answer: String,
+}
+
+/// 先尝试 ICE (offer 有 ICE 且编码/端口可用), 失败回退普通 RTP.
+async fn plan_incoming_media(
+    dialog: &InviteDialog,
+    ctx: &CallBase,
+    offer: &OfferMedias,
+    offer_body: &[u8],
+) -> Result<IncomingMediaPlan> {
+    if let Some((local, answer, codecs)) = try_ice_answer(ctx, offer, offer_body).await {
+        return Ok(IncomingMediaPlan {
+            rtp_ports: local.ports(),
+            sockets: None,
+            local_ice: Some((local, codecs)),
+            answer,
+        });
+    }
+    plan_plain_rtp(dialog, ctx, offer)
+}
+
+/// 普通 RTP: 被叫优先用配置端口, 被占 (同机另一个通话进程) 回退临时端口;
+/// 端口要写进 answer SDP, socket 从 accept 前绑好活到通话结束:
+/// udpsrc/udpsink 共享 (对称 RTP), 过媒体锚定服务器的互通前提.
+fn plan_plain_rtp(
+    dialog: &InviteDialog,
+    ctx: &CallBase,
+    offer: &OfferMedias,
+) -> Result<IncomingMediaPlan> {
+    let (ports, sockets) = match super::types::bind_recv_sockets(ctx.local, Some(ctx.cfg.rtp_ports))
+    {
+        Ok(ok) => ok,
+        Err(e) => {
+            let _ = dialog.reject(Some(rsip::StatusCode::TemporarilyUnavailable), None);
+            return Err(e.into());
+        }
+    };
+    let (audio, video, answer) = negotiate::build_answer(
+        offer,
+        IpAddr::V4(ctx.local),
+        ports.audio,
+        ports.video,
+        media::audio_pred,
+        media::video_pred,
+    );
+    if audio.is_none() && video.is_none() {
+        warn!("no supported media in offer, call kept up without media");
+    }
+    Ok(IncomingMediaPlan {
+        rtp_ports: ports,
+        sockets: Some(sockets),
+        local_ice: None,
+        answer,
+    })
+}
+
+/// answer 已发出后起媒体; ICE 失败无法回退普通 RTP, 先 BYE 再报错.
+async fn start_incoming_media(
+    dialog: &InviteDialog,
+    ctx: &CallBase,
+    offer: &OfferMedias,
+    offer_body: &[u8],
+    plan: IncomingMediaPlan,
+) -> Result<Option<media::CallMedia>> {
+    if let Some((local, codecs)) = plan.local_ice {
+        return activate_incoming_ice(dialog, ctx, offer_body, local, codecs).await;
+    }
+    Ok(media::start_incoming(
+        offer,
+        plan.rtp_ports,
+        plan.sockets.expect("plain RTP path bound sockets"),
+        &ctx.cfg,
+        &ctx.tap,
+    ))
+}
+
+async fn activate_incoming_ice(
+    dialog: &InviteDialog,
+    ctx: &CallBase,
+    offer_body: &[u8],
+    local: LocalIce,
+    codecs: media::IceCodecs,
+) -> Result<Option<media::CallMedia>> {
+    let offer_text = String::from_utf8_lossy(offer_body);
+    match ice::activate(local, offer_text.as_ref(), &ctx.cfg, &ctx.tap, codecs).await {
+        Ok(media) => Ok(Some(media::CallMedia::Ice(media))),
+        Err(e) => {
+            // answer 已经宣称 ICE, 无法再回退普通 RTP; 先 BYE 再报错,
+            // 避免对端停留在已接通状态.
+            if let Err(bye) = dialog.bye_with_headers(None).await {
+                warn!(error = %bye, "failed to send BYE after ICE setup failure");
+            }
+            Err(e)
+        }
+    }
 }

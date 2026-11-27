@@ -23,6 +23,7 @@ mod wiring;
 use anyhow::Context as _;
 pub use app::Phase;
 pub use session::{GuiSipConfig, GuiSipOverrides};
+use std::rc::Rc;
 use tracing::info;
 
 /// 屏幕键盘退格: Slint 字符串没有 substring/char-at, 由 Rust 删除最后一个
@@ -70,24 +71,7 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
     ui.set_account(format!("{}@{}", cfg.username, cfg.server.ip()).into());
 
     let handle = bridge::UiHandle::new(ui.as_weak(), app.clone());
-    // 天气: UI Timer 每 30min 触发一次异步刷新任务; 启动先拉一次.
-    // 设置页改城市/key 时也直接调 weather::refresh_async, 不走 channel.
-    let weather_timer = slint::Timer::default();
-    weather::refresh_async(handle.clone());
-    {
-        let handle = handle.clone();
-        weather_timer.start(slint::TimerMode::Repeated, weather::REFRESH, move || {
-            weather::refresh_async(handle.clone())
-        });
-    }
-    // 城市输入框初始值 (kv 读不到就是空串 = IP 自动定位)
-    if let Ok(city) = store.kv_get(weather::KV_CITY) {
-        ui.set_weather_city(city.unwrap_or_default().into());
-    }
-    // 和风 key 初始值 (kv 读不到就是空串 = Open-Meteo)
-    if let Ok(key) = store.kv_get(weather::KV_KEY) {
-        ui.set_weather_key(key.unwrap_or_default().into());
-    }
+    let weather_timer = setup_weather(&ui, &store, handle.clone());
 
     // 屏幕键盘控制器: 回调驱动引擎, 输出经 kb_flush 回写 kb-* 属性, 由聚焦的
     // KbTextField 监听 commit-seq 拍振上屏 (属性表见 ui/main.slint)
@@ -105,40 +89,8 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
     let (cmd_tx, cmd_rx) = bridge::cmd_channel();
     // 视频接收的闭包 (监控查看与对讲通话共享同一个 tap)
     let tap = video::make_frame_sink(ui.as_weak());
-    // ICE 通话 worker: 命令通道驱动 (设置页 ICE 卡片, 本体在 settings/ice_card.slint).
-    // 媒体源从 GuiSipConfig 摘录 (cfg 随后 move 进 SIP worker).
-    let ice_sources = ice::IceSources {
-        video_src: cfg.video_src.as_video_source(),
-        audio_src: cfg.audio_src.as_audio_source(),
-        max_width: cfg.max_width,
-    };
-    let (ice_ctl, _ice_worker) =
-        ice::spawn(handle.clone(), ice_sources, tap.clone()).context("spawn ice worker")?;
-    // ICE 设置初始值 (kv 读不到用默认值)
-    if let Ok(v) = store.kv_get(ice::KV_SIGSERVER) {
-        ui.set_ice_sigserver(v.unwrap_or_else(|| ice::DEFAULT_SIGSERVER.into()).into());
-    }
-    if let Ok(v) = store.kv_get(ice::KV_ROOM) {
-        ui.set_ice_room(v.unwrap_or_else(|| ice::DEFAULT_ROOM.into()).into());
-    }
-    if let Ok(v) = store.kv_get(ice::KV_STUN) {
-        ui.set_ice_stun(v.unwrap_or_else(|| ice::DEFAULT_STUN.into()).into());
-    }
-    // SIP 设置卡初始值: resolve 合成结果的回显字符串 (设置页 SIP 卡片,
-    // 本体在 settings/sip_card.slint)
-    let sip_ui = sip_settings::ui_strings(&cfg);
-    ui.set_sip_server(sip_ui.server.as_str().into());
-    ui.set_sip_username(sip_ui.username.as_str().into());
-    ui.set_sip_password(sip_ui.password.as_str().into());
-    ui.set_sip_expires(sip_ui.expires.as_str().into());
-    ui.set_sip_stun(sip_ui.stun.as_str().into());
-    ui.set_sip_local_ip(sip_ui.local_ip.as_str().into());
-    ui.set_sip_video_src(sip_ui.video_src.as_str().into());
-    ui.set_sip_audio_src(sip_ui.audio_src.as_str().into());
-    ui.set_sip_width_limit(sip_ui.max_width.as_str().into());
-    ui.set_sip_rtp_audio(sip_ui.rtp_audio.as_str().into());
-    ui.set_sip_rtp_video(sip_ui.rtp_video.as_str().into());
-    ui.set_sip_ice_enabled(cfg.ice.enabled);
+    let (ice_ctl, _ice_worker) = setup_ice(&ui, &store, &cfg, handle.clone(), tap.clone())?;
+    setup_sip_ui(&ui, &cfg);
     let worker = session::spawn(cfg, cmd_rx, handle.clone(), tap.clone())?;
 
     // UI 回调 → 状态机决策 → Effect 翻译 worker 命令 → 刷属性
@@ -155,8 +107,97 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
     camera::wire_settings(&ui, &store);
     camera::wire_monitor(&ui, &store, &monitor, &tap, &handle);
 
-    // 键盘按键回调 → 控制器 → 输出立即同步回写属性; 回调本身跑在事件循环
-    // 线程, 直接 Weak::upgrade 设置即可, 无需 invoke_from_event_loop 再排队
+    wire_keyboard_callbacks(&ui, &kb);
+
+    ui.run()?;
+    // 停掉周期天气刷新; 若恰有一次刷新在途, 异步任务拉完自己结束
+    drop(weather_timer);
+    persist::drain_unsaved(&app, &store);
+    // 窗口已关: 显式 drop 本作用域持有的命令发送端 (回调里的克隆随窗口
+    // 销毁), 通道关闭 worker 才退出; 再 join 等它补 BYE + 注销
+    // (500ms + ≤2s, 收尾有界)
+    drop(cmd_tx);
+    worker
+        .join()
+        .map_err(|e| anyhow::anyhow!("worker thread panicked: {e:?}"))?;
+    Ok(())
+}
+
+/// 天气: 启动先拉一次, 之后每 30min 一次; 城市/key 从 kv 回显.
+fn setup_weather(
+    ui: &MainWindow,
+    store: &Rc<crate::store::Store>,
+    handle: bridge::UiHandle,
+) -> slint::Timer {
+    let timer = slint::Timer::default();
+    weather::refresh_async(handle.clone());
+    {
+        let handle = handle.clone();
+        timer.start(slint::TimerMode::Repeated, weather::REFRESH, move || {
+            weather::refresh_async(handle.clone())
+        });
+    }
+    // 城市输入框初始值 (kv 读不到就是空串 = IP 自动定位)
+    if let Ok(city) = store.kv_get(weather::KV_CITY) {
+        ui.set_weather_city(city.unwrap_or_default().into());
+    }
+    // 和风 key 初始值 (kv 读不到就是空串 = Open-Meteo)
+    if let Ok(key) = store.kv_get(weather::KV_KEY) {
+        ui.set_weather_key(key.unwrap_or_default().into());
+    }
+    timer
+}
+
+/// ICE 通话 worker + 设置页三项初始化; 返回 (控制器, 保活句柄).
+fn setup_ice(
+    ui: &MainWindow,
+    store: &Rc<crate::store::Store>,
+    cfg: &GuiSipConfig,
+    handle: bridge::UiHandle,
+    tap: ipcam_gst::VideoFrameSink,
+) -> anyhow::Result<(ice::IceController, std::thread::JoinHandle<()>)> {
+    // 媒体源从 GuiSipConfig 摘录 (cfg 随后 move 进 SIP worker).
+    let ice_sources = ice::IceSources {
+        video_src: cfg.video_src.as_video_source(),
+        audio_src: cfg.audio_src.as_audio_source(),
+        max_width: cfg.max_width,
+    };
+    let (ctl, worker) = ice::spawn(handle, ice_sources, tap).context("spawn ice worker")?;
+    if let Ok(v) = store.kv_get(ice::KV_SIGSERVER) {
+        ui.set_ice_sigserver(v.unwrap_or_else(|| ice::DEFAULT_SIGSERVER.into()).into());
+    }
+    if let Ok(v) = store.kv_get(ice::KV_ROOM) {
+        ui.set_ice_room(v.unwrap_or_else(|| ice::DEFAULT_ROOM.into()).into());
+    }
+    if let Ok(v) = store.kv_get(ice::KV_STUN) {
+        ui.set_ice_stun(v.unwrap_or_else(|| ice::DEFAULT_STUN.into()).into());
+    }
+    Ok((ctl, worker))
+}
+
+/// SIP 设置卡初始值: resolve 合成结果的回显字符串.
+fn setup_sip_ui(ui: &MainWindow, cfg: &GuiSipConfig) {
+    let sip_ui = sip_settings::ui_strings(cfg);
+    ui.set_sip_server(sip_ui.server.as_str().into());
+    ui.set_sip_username(sip_ui.username.as_str().into());
+    ui.set_sip_password(sip_ui.password.as_str().into());
+    ui.set_sip_expires(sip_ui.expires.as_str().into());
+    ui.set_sip_stun(sip_ui.stun.as_str().into());
+    ui.set_sip_local_ip(sip_ui.local_ip.as_str().into());
+    ui.set_sip_video_src(sip_ui.video_src.as_str().into());
+    ui.set_sip_audio_src(sip_ui.audio_src.as_str().into());
+    ui.set_sip_width_limit(sip_ui.max_width.as_str().into());
+    ui.set_sip_rtp_audio(sip_ui.rtp_audio.as_str().into());
+    ui.set_sip_rtp_video(sip_ui.rtp_video.as_str().into());
+    ui.set_sip_ice_enabled(cfg.ice.enabled);
+}
+
+/// 屏幕键盘回调 → 控制器 → 输出立即同步回写属性; 回调本身跑在事件循环
+/// 线程, 直接 Weak::upgrade 设置即可, 无需 invoke_from_event_loop 再排队.
+fn wire_keyboard_callbacks(
+    ui: &MainWindow,
+    kb: &Rc<std::cell::RefCell<keyboard::KeyboardController>>,
+) {
     {
         let (kb, weak) = (kb.clone(), ui.as_weak());
         ui.on_kb_key_tapped(move |k| {
@@ -208,19 +249,6 @@ pub fn run(over: GuiSipOverrides) -> anyhow::Result<()> {
             }
         });
     }
-
-    ui.run()?;
-    // 停掉周期天气刷新; 若恰有一次刷新在途, 异步任务拉完自己结束
-    drop(weather_timer);
-    persist::drain_unsaved(&app, &store);
-    // 窗口已关: 显式 drop 本作用域持有的命令发送端 (回调里的克隆随窗口
-    // 销毁), 通道关闭 worker 才退出; 再 join 等它补 BYE + 注销
-    // (500ms + ≤2s, 收尾有界)
-    drop(cmd_tx);
-    worker
-        .join()
-        .map_err(|e| anyhow::anyhow!("worker thread panicked: {e:?}"))?;
-    Ok(())
 }
 
 /// 键盘输出回写: 取走控制器 pending 输出并刷新 kb-* 属性; 仅当真的上屏

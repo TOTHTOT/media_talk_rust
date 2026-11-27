@@ -259,25 +259,46 @@ async fn call_flow(
     sig: (WsClient, u8),
     media: &mut Option<IceMediaHandle>,
 ) -> Result<(), IceCtlError> {
-    // 1. 本地候选: 两路媒体各自 gather, 再合成标准媒体 SDP.
+    let local = gather_local_sdp(video_agent, audio_agent).await?;
+    if drain_hangup(cmd_rx) {
+        return Ok(());
+    }
+    let Some(remote) = exchange_remote_sdp(inner, sig, &local, cmd_rx).await? else {
+        return Ok(());
+    };
+    if !connect_ice(inner, handle, video_agent, audio_agent, &remote, cmd_rx).await? {
+        return Ok(());
+    }
+    begin_ice_media(handle, inner, sources, tap, video_agent, audio_agent, media)?;
+    monitor_ice_call(cmd_rx, handle, media, video_agent, audio_agent).await
+}
+
+/// 1. 本地候选: 两路媒体各自 gather, 再合成标准媒体 SDP.
+async fn gather_local_sdp(
+    video_agent: &IceAgent,
+    audio_agent: &IceAgent,
+) -> Result<ipcam_ice::blob::IceBlob, IceCtlError> {
     let (video_local, audio_local) =
         tokio::join!(video_agent.local_blob(), audio_agent.local_blob());
-    let video_local = video_local?;
-    let audio_local = audio_local?;
-    let local = sdp::build_offer_blob(&video_local, Some(&audio_local))?;
+    let local = sdp::build_offer_blob(&video_local?, Some(&audio_local?))?;
     info!(
         bytes = local.as_str().len(),
         "ice local media SDP gathered:\n{}",
         local.pretty()
     );
-    if drain_hangup(cmd_rx) {
-        return Ok(());
-    }
+    Ok(local)
+}
 
-    // 2. 对端媒体 SDP: WS 角色交换 (连接在本函数结束时关闭)
+/// 2. 对端媒体 SDP: WS 角色交换; 交换后用户已挂断则返回 None.
+async fn exchange_remote_sdp(
+    inner: &Arc<Mutex<IceInner>>,
+    sig: (WsClient, u8),
+    local: &ipcam_ice::blob::IceBlob,
+    cmd_rx: &mut UnboundedReceiver<IceCmd>,
+) -> Result<Option<ipcam_ice::blob::IceBlob>, IceCtlError> {
     *inner.lock() = IceInner::Exchanging;
     let (ws, slot) = sig;
-    let remote = signal::ws_exchange(ws, slot, &local, signal::OFFER, signal::ANSWER).await?;
+    let remote = signal::ws_exchange(ws, slot, local, signal::OFFER, signal::ANSWER).await?;
     let pretty = remote.as_str().replace("\r\n", "\n");
     info!(
         bytes = remote.as_str().len(),
@@ -285,10 +306,20 @@ async fn call_flow(
         pretty.trim_end()
     );
     if drain_hangup(cmd_rx) {
-        return Ok(());
+        return Ok(None);
     }
+    Ok(Some(remote))
+}
 
-    // 3. 解析对端媒体 SDP, 各自喂入 ICE agent 并等待连通.
+/// 3. 解析对端 SDP, 喂入两路 agent 并等待连通; 等待期间挂断返回 false.
+async fn connect_ice(
+    inner: &Arc<Mutex<IceInner>>,
+    handle: &UiHandle,
+    video_agent: &IceAgent,
+    audio_agent: &IceAgent,
+    remote: &ipcam_ice::blob::IceBlob,
+    cmd_rx: &mut UnboundedReceiver<IceCmd>,
+) -> Result<bool, IceCtlError> {
     let remote = sdp::parse_offer(remote.as_str())?;
     let remote_video = remote
         .video
@@ -306,13 +337,19 @@ async fn call_flow(
     );
     video_state?;
     audio_state?;
-    if drain_hangup(cmd_rx) {
-        return Ok(());
-    }
+    Ok(!drain_hangup(cmd_rx))
+}
 
-    // 4. 起媒体: 收端视频走 GUI tap; 音频接收 linux 走 ALSA default
-    //    放音 (与 SIP 收端 autoaudiosink 落地等价), 无 ALSA 平台仅
-    //    TapOnly (无 audio tap 时即不收音频).
+/// 4. 起媒体: 收端视频走 GUI tap; 音频接收 linux 走 ALSA default.
+fn begin_ice_media(
+    handle: &UiHandle,
+    inner: &Arc<Mutex<IceInner>>,
+    sources: &IceSources,
+    tap: &VideoFrameSink,
+    video_agent: &IceAgent,
+    audio_agent: &IceAgent,
+    media: &mut Option<IceMediaHandle>,
+) -> Result<(), IceCtlError> {
     let audio_recv = crate::media::ice_audio_recv();
     let m = start_ice_media(&IceMediaConfig {
         video_agent: Some(video_agent),
@@ -334,8 +371,17 @@ async fn call_flow(
     *inner.lock() = IceInner::Active;
     post_status(handle, "已连接", 0, 0);
     info!("ice media started");
+    Ok(())
+}
 
-    // 5. 通话期: 1s 上报收发字节; 挂断 / 掉线 / 通道断开退出
+/// 5. 通话期: 1s 上报收发字节; 挂断 / 掉线 / 通道断开退出.
+async fn monitor_ice_call(
+    cmd_rx: &mut UnboundedReceiver<IceCmd>,
+    handle: &UiHandle,
+    media: &Option<IceMediaHandle>,
+    video_agent: &IceAgent,
+    audio_agent: &IceAgent,
+) -> Result<(), IceCtlError> {
     let state_rx = video_agent.state_rx();
     let audio_state_rx = audio_agent.state_rx();
     loop {

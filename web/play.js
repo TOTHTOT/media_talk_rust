@@ -67,7 +67,13 @@
     const { sessionId, consumer } = current;
     current = null;
     if (consumer) {
-      try { consumer.close(); } catch (e) { /* already closed */ }
+      try {
+        consumer.close();
+      } catch (e) {
+        // Already closed is expected during profile switches; anything else
+        // still needs a trace or the cleanup failure disappears silently.
+        console.warn("closing previous consumer failed", e);
+      }
     }
     const video = document.getElementById("player");
     video.pause();

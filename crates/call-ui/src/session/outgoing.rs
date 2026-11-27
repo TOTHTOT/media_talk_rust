@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use ipcam_sip::sdp::{PT_OPUS, PT_PCMA, PT_PCMU, build_av_offer, parse_answer_all};
+use ipcam_sip::sdp::{PT_OPUS, PT_PCMA, PT_PCMU, PeerMedias, build_av_offer, parse_answer_all};
 use rsipstack::dialog::DialogId;
 use rsipstack::dialog::authenticate::Credential;
 use rsipstack::dialog::dialog::{DialogState, DialogStateSender};
@@ -227,37 +227,7 @@ async fn outgoing_inner(
         peer: ctx.number.clone(),
     });
 
-    let (rtp_ports, mut media) = match setup.transport {
-        OutgoingTransport::Rtp { ports, sockets } => (
-            ports,
-            media::start_outgoing(&peers, &ports, sockets, &ctx.base.cfg, &ctx.base.tap),
-        ),
-        OutgoingTransport::Ice { ports, local } => {
-            let mut media = None;
-            if let Some(codecs) = ice::answer_supports_ice(&peers) {
-                let answer = String::from_utf8_lossy(resp.body());
-                media = Some(media::CallMedia::Ice(
-                    ice::activate(local, answer.as_ref(), &ctx.base.cfg, &ctx.base.tap, codecs)
-                        .await?,
-                ));
-            } else {
-                warn!("answer did not select Opus for ICE, falling back to plain RTP");
-                drop(local);
-            }
-            let ports = if media.is_none() {
-                // 回退: agent 已关闭, 端口已释放; 绑定 offer 里声明的同一批
-                // 端口, 对端仍按原 SDP 发包.
-                let (bound, sockets) =
-                    super::types::bind_recv_sockets(ctx.base.local, Some(ports))?;
-                media =
-                    media::start_outgoing(&peers, &bound, sockets, &ctx.base.cfg, &ctx.base.tap);
-                bound
-            } else {
-                ports
-            };
-            (ports, media)
-        }
-    };
+    let (rtp_ports, mut media) = activate_outgoing_media(setup, &peers, resp.body(), ctx).await?;
     info!("call established");
 
     let reason = call_loop(
@@ -273,4 +243,43 @@ async fn outgoing_inner(
         m.stop();
     }
     Ok(reason)
+}
+
+/// 200 OK 后按 offer 的传输方式起媒体; ICE 未被 answer 选中时回退普通 RTP.
+async fn activate_outgoing_media(
+    setup: OutgoingOffer,
+    peers: &PeerMedias,
+    answer_body: &[u8],
+    ctx: &OutgoingCtx,
+) -> Result<(RtpPorts, Option<media::CallMedia>)> {
+    match setup.transport {
+        OutgoingTransport::Rtp { ports, sockets } => Ok((
+            ports,
+            media::start_outgoing(peers, &ports, sockets, &ctx.base.cfg, &ctx.base.tap),
+        )),
+        OutgoingTransport::Ice { ports, local } => {
+            activate_outgoing_ice(peers, answer_body, ctx, ports, local).await
+        }
+    }
+}
+
+async fn activate_outgoing_ice(
+    peers: &PeerMedias,
+    answer_body: &[u8],
+    ctx: &OutgoingCtx,
+    ports: RtpPorts,
+    local: LocalIce,
+) -> Result<(RtpPorts, Option<media::CallMedia>)> {
+    let Some(codecs) = ice::answer_supports_ice(peers) else {
+        warn!("answer did not select Opus for ICE, falling back to plain RTP");
+        drop(local);
+        let (bound, sockets) = super::types::bind_recv_sockets(ctx.base.local, Some(ports))?;
+        let media = media::start_outgoing(peers, &bound, sockets, &ctx.base.cfg, &ctx.base.tap);
+        return Ok((bound, media));
+    };
+    let answer = String::from_utf8_lossy(answer_body);
+    let media = media::CallMedia::Ice(
+        ice::activate(local, answer.as_ref(), &ctx.base.cfg, &ctx.base.tap, codecs).await?,
+    );
+    Ok((ports, Some(media)))
 }

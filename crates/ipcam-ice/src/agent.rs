@@ -39,12 +39,25 @@ fn ensure_winsock() {}
 /// 解析 STUN URI: `stun://host:port` / `stun:host:port` / `host:port` /
 /// `host` (默认 3478). libnice 的 `stun-server` 属性只收主机名/IP,
 /// 端口必须单独写 `stun-port`, 不能把整个 URI 塞进去.
+const DEFAULT_STUN_PORT: u16 = 3478;
+
 fn parse_stun_uri(uri: &str) -> Result<(String, u16), IceError> {
-    let raw = uri.trim().trim_end_matches('/');
-    if raw.is_empty() {
-        return Err(IceError::InvalidStun(uri.to_string()));
+    let s = normalize_stun_uri(uri)?;
+    // IPv6 字面量必须带方括号: [::1]:3478 / [::1]
+    if let Some(rest) = s.strip_prefix('[') {
+        return parse_bracketed_ipv6(rest, uri);
     }
-    if raw.contains("://") && !raw.starts_with("stun://") {
+    // 裸 IPv6 (含多个冒号) 没有端口信息, 整串当 host, 用默认端口.
+    if s.matches(':').count() > 1 {
+        return Ok((s.to_string(), DEFAULT_STUN_PORT));
+    }
+    parse_host_port(s, uri)
+}
+
+/// 去掉 `stun://` / `stun:` 前缀和尾部斜杠; 空串和非 STUN scheme 直接拒绝.
+fn normalize_stun_uri(uri: &str) -> Result<&str, IceError> {
+    let raw = uri.trim().trim_end_matches('/');
+    if raw.is_empty() || (raw.contains("://") && !raw.starts_with("stun://")) {
         return Err(IceError::InvalidStun(uri.to_string()));
     }
     let s = raw
@@ -54,32 +67,31 @@ fn parse_stun_uri(uri: &str) -> Result<(String, u16), IceError> {
     if s.is_empty() {
         return Err(IceError::InvalidStun(uri.to_string()));
     }
+    Ok(s)
+}
 
-    // IPv6 字面量必须带方括号: [::1]:3478 / [::1]
-    if let Some(rest) = s.strip_prefix('[') {
-        let (host, after) = rest
-            .split_once(']')
-            .ok_or_else(|| IceError::InvalidStun(uri.to_string()))?;
-        if host.is_empty() {
-            return Err(IceError::InvalidStun(uri.to_string()));
-        }
-        let port = match after.strip_prefix(':') {
-            Some(port) if !port.is_empty() => parse_port(port, uri)?,
-            Some(_) | None => 3478,
-        };
-        return Ok((host.to_string(), port));
+fn parse_bracketed_ipv6(rest: &str, uri: &str) -> Result<(String, u16), IceError> {
+    let (host, after) = rest
+        .split_once(']')
+        .ok_or_else(|| IceError::InvalidStun(uri.to_string()))?;
+    if host.is_empty() {
+        return Err(IceError::InvalidStun(uri.to_string()));
     }
+    let port = match after.strip_prefix(':') {
+        Some(port) if !port.is_empty() => parse_port(port, uri)?,
+        Some(_) | None => DEFAULT_STUN_PORT,
+    };
+    Ok((host.to_string(), port))
+}
 
-    // 裸 IPv6 (含多个冒号) 没有端口信息, 整串当 host, 用默认端口.
-    if s.matches(':').count() > 1 {
-        return Ok((s.to_string(), 3478));
-    }
+/// 非 IPv6 的 `host:port` / `host`; 冒号后为空按非法 URI 处理.
+fn parse_host_port(s: &str, uri: &str) -> Result<(String, u16), IceError> {
     match s.rsplit_once(':') {
         Some((host, port)) if !host.is_empty() && !port.is_empty() => {
             Ok((host.to_string(), parse_port(port, uri)?))
         }
         Some(_) => Err(IceError::InvalidStun(uri.to_string())),
-        None => Ok((s.to_string(), 3478)),
+        None => Ok((s.to_string(), DEFAULT_STUN_PORT)),
     }
 }
 
