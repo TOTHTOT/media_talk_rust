@@ -1,0 +1,26 @@
+// 摄像头对话框 footer: 所有动作按钮固定等宽.
+// KitDialog 的 actions 模型没有宽度字段, 所以由 body 自己渲染 footer.
+import { ControlWidth, DialogAction, KitButton, KitThemeContext } from "@kit";
+
+export component CameraDialogFooter inherits HorizontalLayout {
+    in property <[DialogAction]> actions;
+    in property <int> modal-layer: 1;
+    callback action-activated(int);
+
+    // 中文/英文标签都能放下; 固定宽度保证不同文字长度也等宽.
+    private property <length> action-width: 112px;
+
+    spacing: KitThemeContext.current.spacing.unit * 3;
+    alignment: end;
+
+    for action in actions: KitButton {
+        min-width: root.action-width;
+        preferred-width: root.action-width;
+        max-width: root.action-width;
+        text: action.text;
+        intent: action.intent;
+        disabled: action.disabled;
+        modal-layer: root.modal-layer;
+        activated => { root.action-activated(action.token); }
+    }
+}

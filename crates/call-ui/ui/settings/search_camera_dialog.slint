@@ -1,10 +1,9 @@
-// 搜索添加摄像头对话框内容: 三步向导 (设备列表 → 凭据 → 选 profile)
-// 默认即渲染步骤 0, 可在 slint 预览器直接查看
+// 搜索添加摄像头 body: 三步向导 (设备列表 → 凭据 → 选 profile).
+// 标题/关闭由 KitDialog 提供; body 内的 footer 用 CameraDialogFooter 保证按钮等宽.
 import {
     ButtonIntent,
     ControlWidth,
-    KitButton,
-    KitDivider,
+    DialogAction,
     KitMetrics,
     KitPressable,
     KitScrollArea,
@@ -14,9 +13,12 @@ import {
 } from "@kit";
 import { DiscoveredEntry, ProfileEntry } from "../components.slint";
 import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
+import { CameraDialogFooter } from "camera_dialog_footer.slint";
 
 export component SearchCameraDialog inherits VerticalLayout {
     property <KitTheme> theme: KitThemeContext.current;
+    // 弹窗层号: Kit 控件必须声明成同一层, 否则会被 KitModalContext 判为 inert
+    in property <int> modal-layer: 1;
     in property <bool> camera-busy: false;
     in property <[DiscoveredEntry]> discovered-devices: [];
     in property <[ProfileEntry]> camera-profiles: [];
@@ -28,212 +30,182 @@ export component SearchCameraDialog inherits VerticalLayout {
     in-out property <string> sel-name: "";
     in-out property <string> sel-user: "";
     in-out property <string> sel-pass: "";
-    // 步骤 1 的输入框草稿 (KbTextField 接收屏幕键盘上屏)
-    property <string> name-text: root.sel-label;
-    property <string> user-text: "";
-    property <string> pass-text: "";
-    callback search-cameras();
-    callback fetch-camera-profiles(string, string, string);
+    // 步骤 1 的输入草稿: footer 的"获取配置"在壳里, 通过绑定读取
+    in-out property <string> name-text: "";
+    in-out property <string> user-text: "";
+    in-out property <string> pass-text: "";
+    in property <[DialogAction]> actions;
+    callback action-activated(int);
+    // 字段焦点 + 字段底部绝对 y, 由弹窗壳换算是否需要抬升
+    callback field-focused(bool, length);
     callback save-discovered-camera(string, string, string, string, string);
-    callback cancelled();
 
-    padding: root.theme.spacing.unit * 6;
     spacing: root.theme.spacing.unit * 3;
 
-    Text {
-        text: @tr("搜索添加摄像头");
-        color: root.theme.text-primary;
-        font-family: root.theme.typography.family;
-        font-size: KitMetrics.font-size(root.theme, TypographyRole.subtitle);
-        font-weight: root.theme.typography.weight-semibold;
-    }
+    // 固定高度滚动区: 列表再长也不会把 footer 顶出屏幕.
+    // FocusScope(focus-on-click) 让点空白接管焦点, 输入框失焦并收起键盘.
+    body-focus := FocusScope {
+        width: 100%;
+        height: 260px;
+        focus-on-click: true;
+        focus-on-tab-navigation: false;
 
-    // 步骤 0: 设备列表
-    if root.step == 0: VerticalLayout {
-        spacing: root.theme.spacing.unit * 2;
-        vertical-stretch: 1;
-        if root.camera-busy: Text {
-            text: @tr("正在搜索局域网设备 ...");
-            color: root.theme.text-secondary;
-            font-family: root.theme.typography.family;
-            font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
-        }
-        if !root.camera-busy && root.discovered-devices.length == 0: Text {
-            text: @tr("未发现设备, 可重试或手动添加");
-            color: root.theme.text-secondary;
-            font-family: root.theme.typography.family;
-            font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
-        }
         KitScrollArea {
-            vertical-stretch: 1;
+            width: 100%;
+            height: 100%;
+            // 非 overlay: 滚动条占独立 gutter, 不会压在输入框上.
+            overlay-scrollbars: false;
+
             VerticalLayout {
-                spacing: root.theme.spacing.unit;
-                for dev in root.discovered-devices: KitPressable {
-                    width: 100%;
-                    intent: ButtonIntent.quiet;
-                    control-width: ControlWidth.fill;
-                    accessible-name: dev.label;
-                    activated => {
-                        root.sel-xaddr = dev.xaddr;
-                        root.sel-label = dev.label;
-                        root.step = 1;
+                spacing: root.theme.spacing.unit * 3;
+
+                // 步骤 0: 设备列表
+                if root.step == 0: VerticalLayout {
+                    spacing: root.theme.spacing.unit * 2;
+                    if root.camera-busy: Text {
+                        text: @tr("正在搜索局域网设备 ...");
+                        color: root.theme.text-secondary;
+                        font-family: root.theme.typography.family;
+                        font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
+                    }
+                    if !root.camera-busy && root.discovered-devices.length == 0: Text {
+                        text: @tr("未发现设备, 可重试或手动添加");
+                        color: root.theme.text-secondary;
+                        font-family: root.theme.typography.family;
+                        font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
+                    }
+                    for dev in root.discovered-devices: KitPressable {
+                        width: 100%;
+                        // 行高跟随内容 (同 RecentCallRow): 两行地址比默认按钮高,
+                        // 否则第二行溢出 pressable, hover 背景只盖住第一行.
+                        min-height: content.preferred-height + 2 * self.padding-block;
+                        preferred-height: self.min-height;
+                        max-height: self.min-height;
+                        intent: ButtonIntent.quiet;
+                        control-width: ControlWidth.fill;
+                        modal-layer: root.modal-layer;
+                        accessible-name: dev.label;
+                        activated => {
+                            root.sel-xaddr = dev.xaddr;
+                            root.sel-label = dev.label;
+                            // 换设备时重置草稿, 避免沿用上一台的名称/凭据
+                            root.name-text = dev.label;
+                            root.user-text = "";
+                            root.pass-text = "";
+                            root.step = 1;
+                        }
+
+                        content := VerticalLayout {
+                            spacing: root.theme.spacing.unit / 2;
+                            Text {
+                                text: dev.label;
+                                color: root.theme.text-primary;
+                                font-family: root.theme.typography.family;
+                                font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
+                                overflow: elide;
+                            }
+                            Text {
+                                text: dev.xaddr;
+                                color: root.theme.text-secondary;
+                                font-family: root.theme.typography.family;
+                                font-size: KitMetrics.font-size(root.theme, TypographyRole.caption);
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+
+                // 步骤 1: 凭据
+                if root.step == 1: VerticalLayout {
+                    spacing: root.theme.spacing.unit * 3;
+                    Text {
+                        text: root.sel-label;
+                        color: root.theme.text-primary;
+                        font-family: root.theme.typography.family;
+                        font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
                     }
 
-                    VerticalLayout {
-                        spacing: root.theme.spacing.unit / 2;
+                    KbTextField {
+                        label: @tr("名称");
+                        text <=> root.name-text;
+                        commit-seq: KeyboardCtx.commit-seq;
+                        commit-text: KeyboardCtx.commit-text;
+                        delete-field: KeyboardCtx.delete-field;
+                        focus-changed(f) => {
+                            root.field-focused(f, self.absolute-position.y + self.height);
+                        }
+                    }
+
+                    KbTextField {
+                        label: @tr("用户名");
+                        supporting-text: @tr("留空使用默认 admin");
+                        text <=> root.user-text;
+                        commit-seq: KeyboardCtx.commit-seq;
+                        commit-text: KeyboardCtx.commit-text;
+                        delete-field: KeyboardCtx.delete-field;
+                        focus-changed(f) => {
+                            root.field-focused(f, self.absolute-position.y + self.height);
+                        }
+                    }
+
+                    KbTextField {
+                        label: @tr("密码");
+                        supporting-text: @tr("留空使用默认 123456");
+                        input-type: password;
+                        text <=> root.pass-text;
+                        commit-seq: KeyboardCtx.commit-seq;
+                        commit-text: KeyboardCtx.commit-text;
+                        delete-field: KeyboardCtx.delete-field;
+                        focus-changed(f) => {
+                            root.field-focused(f, self.absolute-position.y + self.height);
+                        }
+                    }
+
+                    if root.camera-busy: Text {
+                        text: @tr("正在读取设备配置 ...");
+                        color: root.theme.text-secondary;
+                        font-family: root.theme.typography.family;
+                        font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
+                    }
+                }
+
+                // 步骤 2: 选 profile 保存
+                if root.step == 2: VerticalLayout {
+                    spacing: root.theme.spacing.unit * 2;
+                    if root.camera-profiles.length == 0: Text {
+                        text: root.camera-busy ? @tr("正在读取设备配置 ...") : @tr("未读到媒体配置, 请检查账号密码");
+                        color: root.theme.text-secondary;
+                        font-family: root.theme.typography.family;
+                        font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
+                    }
+
+                    for prof in root.camera-profiles: KitPressable {
+                        width: 100%;
+                        intent: ButtonIntent.quiet;
+                        control-width: ControlWidth.fill;
+                        modal-layer: root.modal-layer;
+                        accessible-name: prof.label;
+                        activated => {
+                            root.save-discovered-camera(root.sel-xaddr, root.sel-name, root.sel-user, root.sel-pass, prof.token);
+                        }
+
                         Text {
-                            text: dev.label;
+                            text: prof.label;
                             color: root.theme.text-primary;
                             font-family: root.theme.typography.family;
                             font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
                             overflow: elide;
                         }
-                        Text {
-                            text: dev.xaddr;
-                            color: root.theme.text-secondary;
-                            font-family: root.theme.typography.family;
-                            font-size: KitMetrics.font-size(root.theme, TypographyRole.caption);
-                            overflow: elide;
-                        }
                     }
                 }
             }
         }
-
-        HorizontalLayout {
-            vertical-stretch: 0;
-            spacing: root.theme.spacing.unit * 3;
-            alignment: end;
-            KitButton {
-                text: @tr("重新搜索");
-                intent: ButtonIntent.outline;
-                activated => { root.search-cameras(); }
-            }
-        }
     }
 
-    // 步骤 1: 凭据
-    if root.step == 1: VerticalLayout {
-        spacing: root.theme.spacing.unit * 3;
-        vertical-stretch: 1;
-        Text {
-            text: root.sel-label;
-            color: root.theme.text-primary;
-            font-family: root.theme.typography.family;
-            font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
-        }
-
-        name-input := KbTextField {
-            label: @tr("名称");
-            text <=> root.name-text;
-            commit-seq: KeyboardCtx.commit-seq;
-            commit-text: KeyboardCtx.commit-text;
-            delete-field: KeyboardCtx.delete-field;
-        }
-
-        user-input := KbTextField {
-            label: @tr("用户名");
-            supporting-text: @tr("留空使用默认 admin");
-            text <=> root.user-text;
-            commit-seq: KeyboardCtx.commit-seq;
-            commit-text: KeyboardCtx.commit-text;
-            delete-field: KeyboardCtx.delete-field;
-        }
-
-        pass-input := KbTextField {
-            label: @tr("密码");
-            supporting-text: @tr("留空使用默认 123456");
-            input-type: password;
-            text <=> root.pass-text;
-            commit-seq: KeyboardCtx.commit-seq;
-            commit-text: KeyboardCtx.commit-text;
-            delete-field: KeyboardCtx.delete-field;
-        }
-
-        if root.camera-busy: Text {
-            text: @tr("正在读取设备配置 ...");
-            color: root.theme.text-secondary;
-            font-family: root.theme.typography.family;
-            font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
-        }
-
-        Rectangle { vertical-stretch: 1; } // 顶开, 按钮沉底
-
-        HorizontalLayout {
-            vertical-stretch: 0;
-            spacing: root.theme.spacing.unit * 3;
-            alignment: end;
-            KitButton {
-                text: @tr("上一步");
-                intent: ButtonIntent.outline;
-                activated => { root.step = 0; }
-            }
-
-            KitButton {
-                text: @tr("获取配置");
-                disabled: name-input.text == "";
-                activated => {
-                    root.sel-name = name-input.text;
-                    root.sel-user = user-input.text;
-                    root.sel-pass = pass-input.text;
-                    root.fetch-camera-profiles(root.sel-xaddr, root.sel-user, root.sel-pass);
-                    root.step = 2;
-                }
-            }
-        }
-    }
-
-    // 步骤 2: 选 profile 保存
-    if root.step == 2: VerticalLayout {
-        spacing: root.theme.spacing.unit * 2;
-        vertical-stretch: 1;
-        if root.camera-profiles.length == 0: Text {
-            text: root.camera-busy ? @tr("正在读取设备配置 ...") : @tr("未读到媒体配置, 请检查账号密码");
-            color: root.theme.text-secondary;
-            font-family: root.theme.typography.family;
-            font-size: KitMetrics.font-size(root.theme, TypographyRole.body);
-        }
-
-        for prof in root.camera-profiles: KitPressable {
-            width: 100%;
-            intent: ButtonIntent.quiet;
-            control-width: ControlWidth.fill;
-            accessible-name: prof.label;
-            activated => {
-                root.save-discovered-camera(root.sel-xaddr, root.sel-name, root.sel-user, root.sel-pass, prof.token);
-            }
-
-            Text {
-                text: prof.label;
-                color: root.theme.text-primary;
-                font-family: root.theme.typography.family;
-                font-size: KitMetrics.font-size(root.theme, TypographyRole.control);
-                overflow: elide;
-            }
-        }
-
-        Rectangle { vertical-stretch: 1; } // 顶开, 按钮沉底
-
-        HorizontalLayout {
-            vertical-stretch: 0;
-            spacing: root.theme.spacing.unit * 3;
-            alignment: end;
-            KitButton {
-                text: @tr("上一步");
-                intent: ButtonIntent.outline;
-                activated => { root.step = 1; }
-            }
-        }
-    }
-
-    KitDivider { }
-
-    HorizontalLayout {
-        alignment: end;
-        KitButton {
-            text: @tr("取消");
-            intent: ButtonIntent.quiet;
-            activated => { root.cancelled(); }
-        }
+    CameraDialogFooter {
+        width: 100%;
+        actions: root.actions;
+        modal-layer: root.modal-layer;
+        action-activated(token) => { root.action-activated(token); }
     }
 }

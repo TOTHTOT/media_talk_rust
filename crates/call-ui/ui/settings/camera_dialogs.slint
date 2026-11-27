@@ -1,8 +1,8 @@
-// 设置页摄像头对话框壳: Kit 窗口内模态表面 + 开关状态.
-// 内容组件在 search_camera_dialog / manual_camera_dialog.
-// 用 in-window KitDialogSurface 而不是原生窗口, 屏幕键盘才能盖住输入框.
-import { KitDialogPanel, KitDialogSurface } from "@kit";
+// 设置页摄像头对话框: KitDialog 业务壳 + 两个模式的内容组件.
+// 标题/关闭/滚动/footer 交给 KitDialog; 本组件只保留业务状态和动作路由.
+import { ButtonIntent, DialogAction, DialogSize, KitDialog } from "@kit";
 import { DiscoveredEntry, ProfileEntry } from "../components.slint";
+import { KeyboardCtx } from "../kb_text_field.slint";
 import { SearchCameraDialog } from "search_camera_dialog.slint";
 import { ManualCameraDialog } from "manual_camera_dialog.slint";
 
@@ -14,9 +14,12 @@ export component CameraDialogs inherits Rectangle {
     callback fetch-camera-profiles(string, string, string);
     callback save-discovered-camera(string, string, string, string, string);
     callback add-camera(string, string, string, string);
+    // 关闭后把焦点还给打开它的按钮 (1=搜索添加, 2=手动添加)
+    callback closed(int);
 
     // 对话框: 0=无 1=搜索添加 2=手动添加
     property <int> mode: 0;
+    property <int> last-mode: 0;
     // 搜索向导状态放壳里, 子组件双向绑定读写 (条件块内 id 跨块不可见)
     property <int> search-step: 0;
     property <string> sel-xaddr: "";
@@ -24,63 +27,151 @@ export component CameraDialogs inherits Rectangle {
     property <string> sel-name: "";
     property <string> sel-user: "";
     property <string> sel-pass: "";
+    // 搜索步骤 1 的输入草稿 (footer 的"获取配置"在壳里, 需要读这些值)
+    property <string> search-name: "";
+    property <string> search-user: "";
+    property <string> search-pass: "";
+    // 手动添加的输入草稿 (footer 的"保存"在壳里, 需要读这些值)
+    property <string> manual-name: "";
+    property <string> manual-uri: "";
+    property <string> manual-user: "";
+    property <string> manual-pass: "";
+
+    // 动作 token: 0=取消 1=保存 10=重新搜索 11=上一步 12=获取配置
+    property <[DialogAction]> search-actions:
+        root.search-step == 0 ? [
+        {
+            token: 10,
+            text: @tr("重新搜索"),
+            intent: ButtonIntent.outline,
+            disabled: root.camera-busy
+        },
+        { token: 0, text: @tr("取消"), intent: ButtonIntent.quiet, disabled: false },
+    ] : root.search-step == 1 ? [
+        { token: 11, text: @tr("上一步"), intent: ButtonIntent.outline, disabled: false },
+        { token: 0, text: @tr("取消"), intent: ButtonIntent.quiet, disabled: false },
+        {
+            token: 12,
+            text: @tr("获取配置"),
+            intent: ButtonIntent.primary,
+            disabled: root.search-name == "" || root.camera-busy
+        },
+    ] : [
+        { token: 11, text: @tr("上一步"), intent: ButtonIntent.outline, disabled: false },
+        { token: 0, text: @tr("取消"), intent: ButtonIntent.quiet, disabled: false },
+    ];
+    property <[DialogAction]> manual-actions: [
+        { token: 0, text: @tr("取消"), intent: ButtonIntent.outline, disabled: false },
+        {
+            token: 1,
+            text: @tr("保存"),
+            intent: ButtonIntent.primary,
+            disabled: root.manual-name == "" || root.manual-uri == ""
+        },
+    ];
 
     public function open-search() {
-        root.search-step = 0;
+        root.last-mode = 1;
         root.mode = 1;
+        root.search-step = 0;
+        root.sel-xaddr = "";
+        root.sel-label = "";
+        root.sel-name = "";
+        root.sel-user = "";
+        root.sel-pass = "";
+        root.search-name = "";
+        root.search-user = "";
+        root.search-pass = "";
     }
 
     public function open-manual() {
+        root.last-mode = 2;
         root.mode = 2;
+        root.manual-name = "";
+        root.manual-uri = "";
+        root.manual-user = "";
+        root.manual-pass = "";
+    }
+
+    // 弹窗字段的抬升量: bottom 是窗口坐标; 加回当前 offset 还原未抬位置,
+    // 再算字段底部与键盘顶边的重叠距离. 只抬需要的量, 不整段 45% 跳.
+    function update-lift(f: bool, bottom: length) {
+        if f {
+            let unlifted-bottom = bottom + KeyboardCtx.lift-offset;
+            let overlap = unlifted-bottom + 24px - KeyboardCtx.keyboard-top;
+            KeyboardCtx.lift-offset = min(max(0px, overlap), KeyboardCtx.lift-max);
+        }
+    }
+
+    function act(token: int) {
+        if (token == 0) {
+            root.mode = 0;
+        } else if (root.mode == 2) {
+            if (token == 1) {
+                root.add-camera(root.manual-name, root.manual-uri, root.manual-user, root.manual-pass);
+                root.mode = 0;
+            }
+        } else if (token == 10) {
+            root.search-cameras();
+        } else if (token == 11) {
+            root.search-step = root.search-step == 2 ? 1 : 0;
+        } else if (token == 12) {
+            root.sel-name = root.search-name;
+            root.sel-user = root.search-user;
+            root.sel-pass = root.search-pass;
+            root.fetch-camera-profiles(root.sel-xaddr, root.sel-user, root.sel-pass);
+            root.search-step = 2;
+        }
     }
 
     width: 100%;
     height: 100%;
 
-    dialog := KitDialogSurface {
+    dialog := KitDialog {
+        width: 100%;
+        height: 100%;
         state: {
             open: root.mode != 0,
             topmost: true,
             busy: false,
         };
         modal-layer: 1;
+        title: root.mode == 2 ? @tr("手动添加摄像头") : @tr("搜索添加摄像头");
+        close-label: @tr("关闭");
+        // footer 由 body 内的 CameraDialogFooter 渲染, 以便动作按钮等宽.
         dismiss(reason) => { root.mode = 0; }
+        restore-focus => { root.closed(root.last-mode); }
 
-        KitDialogPanel {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 560px;
-            height: 480px;
-            accessible-name: root.mode == 1 ? @tr("搜索添加摄像头") : @tr("手动添加摄像头");
-
-            if root.mode == 1: SearchCameraDialog {
-                camera-busy: root.camera-busy;
-                discovered-devices: root.discovered-devices;
-                camera-profiles: root.camera-profiles;
-                step <=> root.search-step;
-                sel-xaddr <=> root.sel-xaddr;
-                sel-label <=> root.sel-label;
-                sel-name <=> root.sel-name;
-                sel-user <=> root.sel-user;
-                sel-pass <=> root.sel-pass;
-                search-cameras => { root.search-cameras(); }
-                fetch-camera-profiles(xaddr, user, pass) => {
-                    root.fetch-camera-profiles(xaddr, user, pass);
-                }
-                save-discovered-camera(xaddr, name, user, pass, token) => {
-                    root.save-discovered-camera(xaddr, name, user, pass, token);
-                    root.mode = 0;
-                }
-                cancelled => { root.mode = 0; }
+        if root.mode == 1: SearchCameraDialog {
+            actions: root.search-actions;
+            action-activated(token) => { root.act(token); }
+            field-focused(f, bottom) => { root.update-lift(f, bottom); }
+            camera-busy: root.camera-busy;
+            discovered-devices: root.discovered-devices;
+            camera-profiles: root.camera-profiles;
+            step <=> root.search-step;
+            sel-xaddr <=> root.sel-xaddr;
+            sel-label <=> root.sel-label;
+            sel-name <=> root.sel-name;
+            sel-user <=> root.sel-user;
+            sel-pass <=> root.sel-pass;
+            name-text <=> root.search-name;
+            user-text <=> root.search-user;
+            pass-text <=> root.search-pass;
+            save-discovered-camera(xaddr, name, user, pass, token) => {
+                root.save-discovered-camera(xaddr, name, user, pass, token);
+                root.mode = 0;
             }
+        }
 
-            if root.mode == 2: ManualCameraDialog {
-                add-camera(name, uri, user, pass) => {
-                    root.add-camera(name, uri, user, pass);
-                    root.mode = 0;
-                }
-                cancelled => { root.mode = 0; }
-            }
+        if root.mode == 2: ManualCameraDialog {
+            actions: root.manual-actions;
+            action-activated(token) => { root.act(token); }
+            field-focused(f, bottom) => { root.update-lift(f, bottom); }
+            name-text <=> root.manual-name;
+            uri-text <=> root.manual-uri;
+            user-text <=> root.manual-user;
+            pass-text <=> root.manual-pass;
         }
     }
 }

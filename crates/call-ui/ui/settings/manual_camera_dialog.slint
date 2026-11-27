@@ -1,76 +1,92 @@
-// 手动添加摄像头对话框内容, 可在 slint 预览器直接查看
-import {
-    ButtonIntent,
-    KitButton,
-    KitMetrics,
-    KitThemeContext,
-    TypographyRole,
-} from "@kit";
+// 手动添加摄像头 body: 标题/关闭由 KitDialog 提供, footer 用 CameraDialogFooter 等宽.
+import { DialogAction, KitScrollArea, KitThemeContext } from "@kit";
 import { KbTextField, KeyboardCtx } from "../kb_text_field.slint";
+import { CameraDialogFooter } from "camera_dialog_footer.slint";
 
 export component ManualCameraDialog inherits VerticalLayout {
-    callback add-camera(string, string, string, string);
-    callback cancelled();
+    in-out property <string> name-text: "";
+    in-out property <string> uri-text: "";
+    in-out property <string> user-text: "";
+    in-out property <string> pass-text: "";
+    in property <[DialogAction]> actions;
+    in property <int> modal-layer: 1;
+    callback action-activated(int);
+    // 字段焦点 + 字段底部绝对 y, 由弹窗壳换算是否需要抬升
+    callback field-focused(bool, length);
 
-    padding: KitThemeContext.current.spacing.unit * 6;
     spacing: KitThemeContext.current.spacing.unit * 3;
 
-    Text {
-        text: @tr("手动添加摄像头");
-        color: KitThemeContext.current.text-primary;
-        font-family: KitThemeContext.current.typography.family;
-        font-size: KitMetrics.font-size(KitThemeContext.current, TypographyRole.subtitle);
-        font-weight: KitThemeContext.current.typography.weight-semibold;
-    }
+    // 固定高度滚动区: 屏幕键盘弹起时仍能滚到后面的字段, footer 不被顶走.
+    // FocusScope(focus-on-click) 让点空白接管焦点, 输入框失焦并收起键盘.
+    body-focus := FocusScope {
+        width: 100%;
+        height: 260px;
+        focus-on-click: true;
+        focus-on-tab-navigation: false;
 
-    m-name := KbTextField {
-        label: @tr("名称");
-        commit-seq: KeyboardCtx.commit-seq;
-        commit-text: KeyboardCtx.commit-text;
-        delete-field: KeyboardCtx.delete-field;
-    }
+        KitScrollArea {
+            width: 100%;
+            height: 100%;
+            // 非 overlay: 滚动条占独立 gutter, 不会压在输入框上.
+            overlay-scrollbars: false;
 
-    m-uri := KbTextField {
-        label: "RTSP URL";
-        commit-seq: KeyboardCtx.commit-seq;
-        commit-text: KeyboardCtx.commit-text;
-        delete-field: KeyboardCtx.delete-field;
-    }
+            VerticalLayout {
+                spacing: KitThemeContext.current.spacing.unit * 3;
 
-    m-user := KbTextField {
-        label: @tr("用户名");
-        supporting-text: @tr("留空使用默认 admin");
-        commit-seq: KeyboardCtx.commit-seq;
-        commit-text: KeyboardCtx.commit-text;
-        delete-field: KeyboardCtx.delete-field;
-    }
+                KbTextField {
+                    label: @tr("名称");
+                    text <=> root.name-text;
+                    commit-seq: KeyboardCtx.commit-seq;
+                    commit-text: KeyboardCtx.commit-text;
+                    delete-field: KeyboardCtx.delete-field;
+                    focus-changed(f) => {
+                        root.field-focused(f, self.absolute-position.y + self.height);
+                    }
+                }
 
-    m-pass := KbTextField {
-        label: @tr("密码");
-        supporting-text: @tr("留空使用默认 123456");
-        input-type: password;
-        commit-seq: KeyboardCtx.commit-seq;
-        commit-text: KeyboardCtx.commit-text;
-        delete-field: KeyboardCtx.delete-field;
-    }
+                KbTextField {
+                    label: "RTSP URL";
+                    text <=> root.uri-text;
+                    commit-seq: KeyboardCtx.commit-seq;
+                    commit-text: KeyboardCtx.commit-text;
+                    delete-field: KeyboardCtx.delete-field;
+                    focus-changed(f) => {
+                        root.field-focused(f, self.absolute-position.y + self.height);
+                    }
+                }
 
-    Rectangle { vertical-stretch: 1; }
+                KbTextField {
+                    label: @tr("用户名");
+                    supporting-text: @tr("留空使用默认 admin");
+                    text <=> root.user-text;
+                    commit-seq: KeyboardCtx.commit-seq;
+                    commit-text: KeyboardCtx.commit-text;
+                    delete-field: KeyboardCtx.delete-field;
+                    focus-changed(f) => {
+                        root.field-focused(f, self.absolute-position.y + self.height);
+                    }
+                }
 
-    HorizontalLayout {
-        spacing: KitThemeContext.current.spacing.unit * 3;
-        alignment: end;
-        KitButton {
-            text: @tr("取消");
-            intent: ButtonIntent.outline;
-            activated => { root.cancelled(); }
-        }
-
-        KitButton {
-            text: @tr("保存");
-            disabled: m-name.text == "" || m-uri.text == "";
-            activated => {
-                root.add-camera(m-name.text, m-uri.text, m-user.text, m-pass.text);
+                KbTextField {
+                    label: @tr("密码");
+                    supporting-text: @tr("留空使用默认 123456");
+                    input-type: password;
+                    text <=> root.pass-text;
+                    commit-seq: KeyboardCtx.commit-seq;
+                    commit-text: KeyboardCtx.commit-text;
+                    delete-field: KeyboardCtx.delete-field;
+                    focus-changed(f) => {
+                        root.field-focused(f, self.absolute-position.y + self.height);
+                    }
+                }
             }
         }
+    }
+
+    CameraDialogFooter {
+        width: 100%;
+        actions: root.actions;
+        modal-layer: root.modal-layer;
+        action-activated(token) => { root.action-activated(token); }
     }
 }

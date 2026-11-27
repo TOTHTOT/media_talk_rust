@@ -20,8 +20,9 @@ export component CamerasCard inherits KitCard {
     callback search-clicked();
     callback manual-clicked();
 
-    inset: LayoutSpace.roomy;
-    gap: LayoutSpace.regular;
+    // 对话框关闭后把焦点还给打开它的按钮
+    public function focus-search() { search-button.take-focus(); }
+    public function focus-manual() { manual-button.take-focus(); }
 
     KitCardHeader {
         title: @tr("摄像头");
@@ -72,13 +73,13 @@ export component CamerasCard inherits KitCard {
             spacing: root.theme.spacing.unit * 3;
             alignment: start;
 
-            IconTextButton {
+            search-button := IconTextButton {
                 icon: LucideIcons.search();
                 text: @tr("搜索添加");
                 activated => { root.search-clicked(); }
             }
 
-            IconTextButton {
+            manual-button := IconTextButton {
                 icon: LucideIcons.plus();
                 text: @tr("手动添加");
                 activated => { root.manual-clicked(); }
