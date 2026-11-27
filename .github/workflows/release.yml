@@ -137,12 +137,18 @@ jobs:
         shell: pwsh
         run: scripts/verify-windows-installer.ps1 -SetupPath "dist/media_talk_rust-${{ needs.version.outputs.version }}-windows-x86_64-setup.exe"
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v4
         with:
-          name: media_talk_rust-${{ needs.version.outputs.version }}-windows-x86_64
-          path: |
-            dist/*.zip
-            dist/*-setup.exe
+          name: media_talk_rust-${{ needs.version.outputs.version }}-windows-x86_64-portable
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: media_talk_rust-${{ needs.version.outputs.version }}-windows-x86_64-setup
+          path: dist/*-setup.exe
           if-no-files-found: error
 
   release:
