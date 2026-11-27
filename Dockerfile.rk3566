@@ -19,11 +19,13 @@ RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirrors.tuna.tsinghua.
     curl \
     fonts-wqy-zenhei \
     git \
+    gstreamer1.0-alsa \
     gstreamer1.0-libav \
     gstreamer1.0-nice \
     gstreamer1.0-plugins-bad \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-ugly \
     libasound2-dev \
     libevdev-dev \
     libfontconfig-dev \

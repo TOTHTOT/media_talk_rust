@@ -31,10 +31,16 @@ GST_PLUGIN_DIR="$LIBDIR/gstreamer-1.0"
 #   avdec_*→libav, appsink→app, webrtcsink→webrtc(+dtls/srtp/sctp), nicesrc/sink→nice,
 #   alsasink→alsa, audioconvert/audioresample→同名, opusenc→opus,
 #   videoconvert/videoscale→1.16 是两个插件, 1.20+ 合并为 videoconvertscale, 全列靠存在性过滤
-PLUGINS="coreelements app alsa audioconvert audioresample opus \
+PLUGINS="coreelements app autodetect alsa audioconvert audioresample opus \
     videoconvert videoscale videoconvertscale \
     rtsp rtp rtpmanager udp tcp audioparsers \
-    videoparsersbad webrtc dtls srtp sctp nice libav"
+    videoparsersbad webrtc dtls srtp sctp nice libav \
+    alaw mulaw mpegtsmux playback typefindfunctions isomp4 x264 video4linux2"
+# 关键元件缺失时直接失败, 不能打出 "CI 成功但无法采集/通话" 的残缺包
+REQUIRED_PLUGINS="coreelements app autodetect alsa audioconvert audioresample opus \
+    rtsp rtp rtpmanager udp tcp audioparsers \
+    videoparsersbad webrtc dtls srtp sctp nice libav \
+    alaw mulaw mpegtsmux playback typefindfunctions isomp4 x264 video4linux2"
 
 # ---- ldd 闭包收集 -----------------------------------------------------------
 # 板子系统自带的库不打包 (glibc 内核族 + nss 动态装载器族)
@@ -81,6 +87,18 @@ for p in $PLUGINS; do
     fi
 done
 echo "plugins bundled:$found"
+for p in $REQUIRED_PLUGINS; do
+    case " $found " in
+        *" $p "*) ;;
+        *) echo "required GStreamer plugin missing: $p" >&2; exit 1 ;;
+    esac
+done
+if [[ " $found " != *" videoconvert "* && \
+      " $found " != *" videoscale "* && \
+      " $found " != *" videoconvertscale "* ]]; then
+    echo "required GStreamer plugin missing: videoconvert/videoscale/videoconvertscale" >&2
+    exit 1
+fi
 
 # gst-plugin-scanner: Debian multiarch 目录会多一层 gstreamer-1.0,
 # 其他发行版常在 libexec; 按实际文件查找, 避免绑定某个发行版路径

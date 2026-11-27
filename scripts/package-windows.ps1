@@ -24,12 +24,21 @@ $dst = "dist\media_talk_rust-$Version-windows-x86_64"
 if (-not (Test-Path $exe)) { throw "找不到 $exe, 先 cargo build --release" }
 if (-not (Test-Path $gstBin)) { throw "找不到 $gstBin, 先装 GStreamer MSVC 包" }
 
-# 与 scripts/package-rk3566.sh 保持同一份名单 (见该文件注释)
+# 公共插件与 scripts/package-rk3566.sh 一致, 另加 Windows 采集/输出插件
 $plugins = @(
-    "coreelements", "app", "audioconvert", "audioresample", "opus",
+    "coreelements", "app", "autodetect", "audioconvert", "audioresample", "opus",
     "videoconvert", "videoscale", "videoconvertscale",
     "rtsp", "rtp", "rtpmanager", "udp", "tcp", "audioparsers",
-    "videoparsersbad", "webrtc", "dtls", "srtp", "sctp", "nice", "libav"
+    "videoparsersbad", "webrtc", "dtls", "srtp", "sctp", "nice", "libav",
+    "alaw", "mulaw", "mpegtsmux", "playback", "typefindfunctions", "isomp4", "x264",
+    "winks", "wasapi", "wasapi2", "directsound", "d3d11"
+)
+$required = @(
+    "coreelements", "app", "autodetect", "audioconvert", "audioresample", "opus",
+    "rtsp", "rtp", "rtpmanager", "udp", "tcp", "audioparsers",
+    "videoparsersbad", "webrtc", "dtls", "srtp", "sctp", "nice", "libav",
+    "alaw", "mulaw", "mpegtsmux", "playback", "typefindfunctions", "isomp4", "x264",
+    "winks", "wasapi", "directsound", "d3d11"
 )
 
 Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
@@ -56,6 +65,11 @@ foreach ($p in $plugins) {
     }
 }
 Write-Host "plugins bundled: $($copied -join ' ')"
+$missing = @($required | Where-Object { $copied -notcontains $_ })
+if ($missing.Count) { throw "关键 GStreamer 插件缺失: $($missing -join ' ')" }
+if (-not ($copied | Where-Object { $_ -in @("videoconvert", "videoscale", "videoconvertscale") })) {
+    throw "关键 GStreamer 插件缺失: videoconvert/videoscale/videoconvertscale"
+}
 
 # 启动包装: 插件目录相对包定位, 客户机不用设任何环境变量
 @"
