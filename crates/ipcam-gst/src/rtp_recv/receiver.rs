@@ -610,16 +610,57 @@ fn build_audio_track(
     codec: AudioCodec,
     stats: Arc<crate::PktStats>,
 ) -> Result<gst::Pad, GstStreamError> {
-    let (depay_name, decode_name) = match codec {
-        AudioCodec::G711A => ("rtppcmadepay", "alawdec"),
-        AudioCodec::G711U => ("rtppcmudepay", "mulawdec"),
-        other => {
-            return Err(GstStreamError::InvalidConfig(format!(
-                "unsupported audio codec for receive: {other:?}"
-            )));
+    let names = audio_codec_names(codec)?;
+    let head = build_audio_head(socket, port, codec, &names, stats)?;
+    match (mux, playback) {
+        (Some(mux), false) => link_audio_record_only(pipeline, &head, mux)?,
+        (None, true) => link_audio_play_only(pipeline, &head)?,
+        (Some(mux), true) => link_audio_tee(pipeline, &head, mux)?,
+        (None, false) => {
+            return Err(GstStreamError::InvalidConfig(
+                "audio track with neither record nor playback".into(),
+            ));
         }
-    };
+    }
+    info!(port, codec = ?codec, record = mux.is_some(), playback, "audio receive track linked");
+    Ok(head.src_pad)
+}
 
+struct AudioCodecNames {
+    depay: &'static str,
+    decode: &'static str,
+}
+
+fn audio_codec_names(codec: AudioCodec) -> Result<AudioCodecNames, GstStreamError> {
+    match codec {
+        AudioCodec::G711A => Ok(AudioCodecNames {
+            depay: "rtppcmadepay",
+            decode: "alawdec",
+        }),
+        AudioCodec::G711U => Ok(AudioCodecNames {
+            depay: "rtppcmudepay",
+            decode: "mulawdec",
+        }),
+        other => Err(GstStreamError::InvalidConfig(format!(
+            "unsupported audio codec for receive: {other:?}"
+        ))),
+    }
+}
+
+struct AudioHead {
+    udpsrc: gst::Element,
+    depay: gst::Element,
+    decode: gst::Element,
+    src_pad: gst::Pad,
+}
+
+fn build_audio_head(
+    socket: Option<&crate::SharedUdpSocket>,
+    port: u16,
+    codec: AudioCodec,
+    names: &AudioCodecNames,
+    stats: Arc<crate::PktStats>,
+) -> Result<AudioHead, GstStreamError> {
     let udpsrc = make("udpsrc")?;
     // 静态 pt (PCMU=0/PCMA=8) 和编码名取自 AudioCodec 的协议映射
     let caps = gst::Caps::builder_full()
@@ -635,88 +676,111 @@ fn build_audio_track(
     udpsrc.set_property("caps", &caps);
     apply_shared_socket(&udpsrc, socket, port);
 
-    let depay = make(depay_name)?;
-    let decode = make(decode_name)?;
-
+    let depay = make(names.depay)?;
+    let decode = make(names.decode)?;
     // 同视频路: probe 装在 udpsrc src pad, 避开 depay 的合包
-    let stats_for_probe = stats.clone();
-    if let Some(src_pad) = udpsrc.static_pad("src") {
-        src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
-            stats_for_probe.audio_pkts.fetch_add(1, Ordering::Relaxed);
-            gst::PadProbeReturn::Ok
-        });
-    }
+    let src_pad = static_pad(&udpsrc, "src")?;
+    src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
+        stats.audio_pkts.fetch_add(1, Ordering::Relaxed);
+        gst::PadProbeReturn::Ok
+    });
+    Ok(AudioHead {
+        udpsrc,
+        depay,
+        decode,
+        src_pad,
+    })
+}
 
-    match (mux, playback) {
-        (Some(mux), false) => {
-            let convert = make("audioconvert")?;
-            let resample = make("audioresample")?;
-            let enc = make("opusenc")?;
-            // 同视频路: mux 前必须有 queue 解耦
-            let queue = make("queue")?;
-            let elems = [&udpsrc, &depay, &decode, &convert, &resample, &enc, &queue];
-            add_and_sync(pipeline, &elems)?;
-            link_chain(&elems, "audio recv chain")?;
-            link_mux(&queue, mux, "sink_%d")?;
-        }
-        (None, true) => {
-            let convert = make("audioconvert")?;
-            let resample = make("audioresample")?;
-            let sink = make("autoaudiosink")?;
-            disable_sink_async(&sink);
-            let elems = [&udpsrc, &depay, &decode, &convert, &resample, &sink];
-            add_and_sync(pipeline, &elems)?;
-            link_chain(&elems, "audio play chain")?;
-        }
-        (Some(mux), true) => {
-            let tee = make("tee")?;
-            // 同视频路: tee 分支必须 leaky queue, 一路停滞不拖垮另一路
-            let play_queue = leaky_queue()?;
-            let play_convert = make("audioconvert")?;
-            let play_resample = make("audioresample")?;
-            let sink = make("autoaudiosink")?;
-            disable_sink_async(&sink);
-            let rec_convert = make("audioconvert")?;
-            let rec_resample = make("audioresample")?;
-            let enc = make("opusenc")?;
-            let rec_queue = leaky_queue()?;
-            let elems = [
-                &udpsrc,
-                &depay,
-                &decode,
-                &tee,
-                &play_queue,
-                &play_convert,
-                &play_resample,
-                &sink,
-                &rec_convert,
-                &rec_resample,
-                &enc,
-                &rec_queue,
-            ];
-            add_and_sync(pipeline, &elems)?;
-            link_chain(&[&udpsrc, &depay, &decode, &tee], "audio recv head")?;
-            link_chain(
-                &[&play_queue, &play_convert, &play_resample, &sink],
-                "audio play branch",
-            )?;
-            link_chain(
-                &[&rec_convert, &rec_resample, &enc, &rec_queue],
-                "audio record branch",
-            )?;
-            link_tee_branch(&tee, &play_queue)?;
-            link_tee_branch(&tee, &rec_convert)?;
-            link_mux(&rec_queue, mux, "sink_%d")?;
-        }
-        (None, false) => {
-            return Err(GstStreamError::InvalidConfig(
-                "audio track with neither record nor playback".into(),
-            ));
-        }
-    }
+/// 只存盘: audio 头 → convert/resample/opusenc → queue → mpegtsmux.
+fn link_audio_record_only(
+    pipeline: &gst::Pipeline,
+    head: &AudioHead,
+    mux: &gst::Element,
+) -> Result<(), GstStreamError> {
+    let convert = make("audioconvert")?;
+    let resample = make("audioresample")?;
+    let enc = make("opusenc")?;
+    // 同视频路: mux 前必须有 queue 解耦
+    let queue = make("queue")?;
+    let elems = [
+        &head.udpsrc,
+        &head.depay,
+        &head.decode,
+        &convert,
+        &resample,
+        &enc,
+        &queue,
+    ];
+    add_and_sync(pipeline, &elems)?;
+    link_chain(&elems, "audio recv chain")?;
+    link_mux(&queue, mux, "sink_%d")
+}
 
-    info!(port, codec = ?codec, record = mux.is_some(), playback, "audio receive track linked");
-    static_pad(&udpsrc, "src")
+fn link_audio_play_only(pipeline: &gst::Pipeline, head: &AudioHead) -> Result<(), GstStreamError> {
+    let convert = make("audioconvert")?;
+    let resample = make("audioresample")?;
+    let sink = make("autoaudiosink")?;
+    disable_sink_async(&sink);
+    let elems = [
+        &head.udpsrc,
+        &head.depay,
+        &head.decode,
+        &convert,
+        &resample,
+        &sink,
+    ];
+    add_and_sync(pipeline, &elems)?;
+    link_chain(&elems, "audio play chain")
+}
+
+/// 存盘 + 播放: tee 分叉, 两路都用 leaky queue 防互相反压.
+fn link_audio_tee(
+    pipeline: &gst::Pipeline,
+    head: &AudioHead,
+    mux: &gst::Element,
+) -> Result<(), GstStreamError> {
+    let tee = make("tee")?;
+    // 同视频路: tee 分支必须 leaky queue, 一路停滞不拖垮另一路
+    let play_queue = leaky_queue()?;
+    let play_convert = make("audioconvert")?;
+    let play_resample = make("audioresample")?;
+    let sink = make("autoaudiosink")?;
+    disable_sink_async(&sink);
+    let rec_convert = make("audioconvert")?;
+    let rec_resample = make("audioresample")?;
+    let enc = make("opusenc")?;
+    let rec_queue = leaky_queue()?;
+    let elems = [
+        &head.udpsrc,
+        &head.depay,
+        &head.decode,
+        &tee,
+        &play_queue,
+        &play_convert,
+        &play_resample,
+        &sink,
+        &rec_convert,
+        &rec_resample,
+        &enc,
+        &rec_queue,
+    ];
+    add_and_sync(pipeline, &elems)?;
+    link_chain(
+        &[&head.udpsrc, &head.depay, &head.decode, &tee],
+        "audio recv head",
+    )?;
+    link_chain(
+        &[&play_queue, &play_convert, &play_resample, &sink],
+        "audio play branch",
+    )?;
+    link_chain(
+        &[&rec_convert, &rec_resample, &enc, &rec_queue],
+        "audio record branch",
+    )?;
+    link_tee_branch(&tee, &play_queue)?;
+    link_tee_branch(&tee, &rec_convert)?;
+    link_mux(&rec_queue, mux, "sink_%d")
 }
 
 #[cfg(test)]
