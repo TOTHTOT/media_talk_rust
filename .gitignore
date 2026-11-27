@@ -1,5 +1,6 @@
 /target
 /target/**
+/.worktrees/
 /dist/
 /.idea
 /Cargo.lock.bak
