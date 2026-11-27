@@ -331,9 +331,6 @@ export component MainWindow inherits Window {
     // 元素消费, 只有点空白处才落到这里 — 方案 D 语义: 置收起闩并抢焦点,
     // 不直接写显隐 (显隐 = text-input-focused && !collapsed) =====
     TouchArea {
-        width: 100%;
-        height: 100%;
-
         clicked => {
             if TextInputInterface.text-input-focused && !KeyboardCtx.collapsed {
                 KeyboardCtx.collapsed = true;
@@ -557,14 +554,10 @@ export component MainWindow inherits Window {
     // ===== 熄屏遮罩: 最顶层, 拦截业务点击; 任意触摸唤醒屏幕 =====
     // 背光/DPMS 关闭后界面仍在运行, 此遮罩负责吞掉熄屏期间的误触
     if root.screen-off: Rectangle {
-        width: 100%;
-        height: 100%;
         z: 10;
         background: #000000;
 
         TouchArea {
-            width: 100%;
-            height: 100%;
             clicked => { root.screen-wake(); }
         }
     }
