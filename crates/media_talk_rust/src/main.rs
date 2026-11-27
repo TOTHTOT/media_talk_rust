@@ -2,6 +2,8 @@ use clap::{Parser, Subcommand};
 use std::net::{IpAddr, SocketAddr};
 use tracing_subscriber::{EnvFilter, fmt};
 mod ipc;
+#[cfg(windows)]
+mod packaged_env;
 
 #[derive(Parser, Debug)]
 #[command(name = "media_talk_rust", version, about = "media talk server")]
@@ -112,8 +114,16 @@ fn init_tracing() {
     let _ = fmt().with_env_filter(filter).try_init();
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    #[cfg(windows)]
+    packaged_env::configure_bundled_gstreamer();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     init_tracing();
     let cli = Cli::parse();
 
