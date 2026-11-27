@@ -56,19 +56,20 @@ RUN curl -fsSL https://www.freedesktop.org/software/libinput/libinput-1.19.2.tar
     && ninja -C /tmp/libinput-1.19.2/build install \
     && rm -rf /tmp/libinput.tar.xz /tmp/libinput-1.19.2
 
-# rustup / crates.io 换 rsproxy (字节) 镜像
-ENV RUSTUP_DIST_SERVER=https://rsproxy.cn \
-    RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup \
+# rustup 走官方源 (GitHub runner 访问稳定); crates 也用 crates.io 默认源.
+# rsproxy 从 GitHub runner 访问会偶发 reset, 导致 release 构建失败.
+ENV RUSTUP_DIST_SERVER=https://static.rust-lang.org \
+    RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup \
     PATH=/root/.cargo/bin:$PATH
 # 容器本身就是 aarch64-linux, rustup 默认 target 即 aarch64-unknown-linux-gnu
-RUN curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh \
-    | sh -s -- -y --default-toolchain stable \
+RUN for i in 1 2 3 4 5; do \
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh && break; \
+        sleep 5; \
+    done \
+    && sh /tmp/rustup-init.sh -y --default-toolchain stable \
+    && rm -f /tmp/rustup-init.sh \
     && rm -rf /root/.rustup/tmp \
     && printf '%s\n' \
-    '[source.crates-io]' \
-    'replace-with = "rsproxy-sparse"' \
-    '[source.rsproxy-sparse]' \
-    'registry = "sparse+https://rsproxy.cn/index/"' \
     '[net]' \
     'git-fetch-with-cli = true' \
     > /root/.cargo/config.toml
