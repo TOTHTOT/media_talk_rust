@@ -275,14 +275,26 @@ LGPL 归属声明, 打成 zip:
 powershell -File scripts/package-windows.ps1 -Version 1.2.3
 ```
 
+绿色 ZIP 与安装版共用同一份运行库目录。安装 NSIS 后生成当前用户安装版：
+
+```powershell
+powershell -File scripts/package-windows-installer.ps1 -Version 1.2.3
+```
+
+输出 `media_talk_rust-1.2.3-windows-x86_64-setup.exe`。默认安装到
+`%LOCALAPPDATA%\Programs\MediaTalk`, 无需管理员权限; 开始菜单通过最小化的
+`run.bat gui` 启动, 卸载保留 `%APPDATA%\media_talk`。CI 使用
+`scripts/verify-windows-installer.ps1` 做真实安装、启动和卸载验收。
+
 ### GitHub Actions (推荐长期方案)
 
 打包流在 [release.yml](../.github/workflows/release.yml): 手动触发
 (可填版本号) 或打 `v*` tag, 两个 job 并行 —— rk3566 走上面同一套
 Docker + 容器内打包脚本, windows 装官方 MSI (版本号在工作流 env
 `GST_WINDOWS_VERSION`) 后打包. 产物名带平台和版本:
-`media_talk_rust-<ver>-rk3566-aarch64-glibc2.31.tar.gz` 与
-`media_talk_rust-<ver>-windows-x86_64.zip`, 进 Artifacts; 打 tag
+`media_talk_rust-<ver>-rk3566-aarch64-glibc2.31.tar.gz`,
+`media_talk_rust-<ver>-windows-x86_64.zip` 与
+`media_talk_rust-<ver>-windows-x86_64-setup.exe`, 进 Artifacts; 打 tag
 时由 release job 统一挂到同名 GitHub Release.
 
 和 Mac 构建的差异:

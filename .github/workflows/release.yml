@@ -126,10 +126,23 @@ jobs:
         shell: pwsh
         run: scripts/package-windows.ps1 -Version "${{ needs.version.outputs.version }}" -GStreamerRoot "$env:GSTREAMER_ROOT"
 
+      - name: Install NSIS
+        run: choco install nsis --yes --no-progress
+
+      - name: Build installer (setup.exe)
+        shell: pwsh
+        run: scripts/package-windows-installer.ps1 -Version "${{ needs.version.outputs.version }}"
+
+      - name: Verify installer (install + launch + uninstall)
+        shell: pwsh
+        run: scripts/verify-windows-installer.ps1 -SetupPath "dist/media_talk_rust-${{ needs.version.outputs.version }}-windows-x86_64-setup.exe"
+
       - uses: actions/upload-artifact@v4
         with:
           name: media_talk_rust-${{ needs.version.outputs.version }}-windows-x86_64
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
           if-no-files-found: error
 
   release:
