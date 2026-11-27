@@ -1,6 +1,7 @@
 // 顶部状态栏: 左 SIP / 中时间 / 右三个操作, 三段分开.
 import {
     ControlSize,
+    IconGlyph,
     KitIcon,
     KitIconButton,
     KitMetrics,
@@ -17,6 +18,18 @@ export component StatusBar inherits Rectangle {
     in property <bool> screen-control-available: false;
     callback show-toast(string);
     callback screen-power-pressed();
+
+    // Lucide 的 wifi 图标用极短线段画底部圆点 ("M 12 20 L 12.01 20"),
+    // 依赖 stroke-linecap: round. Slint 的 femtovg / software 渲染器会把
+    // 这段退化路径折叠掉, 圆点不显示; Skia (编辑器预览) 则正常.
+    // 这里保留 Lucide 的三段弧线, 只把圆点换成填充圆, 保证预览和 app 一致.
+    // 相关: slint-ui/slint#4676 (Path line cap 支持),
+    //       slint-ui/slint#8165 (FemtoVG/Qt 的端帽渲染问题).
+    property <IconGlyph> wifi-icon: {
+        stroke: "M 2 8.82 C 7.694 3.727 16.306 3.727 22 8.82 M 5 12.859 C 8.888 9.048 15.112 9.048 19 12.859 M 8.5 16.429 C 10.444 14.523 13.556 14.523 15.5 16.429",
+        fill: "M 12 19 A 1 1 0 1 1 12 21 A 1 1 0 1 1 12 19 Z",
+        viewbox: 24,
+    };
 
     background: KitThemeContext.current.surface;
     width: 100%;
@@ -85,7 +98,7 @@ export component StatusBar inherits Rectangle {
             }
 
             KitIconButton {
-                glyph: LucideIcons.wifi();
+                glyph: root.wifi-icon;
                 accessible-name: @tr("网络");
                 activated => { root.show-toast(@tr("网络状态")); }
             }
