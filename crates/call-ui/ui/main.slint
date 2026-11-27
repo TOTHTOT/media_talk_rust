@@ -300,6 +300,22 @@ export component MainWindow inherits Window {
         KitThemeContext.current.geometry.icon-compact = 16px;
         KitThemeContext.current.geometry.icon-medium = 20px;
         KitThemeContext.current.geometry.icon-comfortable = 24px;
+        // 品牌色 teal-700: 与安防/家居气质一致, 白字对比度足够;
+        // choice/selection 一起换, 避免单选框和选中行仍是旧紫色.
+        KitThemeContext.current.accent = #0f766e;
+        KitThemeContext.current.accent-hover = #115e59;
+        KitThemeContext.current.accent-pressed = #134e4a;
+        KitThemeContext.current.accent-subtle = #f0fdfa;
+        KitThemeContext.current.on-accent = #ffffff;
+        KitThemeContext.current.choice-fill = #0f766e;
+        KitThemeContext.current.on-choice-fill = #ffffff;
+        KitThemeContext.current.selection = #ccfbf1;
+        KitThemeContext.current.on-selection = #0f172a;
+        // 触摸屏上不显示焦点环; 键盘/遥控器仍可操作, 但没有可见的焦点提示.
+        // invalid-color 保留, 校验失败的红框仍可见.
+        KitThemeContext.current.focus.width = 1px;
+        KitThemeContext.current.focus.offset = 0px;
+        KitThemeContext.current.focus.color = transparent;
     }
     background: KitThemeContext.current.canvas;
 
