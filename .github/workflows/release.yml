@@ -75,8 +75,20 @@ jobs:
           $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc"
           Invoke-WebRequest "$base/gstreamer-1.0-msvc-x86_64-$v.msi" -OutFile gst.msi
           Invoke-WebRequest "$base/gstreamer-1.0-devel-msvc-x86_64-$v.msi" -OutFile gst-devel.msi
-          Start-Process msiexec.exe -ArgumentList "/i","gst.msi","/qn","/norestart" -Wait
-          Start-Process msiexec.exe -ArgumentList "/i","gst-devel.msi","/qn","/norestart" -Wait
+          $root = "C:\gstreamer\1.0\msvc_x86_64"
+          foreach ($msi in @("gst.msi", "gst-devel.msi")) {
+            $log = (Join-Path (Get-Location) "$msi.log")
+            $args = @("/i", (Resolve-Path $msi).Path, "/qn", "/norestart",
+              "INSTALLDIR=$root", "ADDLOCAL=ALL", "/L*v", $log)
+            $p = Start-Process msiexec.exe -ArgumentList $args -Wait -PassThru
+            if ($p.ExitCode -ne 0) {
+              Get-Content $log -Tail 50
+              throw "$msi 安装失败, msiexec exit=$($p.ExitCode)"
+            }
+          }
+          if (-not (Test-Path "$root\lib\pkgconfig\glib-2.0.pc")) {
+            throw "GStreamer devel 未安装到预期目录: $root"
+          }
 
       - name: Install pkg-config
         run: choco install pkgconfiglite --yes --no-progress

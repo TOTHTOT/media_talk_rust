@@ -84,6 +84,12 @@ sudo apt install -y libgbm-dev libxkbcommon-dev libudev-dev libinput-dev libfont
 字体查找依赖, build script 用 pkg-config 找 `fontconfig.pc`, 容器里缺它
 cargo build 必败 (focal 仓库里有这个包).
 
+Slint 1.19 的 linuxkms 输入后端还要求 libinput >= 1.19 (滚动事件 API);
+focal 仓库只有 1.15, 直接链接会报 `libinput_event_pointer_get_scroll_value*`
+undefined reference. Dockerfile 因此在容器内源码安装 libinput 1.19.2,
+保持 Ubuntu 20.04 / glibc 2.31 不变; 手工搭建环境时也要升级, 只装 focal 的
+`libinput-dev` 不够. 发布包的 ldd 闭包会带上新版 `libinput.so.10`.
+
 用 noseat 而不是 `backend-linuxkms`: Ubuntu 20.04 (focal) 仓库里没有
 `libseat-dev` (最早 jammy 才有), 完整版后端在 focal 上装不齐依赖.
 noseat 不走 libseat, 代价是进程要自己拿 DRM master — root 或
