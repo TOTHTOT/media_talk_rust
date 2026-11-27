@@ -86,9 +86,6 @@ jobs:
               throw "$msi 安装失败, msiexec exit=$($p.ExitCode)"
             }
           }
-          if (-not (Test-Path "$root\lib\pkgconfig\glib-2.0.pc")) {
-            throw "GStreamer devel 未安装到预期目录: $root"
-          }
 
       - name: Install pkg-config
         run: choco install pkgconfiglite --yes --no-progress
@@ -96,8 +93,21 @@ jobs:
       - name: Configure GStreamer path
         shell: pwsh
         run: |
-          "C:\gstreamer\1.0\msvc_x86_64\bin" | Out-File -Append $env:GITHUB_PATH
-          "PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" | Out-File -Append $env:GITHUB_ENV
+          $root = [Environment]::GetEnvironmentVariable("GSTREAMER_1_0_ROOT_MSVC_X86_64", "Machine")
+          if (-not $root) {
+            $root = [Environment]::GetEnvironmentVariable("GSTREAMER_1_0_ROOT_MSVC_X86_64", "User")
+          }
+          if (-not $root) { throw "MSI 未设置 GSTREAMER_1_0_ROOT_MSVC_X86_64" }
+          $root = $root.TrimEnd('\')
+          Write-Host "GStreamer root: $root"
+          if (-not (Test-Path "$root\lib\pkgconfig\glib-2.0.pc")) {
+            Get-ChildItem $root -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName
+            throw "GStreamer devel 的 pkg-config 文件不存在: $root"
+          }
+          "$root\bin" | Out-File -Append $env:GITHUB_PATH
+          "GSTREAMER_ROOT=$root" | Out-File -Append $env:GITHUB_ENV
+          "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -Append $env:GITHUB_ENV
 
       - name: Check build tools
         run: pkg-config --modversion glib-2.0 gstreamer-1.0
@@ -114,7 +124,7 @@ jobs:
 
       - name: Package (exe + GStreamer 运行库 + 插件白名单)
         shell: pwsh
-        run: scripts/package-windows.ps1 -Version "${{ needs.version.outputs.version }}"
+        run: scripts/package-windows.ps1 -Version "${{ needs.version.outputs.version }}" -GStreamerRoot "$env:GSTREAMER_ROOT"
 
       - uses: actions/upload-artifact@v4
         with:
