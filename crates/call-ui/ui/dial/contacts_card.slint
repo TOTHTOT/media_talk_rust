@@ -112,19 +112,30 @@ export component ContactsCard inherits Rectangle {
         }
 
         if root.contacts.length > 0: KitScrollArea {
+            // 列表用 stretch 吃掉卡片剩余高度; 上方表单会随编辑态增减,
+            // 不能像 RecentCalls 那样用 root.height 减固定常量.
             vertical-stretch: 1;
+            // 滚动条改为浮层: 默认布局会给右侧滚动条留 gutter,
+            // hover 背景只铺到 gutter 前, 看起来像没盖满整行.
+            overlay-scrollbars: true;
 
             VerticalLayout {
                 spacing: root.theme.spacing.unit;
 
                 for c in root.contacts: KitPressable {
                     width: 100%;
+                    // 行高跟随内容 (同 RecentCallRow): KitPressable 默认按钮
+                    // 高度装不下头像 + 两行文本, 否则第二行溢出 pressable,
+                    // hover 背景只盖住第一行.
+                    min-height: content.preferred-height + 2 * self.padding-block;
+                    preferred-height: self.min-height;
+                    max-height: self.min-height;
                     intent: ButtonIntent.quiet;
                     control-width: ControlWidth.fill;
                     accessible-name: c.name + " " + c.number;
                     activated => { root.pick-number(c.number); }
 
-                    HorizontalLayout {
+                    content := HorizontalLayout {
                         spacing: root.theme.spacing.unit * 2;
 
                         KitAvatar {
