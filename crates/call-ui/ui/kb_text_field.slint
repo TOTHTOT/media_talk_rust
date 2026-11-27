@@ -24,9 +24,12 @@ import {
 // 故同步只能走 changed 处理器, global 内也不放回调 (无法在外部接实现)
 export global KeyboardCtx {
     in-out property <bool> collapsed: false;
-    // 抬升门控: 聚焦字段会被键盘遮盖时由设置页置位, main.slint 据此决定
-    // 是否整体上移界面; 全失焦时复位 (非设置页字段聚焦时恒为 false 不抬升)
-    in-out property <bool> lift-needed: false;
+    // 抬升门控: 当前聚焦字段需要上移的像素数 (0 = 不抬).
+    // 由设置页/弹窗按字段底部与键盘顶边的重叠量计算; 全失焦时复位.
+    in-out property <length> lift-offset: 0px;
+    // 主窗口几何 (窗口坐标): 键盘顶边 / 最大抬升量, 由 main.slint 写入.
+    in-out property <length> keyboard-top: 0px;
+    in-out property <length> lift-max: 0px;
     in-out property <int> commit-seq: 0;
     in-out property <string> commit-text: "";
     in-out property <bool> delete-field: false;

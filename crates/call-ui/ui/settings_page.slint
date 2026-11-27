@@ -53,11 +53,16 @@ export component SettingsPage inherits Rectangle {
         root.update-lift();
     }
 
-    // 遮挡判定 (页内坐标系): 键盘占窗口底部 45%, 换算到页内其顶约
-    // 55% 页高 - 状态栏 slack(24px); 字段底部 (y + 56px 键高) 越过该线
-    // 即被遮 —— 需要抬升. 页眉/返回行经 sv.y 计入, 不重不漏.
+    // 精确抬升量: 字段底部到键盘顶边的重叠距离, 夹在 0..最大抬升之间.
+    // absolute-position 会随 shell 抬升移动, 先加回当前 offset 还原未抬坐标.
     function update-lift() {
-        KeyboardCtx.lift-needed = root.focused-page-y + root.scroll-y + 56px > root.height * 55% - 24px;
+        let field-bottom = root.absolute-position.y
+            + root.focused-page-y
+            + root.scroll-y
+            + 56px
+            + KeyboardCtx.lift-offset;
+        let overlap = field-bottom + 24px - KeyboardCtx.keyboard-top;
+        KeyboardCtx.lift-offset = min(max(0px, overlap), KeyboardCtx.lift-max);
     }
 
     callback back();

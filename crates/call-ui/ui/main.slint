@@ -190,7 +190,7 @@ export component MainWindow inherits Window {
     changed any-field-focused => {
         KeyboardCtx.collapsed = false; // 闩随真实失焦复位 (gain 时本就未收)
         if !root.any-field-focused {
-            KeyboardCtx.lift-needed = false; // 抬升门控随失焦复位
+            KeyboardCtx.lift-offset = 0px; // 抬升量随失焦复位
         }
         root.kb-any-field-focused(root.any-field-focused);
     }
@@ -316,6 +316,13 @@ export component MainWindow inherits Window {
         KitThemeContext.current.focus.width = 1px;
         KitThemeContext.current.focus.offset = 0px;
         KitThemeContext.current.focus.color = transparent;
+        // 键盘几何: 顶边在窗口 55% 处, 最大抬升 45% 窗口高.
+        KeyboardCtx.keyboard-top = root.height * 55% - 24px;
+        KeyboardCtx.lift-max = root.height * 45%;
+    }
+    changed height => {
+        KeyboardCtx.keyboard-top = root.height * 55% - 24px;
+        KeyboardCtx.lift-max = root.height * 45%;
     }
     background: KitThemeContext.current.canvas;
 
@@ -344,7 +351,7 @@ export component MainWindow inherits Window {
     // 抬升语义: 键盘弹出时整体 y 上移键盘高度 (45%), 底部输入框随界面上抬
     // 露出 (顶部内容暂时让位, 收起即回); 不做逐字段滚动 =====
     shell := KitAppShell {
-        y: root.kb-showing && KeyboardCtx.lift-needed ? - root.height * 45% : 0px;
+        y: root.kb-showing ? -KeyboardCtx.lift-offset : 0px;
         animate y {
             duration: 150ms;
             easing: ease-out;
