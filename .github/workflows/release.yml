@@ -44,8 +44,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Docker build (native aarch64, glibc 2.31)
-        run: docker build -f Dockerfile.rk3566 -t media-talk-rk3566 .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker build (native aarch64, cached layers)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.rk3566
+          tags: media-talk-rk3566
+          load: true
+          cache-from: type=gha,scope=rk3566
+          cache-to: type=gha,scope=rk3566,mode=max
 
       - name: Package (binary + 运行库 + gst 插件 + rime + 字体)
         run: |
