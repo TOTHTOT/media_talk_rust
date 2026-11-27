@@ -138,6 +138,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      # gh release create 依赖当前目录是 git 仓库; 之前漏了 checkout,
+      # tag 触发的 Release 发布会报 "fatal: not a git repository".
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           pattern: media_talk_rust-${{ needs.version.outputs.version }}-*
